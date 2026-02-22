@@ -24,26 +24,9 @@ if(NOT SWORD_FOUND)
     message(FATAL_ERROR "SWORD not found. Install libsword-dev.")
 endif()
 
-# litehtml
-find_package(PkgConfig)
-if(PkgConfig_FOUND)
-    pkg_check_modules(LITEHTML litehtml)
-endif()
-if(NOT LITEHTML_FOUND)
-    find_path(LITEHTML_INCLUDE_DIRS litehtml.h
-        PATH_SUFFIXES litehtml
-        HINTS /usr/include /usr/local/include
-    )
-    find_library(LITEHTML_LIBRARIES NAMES litehtml
-        HINTS /usr/lib /usr/local/lib /usr/lib/x86_64-linux-gnu
-    )
-    if(LITEHTML_INCLUDE_DIRS AND LITEHTML_LIBRARIES)
-        set(LITEHTML_FOUND TRUE)
-    endif()
-endif()
-if(NOT LITEHTML_FOUND)
-    message(FATAL_ERROR "litehtml not found. Install litehtml development files.")
-endif()
+# litehtml (built as submodule)
+set(LITEHTML_BUILD_TESTING OFF CACHE BOOL "Disable litehtml tests" FORCE)
+add_subdirectory(libs/litehtml)
 
 # X11 and other system libraries (for Linux/FLTK)
 if(UNIX AND NOT APPLE)
@@ -96,14 +79,13 @@ target_include_directories(verdad PRIVATE
     ${CMAKE_SOURCE_DIR}/src
     ${FLTK_INCLUDE_DIR}
     ${SWORD_INCLUDE_DIRS}
-    ${LITEHTML_INCLUDE_DIRS}
 )
 
 # Link libraries (FLTK statically)
 target_link_libraries(verdad PRIVATE
     ${FLTK_LIBRARIES}
     ${SWORD_LIBRARIES}
-    ${LITEHTML_LIBRARIES}
+    litehtml
 )
 
 if(UNIX AND NOT APPLE)
