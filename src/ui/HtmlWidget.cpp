@@ -444,20 +444,25 @@ void HtmlWidget::transform_text(litehtml::string& text,
     case litehtml::text_transform_capitalize: {
         bool newWord = true;
         for (auto& ch : text) {
-            if (newWord && isalpha(ch)) {
-                ch = toupper(ch);
+            unsigned char uc = static_cast<unsigned char>(ch);
+            if (newWord && std::isalpha(uc)) {
+                ch = static_cast<char>(std::toupper(uc));
                 newWord = false;
-            } else if (isspace(ch)) {
+            } else if (std::isspace(uc)) {
                 newWord = true;
             }
         }
         break;
     }
     case litehtml::text_transform_uppercase:
-        for (auto& ch : text) ch = toupper(ch);
+        for (auto& ch : text) {
+            ch = static_cast<char>(std::toupper(static_cast<unsigned char>(ch)));
+        }
         break;
     case litehtml::text_transform_lowercase:
-        for (auto& ch : text) ch = tolower(ch);
+        for (auto& ch : text) {
+            ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+        }
         break;
     default:
         break;

@@ -11,6 +11,7 @@
 #include <algorithm>
 #include <sstream>
 #include <cstring>
+#include <cctype>
 
 namespace verdad {
 
@@ -326,77 +327,69 @@ std::vector<SearchResult> SwordManager::searchStrongs(
 WordInfo SwordManager::getWordInfo(const std::string& moduleName,
                                     const std::string& verseKey,
                                     const std::string& word) {
-    std::lock_guard<std::mutex> lock(mutex_);
     WordInfo info;
     info.word = word;
 
-    sword::SWModule* mod = getModule(moduleName);
-    if (!mod) return info;
+    // First phase: extract Strong's/morph codes under the lock
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        sword::SWModule* mod = getModule(moduleName);
+        if (!mod) return info;
 
-    // Render the verse to populate entry attributes
-    mod->setKey(verseKey.c_str());
-    mod->renderText();
+        // Render the verse to populate entry attributes
+        mod->setKey(verseKey.c_str());
+        mod->renderText();
 
-    // Search through word attributes to find matching word
-    auto& attrs = mod->getEntryAttributes();
-    auto wordIt = attrs.find("Word");
-    if (wordIt != attrs.end()) {
-        for (auto& entry : wordIt->second) {
-            // Each entry is a word position with attributes
-            auto& wordAttrs = entry.second;
+        // Search through word attributes to find matching word
+        auto& attrs = mod->getEntryAttributes();
+        auto wordIt = attrs.find("Word");
+        if (wordIt != attrs.end()) {
+            for (auto& entry : wordIt->second) {
+                auto& wordAttrs = entry.second;
 
-            // Check if this matches our word
-            auto textIt = wordAttrs.find("Text");
-            if (textIt != wordAttrs.end()) {
-                std::string attrWord = textIt->second.c_str();
-                // Case-insensitive comparison
-                std::string wordLower = word;
-                std::string attrLower = attrWord;
-                std::transform(wordLower.begin(), wordLower.end(),
-                               wordLower.begin(), ::tolower);
-                std::transform(attrLower.begin(), attrLower.end(),
-                               attrLower.begin(), ::tolower);
+                auto textIt = wordAttrs.find("Text");
+                if (textIt != wordAttrs.end()) {
+                    std::string attrWord = textIt->second.c_str();
+                    std::string wordLower = word;
+                    std::string attrLower = attrWord;
+                    std::transform(wordLower.begin(), wordLower.end(),
+                                   wordLower.begin(), ::tolower);
+                    std::transform(attrLower.begin(), attrLower.end(),
+                                   attrLower.begin(), ::tolower);
 
-                if (wordLower == attrLower) {
-                    // Found the word, extract attributes
-                    auto lemmaIt = wordAttrs.find("Lemma");
-                    if (lemmaIt != wordAttrs.end()) {
-                        info.strongsNumber = lemmaIt->second.c_str();
-                        // Clean up prefix like "strong:" or "Strong:"
-                        auto colonPos = info.strongsNumber.find(':');
-                        if (colonPos != std::string::npos) {
-                            info.strongsNumber = info.strongsNumber.substr(colonPos + 1);
+                    if (wordLower == attrLower) {
+                        auto lemmaIt = wordAttrs.find("Lemma");
+                        if (lemmaIt != wordAttrs.end()) {
+                            info.strongsNumber = lemmaIt->second.c_str();
+                            auto colonPos = info.strongsNumber.find(':');
+                            if (colonPos != std::string::npos) {
+                                info.strongsNumber = info.strongsNumber.substr(colonPos + 1);
+                            }
                         }
-                    }
 
-                    auto morphIt = wordAttrs.find("Morph");
-                    if (morphIt != wordAttrs.end()) {
-                        info.morphCode = morphIt->second.c_str();
-                        auto colonPos = info.morphCode.find(':');
-                        if (colonPos != std::string::npos) {
-                            info.morphCode = info.morphCode.substr(colonPos + 1);
+                        auto morphIt = wordAttrs.find("Morph");
+                        if (morphIt != wordAttrs.end()) {
+                            info.morphCode = morphIt->second.c_str();
+                            auto colonPos = info.morphCode.find(':');
+                            if (colonPos != std::string::npos) {
+                                info.morphCode = info.morphCode.substr(colonPos + 1);
+                            }
                         }
-                    }
 
-                    break;
+                        break;
+                    }
                 }
             }
         }
-    }
+    } // lock released here
 
-    // Look up Strong's definition if we have a number
+    // Second phase: look up definitions without holding the lock
     if (!info.strongsNumber.empty()) {
-        // Temporarily unlock for the definition lookup
-        mutex_.unlock();
         info.strongsDef = getStrongsDefinition(info.strongsNumber);
-        mutex_.lock();
     }
 
-    // Look up morph definition if we have a code
     if (!info.morphCode.empty()) {
-        mutex_.unlock();
         info.morphDef = getMorphDefinition(info.morphCode);
-        mutex_.lock();
     }
 
     return info;
@@ -411,7 +404,8 @@ std::string SwordManager::getStrongsDefinition(const std::string& strongsNumber)
 
     // Determine if Hebrew or Greek
     if (!strongsNumber.empty()) {
-        char prefix = toupper(strongsNumber[0]);
+        char prefix = static_cast<char>(
+            std::toupper(static_cast<unsigned char>(strongsNumber[0])));
         if (prefix == 'H') {
             lexicons = {"StrongsHebrew", "StrongsRealHebrew", "TWOT"};
         } else if (prefix == 'G') {
