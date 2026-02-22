@@ -10,13 +10,17 @@ list(APPEND CMAKE_MODULE_PATH "${CMAKE_SOURCE_DIR}/cmake")
 
 # --- Dependencies ---
 
-# FLTK (static linking)
-set(FLTK_SKIP_FLUID ON)
-set(OPTION_BUILD_SHARED_LIBS OFF CACHE BOOL "Build shared libs" FORCE)
-find_package(FLTK REQUIRED)
-if(NOT FLTK_FOUND)
-    message(FATAL_ERROR "FLTK not found. Install FLTK development packages.")
+# FLTK - use fltk-config to get correct compile and link flags
+find_program(FLTK_CONFIG_SCRIPT fltk-config)
+if(NOT FLTK_CONFIG_SCRIPT)
+    message(FATAL_ERROR "fltk-config not found. Install FLTK development packages.")
 endif()
+
+execute_process(COMMAND ${FLTK_CONFIG_SCRIPT} --use-images --ldflags
+    OUTPUT_VARIABLE FLTK_LDFLAGS OUTPUT_STRIP_TRAILING_WHITESPACE)
+separate_arguments(FLTK_LDFLAGS)
+execute_process(COMMAND ${FLTK_CONFIG_SCRIPT} --includedir
+    OUTPUT_VARIABLE FLTK_INCLUDE_DIR OUTPUT_STRIP_TRAILING_WHITESPACE)
 
 # SWORD library
 find_package(SWORD REQUIRED)
@@ -28,9 +32,8 @@ endif()
 set(LITEHTML_BUILD_TESTING OFF CACHE BOOL "Disable litehtml tests")
 add_subdirectory(libs/litehtml)
 
-# X11 and other system libraries (for Linux/FLTK)
+# Threads (for Linux)
 if(UNIX AND NOT APPLE)
-    find_package(X11 REQUIRED)
     find_package(Threads REQUIRED)
 endif()
 
@@ -81,19 +84,16 @@ target_include_directories(verdad PRIVATE
     ${SWORD_INCLUDE_DIRS}
 )
 
-# Link libraries (FLTK statically)
+# Link libraries
 target_link_libraries(verdad PRIVATE
-    ${FLTK_LIBRARIES}
+    ${FLTK_LDFLAGS}
     ${SWORD_LIBRARIES}
     litehtml
 )
 
 if(UNIX AND NOT APPLE)
     target_link_libraries(verdad PRIVATE
-        ${X11_LIBRARIES}
         Threads::Threads
-        Xft Xrender fontconfig Xinerama Xcursor Xfixes
-        png jpeg z dl m
     )
 endif()
 

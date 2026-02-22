@@ -56,4 +56,5 @@ compile_commands.json
 *.swo
 *~
 _codeql_detected_source_root
+_codeql_build_dir/
 build/
