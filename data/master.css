@@ -34,24 +34,27 @@ span.wordsofchrist, .jesusWords {
     color: #cc0000;
 }
 
-/* Strong's number links */
+/* Strong's number links - hidden from display but preserved for hover MAG viewer */
 a.strongs, span.strongs {
     text-decoration: none;
     color: inherit;
-    border-bottom: 1px dotted #888;
-    cursor: pointer;
+    border-bottom: none;
+    cursor: inherit;
 }
 
 a.strongs:hover, span.strongs:hover {
-    background-color: #e8e8ff;
-    border-bottom-color: #1a5276;
+    background-color: inherit;
+    border-bottom: none;
 }
 
-/* Morphology tags */
+/* Morphology tags - hidden from display */
 span.morph {
-    font-size: 0.8em;
-    color: #666;
-    font-style: italic;
+    display: none;
+}
+
+/* Verse display - verse-per-line mode (default) */
+div.verse {
+    margin-bottom: 2px;
 }
 
 /* Footnotes */

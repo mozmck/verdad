@@ -57,6 +57,12 @@ public:
     /// Toggle parallel Bible view
     void toggleParallel();
 
+    /// Toggle paragraph display mode
+    void toggleParagraphMode();
+
+    /// Check if paragraph mode is active
+    bool isParagraphMode() const { return paragraphMode_; }
+
     /// Set modules for parallel view
     void setParallelModules(const std::vector<std::string>& modules);
 
@@ -85,6 +91,7 @@ private:
     Fl_Button* prevButton_;
     Fl_Button* nextButton_;
     Fl_Button* parallelButton_;
+    Fl_Button* paragraphButton_;
     Fl_Button* addTabButton_;
 
     // Tab group for multiple Bible views
@@ -95,6 +102,9 @@ private:
     // Parallel mode
     bool parallelMode_ = false;
     std::vector<std::string> parallelModules_;
+
+    // Display mode: false = verse-per-line (default), true = paragraph style
+    bool paragraphMode_ = false;
 
     /// Build the navigation bar
     void buildNavBar();
@@ -120,6 +130,7 @@ private:
     static void onChapterChange(Fl_Widget* w, void* data);
     static void onModuleChange(Fl_Widget* w, void* data);
     static void onParallel(Fl_Widget* w, void* data);
+    static void onParagraphToggle(Fl_Widget* w, void* data);
     static void onAddTab(Fl_Widget* w, void* data);
     static void onTabChange(Fl_Widget* w, void* data);
 
