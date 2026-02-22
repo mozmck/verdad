@@ -113,7 +113,8 @@ std::string SwordManager::getVerseText(const std::string& moduleName,
 
 std::string SwordManager::getChapterText(const std::string& moduleName,
                                           const std::string& book,
-                                          int chapter) {
+                                          int chapter,
+                                          bool paragraphMode) {
     std::lock_guard<std::mutex> lock(mutex_);
     sword::SWModule* mod = getModule(moduleName);
     if (!mod) return "<p><i>Module not found: " + moduleName + "</i></p>";
@@ -136,15 +137,19 @@ std::string SwordManager::getChapterText(const std::string& moduleName,
 
     int currentChapter = vk->getChapter();
 
+    // Choose element tag based on display mode:
+    // verse-per-line (default) uses <div>, paragraph mode uses <span>
+    const char* verseTag = paragraphMode ? "span" : "div";
+
     while (!mod->popError() && vk->getChapter() == currentChapter) {
         int verse = vk->getVerse();
         std::string verseText = std::string(mod->renderText().c_str());
 
         if (!verseText.empty()) {
-            html << "<span class=\"verse\" id=\"v" << verse << "\">";
+            html << "<" << verseTag << " class=\"verse\" id=\"v" << verse << "\">";
             html << "<sup class=\"versenum\">" << verse << "</sup> ";
             html << verseText;
-            html << "</span>\n";
+            html << "</" << verseTag << ">\n";
         }
 
         (*mod)++;  // Advance to next verse
@@ -156,8 +161,10 @@ std::string SwordManager::getChapterText(const std::string& moduleName,
 
 std::string SwordManager::getParallelText(
     const std::vector<std::string>& moduleNames,
-    const std::string& book, int chapter) {
+    const std::string& book, int chapter,
+    bool paragraphMode) {
 
+    (void)paragraphMode; // Parallel view uses table layout; mode not applicable
     if (moduleNames.empty()) return "";
 
     std::lock_guard<std::mutex> lock(mutex_);

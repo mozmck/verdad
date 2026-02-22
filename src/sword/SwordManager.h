@@ -81,20 +81,26 @@ public:
     std::string getVerseText(const std::string& moduleName, const std::string& key);
 
     /// Get rendered XHTML for an entire chapter
-    /// @param moduleName  Module to use
-    /// @param book        Book name (e.g. "Genesis")
-    /// @param chapter     Chapter number
+    /// @param moduleName    Module to use
+    /// @param book          Book name (e.g. "Genesis")
+    /// @param chapter       Chapter number
+    /// @param paragraphMode If true, display verses inline (paragraph style);
+    ///                      if false (default), display one verse per line
     /// @return XHTML string with all verses
     std::string getChapterText(const std::string& moduleName,
-                               const std::string& book, int chapter);
+                               const std::string& book, int chapter,
+                               bool paragraphMode = false);
 
     /// Get rendered XHTML for parallel Bibles showing the same chapter
-    /// @param moduleNames  List of modules to show in parallel
-    /// @param book         Book name
-    /// @param chapter      Chapter number
+    /// @param moduleNames    List of modules to show in parallel
+    /// @param book           Book name
+    /// @param chapter        Chapter number
+    /// @param paragraphMode  If true, display verses inline (paragraph style);
+    ///                       if false (default), display one verse per line
     /// @return XHTML table with parallel columns
     std::string getParallelText(const std::vector<std::string>& moduleNames,
-                                const std::string& book, int chapter);
+                                const std::string& book, int chapter,
+                                bool paragraphMode = false);
 
     /// Get commentary text for a given verse reference
     std::string getCommentaryText(const std::string& moduleName,

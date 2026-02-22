@@ -260,6 +260,11 @@ void BiblePane::toggleParallel() {
     updateDisplay();
 }
 
+void BiblePane::toggleParagraphMode() {
+    paragraphMode_ = !paragraphMode_;
+    updateDisplay();
+}
+
 void BiblePane::setParallelModules(const std::vector<std::string>& modules) {
     parallelModules_ = modules;
     if (parallelMode_) {
@@ -375,6 +380,13 @@ void BiblePane::buildNavBar() {
     parallelButton_->type(FL_TOGGLE_BUTTON);
     cx += 27;
 
+    // Paragraph mode toggle button
+    paragraphButton_ = new Fl_Button(cx, cy, 25, nh, "\xC2\xB6");
+    paragraphButton_->callback(onParagraphToggle, this);
+    paragraphButton_->tooltip("Toggle paragraph / verse-per-line display");
+    paragraphButton_->type(FL_TOGGLE_BUTTON);
+    cx += 27;
+
     // Add tab button
     addTabButton_ = new Fl_Button(cx, cy, 25, nh, "+");
     addTabButton_->callback(onAddTab, this);
@@ -391,10 +403,12 @@ void BiblePane::updateDisplay() {
 
     if (parallelMode_ && !parallelModules_.empty()) {
         html = app_->swordManager().getParallelText(
-            parallelModules_, tab->currentBook, tab->currentChapter);
+            parallelModules_, tab->currentBook, tab->currentChapter,
+            paragraphMode_);
     } else {
         html = app_->swordManager().getChapterText(
-            tab->moduleName, tab->currentBook, tab->currentChapter);
+            tab->moduleName, tab->currentBook, tab->currentChapter,
+            paragraphMode_);
     }
 
     tab->htmlWidget->setHtml(html);
@@ -504,6 +518,11 @@ void BiblePane::onModuleChange(Fl_Widget* /*w*/, void* data) {
 void BiblePane::onParallel(Fl_Widget* /*w*/, void* data) {
     auto* self = static_cast<BiblePane*>(data);
     self->toggleParallel();
+}
+
+void BiblePane::onParagraphToggle(Fl_Widget* /*w*/, void* data) {
+    auto* self = static_cast<BiblePane*>(data);
+    self->toggleParagraphMode();
 }
 
 void BiblePane::onAddTab(Fl_Widget* /*w*/, void* data) {
