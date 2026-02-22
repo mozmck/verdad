@@ -102,7 +102,7 @@ std::string SwordManager::getVerseText(const std::string& moduleName,
     if (!mod) return "<p><i>Module not found: " + moduleName + "</i></p>";
 
     mod->setKey(key.c_str());
-    std::string text = mod->renderText();
+    std::string text = std::string(mod->renderText().c_str());
 
     if (text.empty()) {
         return "<p><i>No text available for " + key + "</i></p>";
@@ -138,7 +138,7 @@ std::string SwordManager::getChapterText(const std::string& moduleName,
 
     while (!mod->popError() && vk->getChapter() == currentChapter) {
         int verse = vk->getVerse();
-        std::string verseText = mod->renderText();
+        std::string verseText = std::string(mod->renderText().c_str());
 
         if (!verseText.empty()) {
             html << "<span class=\"verse\" id=\"v" << verse << "\">";
@@ -230,7 +230,7 @@ std::string SwordManager::getCommentaryText(const std::string& moduleName,
     if (!mod) return "<p><i>Commentary module not found: " + moduleName + "</i></p>";
 
     mod->setKey(key.c_str());
-    std::string text = mod->renderText();
+    std::string text = std::string(mod->renderText().c_str());
 
     if (text.empty()) {
         return "<p><i>No commentary available for " + key + "</i></p>";
@@ -251,7 +251,7 @@ std::string SwordManager::getDictionaryEntry(const std::string& moduleName,
     if (!mod) return "<p><i>Dictionary module not found: " + moduleName + "</i></p>";
 
     mod->setKey(key.c_str());
-    std::string text = mod->renderText();
+    std::string text = std::string(mod->renderText().c_str());
 
     if (text.empty()) {
         return "<p><i>No entry found for: " + key + "</i></p>";

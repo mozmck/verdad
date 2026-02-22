@@ -3,6 +3,7 @@
 #include "tags/TagManager.h"
 #include "bookmarks/BookmarkManager.h"
 #include "ui/MainWindow.h"
+#include "ui/BiblePane.h"
 
 #include <FL/Fl.H>
 #include <FL/Fl_File_Icon.H>

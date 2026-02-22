@@ -5,6 +5,7 @@
 
 #include <FL/Fl.H>
 #include <FL/fl_ask.H>
+#include <algorithm>
 
 namespace verdad {
 

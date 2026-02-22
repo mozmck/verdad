@@ -146,9 +146,10 @@ int HtmlWidget::handle(int event) {
             if (doc_) {
                 litehtml::position::vector redraw;
                 std::vector<litehtml::position> clientRects;
-                auto el = doc_->root()->get_element_by_point(
+                auto el = doc_->root_render()->get_element_by_point(
                     Fl::event_x() - x(), Fl::event_y() - y() + scrollY_,
-                    Fl::event_x() - x(), Fl::event_y() - y() + scrollY_);
+                    Fl::event_x() - x(), Fl::event_y() - y() + scrollY_,
+                    [](const std::shared_ptr<litehtml::render_item>&) { return true; });
 
                 std::string word, href;
                 if (el) {
@@ -205,9 +206,10 @@ int HtmlWidget::handle(int event) {
 
             // Check for hover over links/words
             if (hoverCallback_) {
-                auto el = doc_->root()->get_element_by_point(
+                auto el = doc_->root_render()->get_element_by_point(
                     Fl::event_x() - x(), Fl::event_y() - y() + scrollY_,
-                    Fl::event_x() - x(), Fl::event_y() - y() + scrollY_);
+                    Fl::event_x() - x(), Fl::event_y() - y() + scrollY_,
+                    [](const std::shared_ptr<litehtml::render_item>&) { return true; });
 
                 std::string word, href;
                 if (el) {
@@ -267,26 +269,25 @@ int HtmlWidget::handle(int event) {
 
 // --- litehtml::document_container implementation ---
 
-litehtml::uint_ptr HtmlWidget::create_font(const char* faceName, int size,
-                                             int weight,
-                                             litehtml::font_style italic,
-                                             unsigned int decoration,
+litehtml::uint_ptr HtmlWidget::create_font(const litehtml::font_description& descr,
+                                             const litehtml::document* /*doc*/,
                                              litehtml::font_metrics* fm) {
     FontInfo fi;
-    fi.flFont = mapFont(faceName, weight, italic == litehtml::font_style_italic);
-    fi.size = size;
-    fi.weight = weight;
-    fi.italic = (italic == litehtml::font_style_italic);
-    fi.decoration = decoration;
+    fi.flFont = mapFont(descr.family.c_str(), descr.weight,
+                         descr.style == litehtml::font_style_italic);
+    fi.size = static_cast<int>(descr.size);
+    fi.weight = descr.weight;
+    fi.italic = (descr.style == litehtml::font_style_italic);
+    fi.decorationLine = descr.decoration_line;
 
     // Measure font metrics
     fl_font(fi.flFont, fi.size);
     if (fm) {
-        fm->height = fl_height();
-        fm->ascent = fl_height() - fl_descent();
-        fm->descent = fl_descent();
-        fm->x_height = static_cast<int>(fm->ascent * 0.5);
-        fm->draw_spaces = (decoration != 0);
+        fm->height = static_cast<litehtml::pixel_t>(fl_height());
+        fm->ascent = static_cast<litehtml::pixel_t>(fl_height() - fl_descent());
+        fm->descent = static_cast<litehtml::pixel_t>(fl_descent());
+        fm->x_height = fm->ascent * 0.5f;
+        fm->draw_spaces = (descr.decoration_line != 0);
     }
 
     litehtml::uint_ptr id = nextFontId_++;
@@ -298,12 +299,12 @@ void HtmlWidget::delete_font(litehtml::uint_ptr hFont) {
     fonts_.erase(hFont);
 }
 
-int HtmlWidget::text_width(const char* text, litehtml::uint_ptr hFont) {
+litehtml::pixel_t HtmlWidget::text_width(const char* text, litehtml::uint_ptr hFont) {
     auto it = fonts_.find(hFont);
     if (it == fonts_.end()) return 0;
 
     fl_font(it->second.flFont, it->second.size);
-    return static_cast<int>(fl_width(text));
+    return static_cast<litehtml::pixel_t>(fl_width(text));
 }
 
 void HtmlWidget::draw_text(litehtml::uint_ptr hdc, const char* text,
@@ -315,25 +316,28 @@ void HtmlWidget::draw_text(litehtml::uint_ptr hdc, const char* text,
 
     fl_font(it->second.flFont, it->second.size);
     fl_color(color.red, color.green, color.blue);
-    fl_draw(text, pos.x, pos.y + pos.height - fl_descent());
+    fl_draw(text, static_cast<int>(pos.x),
+            static_cast<int>(pos.y + pos.height) - fl_descent());
 
     // Draw decorations
-    if (it->second.decoration & litehtml::font_decoration_underline) {
-        int lineY = pos.y + pos.height - fl_descent() + 2;
-        fl_line(pos.x, lineY, pos.x + pos.width, lineY);
+    if (it->second.decorationLine & litehtml::text_decoration_line_underline) {
+        int lineY = static_cast<int>(pos.y + pos.height) - fl_descent() + 2;
+        fl_line(static_cast<int>(pos.x), lineY,
+                static_cast<int>(pos.x + pos.width), lineY);
     }
-    if (it->second.decoration & litehtml::font_decoration_linethrough) {
-        int lineY = pos.y + pos.height / 2;
-        fl_line(pos.x, lineY, pos.x + pos.width, lineY);
+    if (it->second.decorationLine & litehtml::text_decoration_line_line_through) {
+        int lineY = static_cast<int>(pos.y + pos.height / 2);
+        fl_line(static_cast<int>(pos.x), lineY,
+                static_cast<int>(pos.x + pos.width), lineY);
     }
 }
 
-int HtmlWidget::pt_to_px(int pt) const {
+litehtml::pixel_t HtmlWidget::pt_to_px(float pt) const {
     // Approximate: 96 DPI standard
-    return static_cast<int>(pt * 96.0 / 72.0);
+    return static_cast<litehtml::pixel_t>(pt * 96.0f / 72.0f);
 }
 
-int HtmlWidget::get_default_font_size() const {
+litehtml::pixel_t HtmlWidget::get_default_font_size() const {
     return 14;
 }
 
@@ -347,14 +351,14 @@ void HtmlWidget::draw_list_marker(litehtml::uint_ptr hdc,
     fl_color(marker.color.red, marker.color.green, marker.color.blue);
 
     if (marker.marker_type == litehtml::list_style_type_disc) {
-        fl_pie(marker.pos.x, marker.pos.y,
-               marker.pos.width, marker.pos.height, 0, 360);
+        fl_pie(static_cast<int>(marker.pos.x), static_cast<int>(marker.pos.y),
+               static_cast<int>(marker.pos.width), static_cast<int>(marker.pos.height), 0, 360);
     } else if (marker.marker_type == litehtml::list_style_type_circle) {
-        fl_arc(marker.pos.x, marker.pos.y,
-               marker.pos.width, marker.pos.height, 0, 360);
+        fl_arc(static_cast<int>(marker.pos.x), static_cast<int>(marker.pos.y),
+               static_cast<int>(marker.pos.width), static_cast<int>(marker.pos.height), 0, 360);
     } else if (marker.marker_type == litehtml::list_style_type_square) {
-        fl_rectf(marker.pos.x, marker.pos.y,
-                 marker.pos.width, marker.pos.height);
+        fl_rectf(static_cast<int>(marker.pos.x), static_cast<int>(marker.pos.y),
+                 static_cast<int>(marker.pos.width), static_cast<int>(marker.pos.height));
     }
 }
 
@@ -369,16 +373,42 @@ void HtmlWidget::get_image_size(const char* /*src*/, const char* /*baseurl*/,
     sz.height = 0;
 }
 
-void HtmlWidget::draw_background(litehtml::uint_ptr hdc,
-                                  const std::vector<litehtml::background_paint>& bg) {
+void HtmlWidget::draw_solid_fill(litehtml::uint_ptr hdc,
+                                  const litehtml::background_layer& layer,
+                                  const litehtml::web_color& color) {
     (void)hdc;
-    for (const auto& b : bg) {
-        if (b.color.alpha > 0) {
-            fl_color(b.color.red, b.color.green, b.color.blue);
-            fl_rectf(b.clip_box.x, b.clip_box.y,
-                     b.clip_box.width, b.clip_box.height);
-        }
+    if (color.alpha > 0) {
+        fl_color(color.red, color.green, color.blue);
+        fl_rectf(static_cast<int>(layer.clip_box.x),
+                 static_cast<int>(layer.clip_box.y),
+                 static_cast<int>(layer.clip_box.width),
+                 static_cast<int>(layer.clip_box.height));
     }
+}
+
+void HtmlWidget::draw_image(litehtml::uint_ptr /*hdc*/,
+                             const litehtml::background_layer& /*layer*/,
+                             const std::string& /*url*/,
+                             const std::string& /*base_url*/) {
+    // Image drawing not implemented for Bible text
+}
+
+void HtmlWidget::draw_linear_gradient(litehtml::uint_ptr /*hdc*/,
+                                       const litehtml::background_layer& /*layer*/,
+                                       const litehtml::background_layer::linear_gradient& /*gradient*/) {
+    // Gradient drawing not implemented
+}
+
+void HtmlWidget::draw_radial_gradient(litehtml::uint_ptr /*hdc*/,
+                                       const litehtml::background_layer& /*layer*/,
+                                       const litehtml::background_layer::radial_gradient& /*gradient*/) {
+    // Gradient drawing not implemented
+}
+
+void HtmlWidget::draw_conic_gradient(litehtml::uint_ptr /*hdc*/,
+                                      const litehtml::background_layer& /*layer*/,
+                                      const litehtml::background_layer::conic_gradient& /*gradient*/) {
+    // Gradient drawing not implemented
 }
 
 void HtmlWidget::draw_borders(litehtml::uint_ptr hdc,
@@ -398,10 +428,10 @@ void HtmlWidget::draw_borders(litehtml::uint_ptr hdc,
         }
     };
 
-    int x = draw_pos.x;
-    int y = draw_pos.y;
-    int w = draw_pos.width;
-    int h = draw_pos.height;
+    int x = static_cast<int>(draw_pos.x);
+    int y = static_cast<int>(draw_pos.y);
+    int w = static_cast<int>(draw_pos.width);
+    int h = static_cast<int>(draw_pos.height);
 
     drawSide(borders.top, x, y, x + w, y);
     drawSide(borders.bottom, x, y + h, x + w, y + h);
@@ -427,6 +457,11 @@ void HtmlWidget::on_anchor_click(const char* url,
     if (url && linkCallback_) {
         linkCallback_(url);
     }
+}
+
+void HtmlWidget::on_mouse_event(const litehtml::element::ptr& /*el*/,
+                                 litehtml::mouse_event /*event*/) {
+    // Mouse event handling not needed beyond what handle() provides
 }
 
 void HtmlWidget::set_cursor(const char* cursor) {
@@ -477,9 +512,11 @@ void HtmlWidget::import_css(litehtml::string& /*text*/,
 
 void HtmlWidget::set_clip(const litehtml::position& pos,
                            const litehtml::border_radiuses& /*bdr_radius*/) {
-    ClipRect cr{pos.x, pos.y, pos.width, pos.height};
+    ClipRect cr{static_cast<int>(pos.x), static_cast<int>(pos.y),
+                static_cast<int>(pos.width), static_cast<int>(pos.height)};
     clipStack_.push_back(cr);
-    fl_push_clip(pos.x, pos.y, pos.width, pos.height);
+    fl_push_clip(static_cast<int>(pos.x), static_cast<int>(pos.y),
+                 static_cast<int>(pos.width), static_cast<int>(pos.height));
 }
 
 void HtmlWidget::del_clip() {
@@ -489,7 +526,7 @@ void HtmlWidget::del_clip() {
     }
 }
 
-void HtmlWidget::get_client_rect(litehtml::position& client) const {
+void HtmlWidget::get_viewport(litehtml::position& client) const {
     int sbW = scrollbar_->visible() ? 16 : 0;
     client.x = x();
     client.y = y();
