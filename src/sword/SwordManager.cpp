@@ -761,7 +761,7 @@ std::string SwordManager::postProcessHtml(const std::string& html) const {
     // 2. Strip remaining <small><em class="strongs/morph"> blocks not preceded by a word.
     {
         std::regex remainingSmallRe(smallEmBlock, std::regex::icase);
-        result = std::regex_replace(result, remainingSmallRe, std::string(""));
+        result = std::regex_replace(result, remainingSmallRe, std::string(" "));
     }
 
     // 3. Handle passagestudy.jsp Strong's anchor links outside <small> blocks.
@@ -784,7 +784,7 @@ std::string SwordManager::postProcessHtml(const std::string& html) const {
             bool allDigits = !text.empty();
             for (auto c : text)
                 if (!std::isdigit(static_cast<unsigned char>(c))) { allDigits = false; break; }
-            if (allDigits) return "";
+            if (allDigits) return " ";
 
             return R"(<span class="w" data-strong=")" + strong + "\">" + text + "</span>";
         });
@@ -795,7 +795,7 @@ std::string SwordManager::postProcessHtml(const std::string& html) const {
         std::regex aMorphPassageRe(
             R"(<a\b[^>]*href="passagestudy\.jsp\?[^"]*showMorph[^"]*"[^>]*>[^<]*</a>)",
             std::regex::icase);
-        result = std::regex_replace(result, aMorphPassageRe, std::string(""));
+        result = std::regex_replace(result, aMorphPassageRe, std::string(" "));
     }
 
     // 5. Transform OSIS <w> elements to hoverable spans (some SWORD configs
@@ -873,7 +873,7 @@ std::string SwordManager::postProcessHtml(const std::string& html) const {
             }
 
             if (textIsNumber || text.empty())
-                return "";
+                return " ";
 
             return R"(<span class="w" data-strong=")" + strong + "\">" + text + "</span>";
         });
@@ -883,25 +883,31 @@ std::string SwordManager::postProcessHtml(const std::string& html) const {
     {
         std::regex aMorphRe(R"(<a\b[^>]*href="morph:[^"]*"[^>]*>[^<]*</a>)",
                             std::regex::icase);
-        result = std::regex_replace(result, aMorphRe, std::string(""));
+        result = std::regex_replace(result, aMorphRe, std::string(" "));
     }
 
     // 8. Strip GBF-style inline Strong's markers: <H0776>, <G123>, or <0776>.
     {
         std::regex gbfStrongsRe(R"(<[HGhg]?\d{1,6}>)");
-        result = std::regex_replace(result, gbfStrongsRe, std::string(""));
+        result = std::regex_replace(result, gbfStrongsRe, std::string(" "));
     }
 
     // 9. Strip HTML-escaped GBF Strong's markers: &lt;H0776&gt; or &lt;0776&gt;.
     {
         std::regex escapedRe(R"(&lt;[HGhg]?\d{1,6}&gt;)");
-        result = std::regex_replace(result, escapedRe, std::string(""));
+        result = std::regex_replace(result, escapedRe, std::string(" "));
     }
 
     // 10. Strip GBF morph codes in parentheses, e.g. (8804) or (8804b).
     {
         std::regex gbfMorphRe(R"(\(\d{4,5}[A-Za-z]?\))");
-        result = std::regex_replace(result, gbfMorphRe, std::string(""));
+        result = std::regex_replace(result, gbfMorphRe, std::string(" "));
+    }
+
+    // 11. Collapse multiple consecutive spaces into a single space.
+    {
+        std::regex multiSpaceRe(R"( {2,})");
+        result = std::regex_replace(result, multiSpaceRe, std::string(" "));
     }
 
     return result;
