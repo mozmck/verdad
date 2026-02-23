@@ -674,11 +674,136 @@ std::string SwordManager::postProcessHtml(const std::string& html) const {
 
     std::string result = html;
 
-    // 1. Transform OSIS <w> elements to hoverable spans.
+    // --- SWORD XHTML output handling ---
+    // SWORD's XHTML filters (OSISXHTML, GBFXHTML, ThMLXHTML) output Strong's
+    // numbers and morph codes as:
+    //   <small><em class="strongs">&lt;<a class="strongs"
+    //     href="passagestudy.jsp?action=showStrongs&type=Hebrew&value=7225"
+    //     class="strongs">7225</a>&gt;</em></small>
+    //   <small><em class="morph">(<a class="morph"
+    //     href="passagestudy.jsp?action=showMorph&type=...&value=V-AAI-3S"
+    //     class="morph">V-AAI-3S</a>)</em></small>
+    //
+    // These appear AFTER the word text they annotate, e.g.:
+    //   created<small><em class="strongs">...</em></small>
+    //          <small><em class="morph">...</em></small>
+
+    // Helper regex pattern for one <small><em ...>...</em></small> block.
+    // Content may include one <a>...</a> element surrounded by text/entities.
+    static const std::string smallEmBlock =
+        R"(<small>\s*<em\b[^>]*>[^<]*(?:<a\b[^>]*>[^<]*</a>[^<]*)?</em>\s*</small>)";
+
+    // 1. Transform word + SWORD Strong's/morph blocks into hoverable <span>.
+    //    Matches a word followed by one or more <small><em> blocks.
+    {
+        std::regex wordBlockRe(
+            R"(([\w'\-]+))"        // Group 1: the word (including hyphens)
+            R"((\s*(?:)" + smallEmBlock + R"(\s*)+))",  // Group 2: block(s)
+            std::regex::icase);
+
+        // Regex to extract type and value from passagestudy.jsp URLs
+        // type may be URL-encoded (e.g. robinson%3AV-QAL), so use [^&]+ not \w+
+        static const std::regex typeValueRe(
+            R"(type=([^&]+)&[^"]*value=([^"&]+))", std::regex::icase);
+
+        result = replaceAll(result, wordBlockRe,
+            [](const std::smatch& m) -> std::string {
+            std::string word = m[1].str();
+            std::string blocks = m[2].str();
+
+            // Classify each <small><em> block as Strong's or morph
+            std::string strongNums;
+            std::string morphCode;
+
+            // Split blocks by finding each <small>...</small> segment
+            std::regex oneBlockRe(
+                R"(<small>\s*<em\b([^>]*)>[^<]*(?:<a\b[^>]*>[^<]*</a>[^<]*)?</em>\s*</small>)",
+                std::regex::icase);
+            auto bit = std::sregex_iterator(blocks.begin(), blocks.end(),
+                                            oneBlockRe);
+            for (; bit != std::sregex_iterator(); ++bit) {
+                std::string emAttrs = (*bit)[1].str();
+                std::string blockStr = (*bit)[0].str();
+                bool isStrongs = emAttrs.find("strongs") != std::string::npos;
+                bool isMorph   = emAttrs.find("morph")   != std::string::npos;
+
+                // Extract type and value from URL within this block
+                std::smatch tv;
+                if (std::regex_search(blockStr, tv, typeValueRe)) {
+                    if (isStrongs) {
+                        std::string type  = tv[1].str();
+                        std::string value = tv[2].str();
+                        // Map type name to H/G prefix
+                        std::string prefix;
+                        if (type.find("ebrew") != std::string::npos) prefix = "H";
+                        else if (type.find("reek") != std::string::npos) prefix = "G";
+                        if (!strongNums.empty()) strongNums += '|';
+                        strongNums += prefix + value;
+                    } else if (isMorph) {
+                        std::string value = tv[2].str();
+                        if (!morphCode.empty()) morphCode += ' ';
+                        morphCode += value;
+                    }
+                }
+            }
+
+            if (strongNums.empty() && morphCode.empty())
+                return word;
+
+            std::string span = R"(<span class="w")";
+            if (!strongNums.empty()) span += R"( data-strong=")" + strongNums + '"';
+            if (!morphCode.empty())  span += R"( data-morph=")"  + morphCode  + '"';
+            span += '>' + word + "</span>";
+            return span;
+        });
+    }
+
+    // 2. Strip remaining <small><em class="strongs/morph"> blocks not preceded by a word.
+    {
+        std::regex remainingSmallRe(smallEmBlock, std::regex::icase);
+        result = std::regex_replace(result, remainingSmallRe, std::string(""));
+    }
+
+    // 3. Handle passagestudy.jsp Strong's anchor links outside <small> blocks.
+    //    Strip the number text; wrap word text with data-strong attribute.
+    {
+        std::regex aPassageStudyRe(
+            R"re(<a\b[^>]*href="passagestudy\.jsp\?[^"]*showStrongs[^"]*type=(\w+)[^"]*value=([^"&]+)"[^>]*>([^<]*)</a>)re",
+            std::regex::icase);
+        result = replaceAll(result, aPassageStudyRe,
+            [](const std::smatch& m) -> std::string {
+            std::string type  = m[1].str();
+            std::string value = m[2].str();
+            std::string text  = m[3].str();
+            std::string prefix;
+            if (type.find("ebrew") != std::string::npos) prefix = "H";
+            else if (type.find("reek") != std::string::npos) prefix = "G";
+            std::string strong = prefix + value;
+
+            // If text is all digits (a Strong's number) → suppress it
+            bool allDigits = !text.empty();
+            for (auto c : text)
+                if (!std::isdigit(static_cast<unsigned char>(c))) { allDigits = false; break; }
+            if (allDigits) return "";
+
+            return R"(<span class="w" data-strong=")" + strong + "\">" + text + "</span>";
+        });
+    }
+
+    // 4. Strip passagestudy.jsp morph anchor links.
+    {
+        std::regex aMorphPassageRe(
+            R"(<a\b[^>]*href="passagestudy\.jsp\?[^"]*showMorph[^"]*"[^>]*>[^<]*</a>)",
+            std::regex::icase);
+        result = std::regex_replace(result, aMorphPassageRe, std::string(""));
+    }
+
+    // 5. Transform OSIS <w> elements to hoverable spans (some SWORD configs
+    //    may preserve these).
     //    <w lemma="strong:H7225" morph="x-Robinson:Ncfsa">word</w>
     //    → <span class="w" data-strong="H7225" data-morph="Ncfsa">word</span>
     {
-        std::regex wRe(R"(<w\b([^>]*)>([^<]*)</w>)", std::regex::icase);
+        std::regex wRe(R"(<w\b([^>]*)>([\s\S]*?)</w>)", std::regex::icase);
         result = replaceAll(result, wRe, [](const std::smatch& m) -> std::string {
             std::string attrs   = m[1].str();
             std::string content = m[2].str();
@@ -694,7 +819,6 @@ std::string SwordManager::postProcessHtml(const std::string& html) const {
                 for (; sit != std::sregex_iterator(); ++sit) {
                     std::string s = (*sit)[1].str();
                     if (!s.empty()) {
-                        // Normalize prefix to uppercase
                         if (std::islower(static_cast<unsigned char>(s[0])))
                             s[0] = static_cast<char>(std::toupper(static_cast<unsigned char>(s[0])));
                         if (!strong.empty()) strong += '|';
@@ -727,8 +851,8 @@ std::string SwordManager::postProcessHtml(const std::string& html) const {
         });
     }
 
-    // 2. Transform anchor Strong's links.
-    //    If anchor text is a Strong's number → strip it entirely (don't show number).
+    // 6. Transform anchor Strong's links (strongs: scheme).
+    //    If anchor text is a Strong's number → strip it entirely.
     //    If anchor text is a word → wrap it in <span class="w" data-strong="...">.
     {
         std::regex aStrongsRe(
@@ -738,11 +862,9 @@ std::string SwordManager::postProcessHtml(const std::string& html) const {
             std::string strong = m[1].str();
             std::string text   = m[2].str();
 
-            // Normalize prefix to uppercase
             if (!strong.empty() && std::islower(static_cast<unsigned char>(strong[0])))
                 strong[0] = static_cast<char>(std::toupper(static_cast<unsigned char>(strong[0])));
 
-            // If text is a Strong's number (optional letter + digits) → strip it
             bool textIsNumber = !text.empty();
             for (size_t i = 0; i < text.size(); ++i) {
                 unsigned char c = static_cast<unsigned char>(text[i]);
@@ -751,33 +873,32 @@ std::string SwordManager::postProcessHtml(const std::string& html) const {
             }
 
             if (textIsNumber || text.empty())
-                return "";  // Suppress the inline Strong's number
+                return "";
 
             return R"(<span class="w" data-strong=")" + strong + "\">" + text + "</span>";
         });
     }
 
-    // 3. Strip anchor morph links (morph code shown as text).
+    // 7. Strip anchor morph links (morph: scheme).
     {
         std::regex aMorphRe(R"(<a\b[^>]*href="morph:[^"]*"[^>]*>[^<]*</a>)",
                             std::regex::icase);
         result = std::regex_replace(result, aMorphRe, std::string(""));
     }
 
-    // 4. Strip GBF-style inline Strong's markers: <H0776> or <G123>.
+    // 8. Strip GBF-style inline Strong's markers: <H0776>, <G123>, or <0776>.
     {
-        std::regex gbfStrongsRe(R"(<[HGhg]\d{1,6}>)");
+        std::regex gbfStrongsRe(R"(<[HGhg]?\d{1,6}>)");
         result = std::regex_replace(result, gbfStrongsRe, std::string(""));
     }
 
-    // 5. Strip HTML-escaped GBF Strong's markers: &lt;H0776&gt; or &lt;0776&gt;.
+    // 9. Strip HTML-escaped GBF Strong's markers: &lt;H0776&gt; or &lt;0776&gt;.
     {
         std::regex escapedRe(R"(&lt;[HGhg]?\d{1,6}&gt;)");
         result = std::regex_replace(result, escapedRe, std::string(""));
     }
 
-    // 6. Strip GBF morph codes in parentheses, e.g. (8804) or (8804b) —
-    //    typically 4-5 digits with an optional trailing letter.
+    // 10. Strip GBF morph codes in parentheses, e.g. (8804) or (8804b).
     {
         std::regex gbfMorphRe(R"(\(\d{4,5}[A-Za-z]?\))");
         result = std::regex_replace(result, gbfMorphRe, std::string(""));
