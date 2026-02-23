@@ -9,6 +9,7 @@
 #include <swbuf.h>
 
 #include <algorithm>
+#include <regex>
 #include <sstream>
 #include <cstring>
 #include <cctype>
@@ -146,6 +147,7 @@ std::string SwordManager::getChapterText(const std::string& moduleName,
         std::string verseText = std::string(mod->renderText().c_str());
 
         if (!verseText.empty()) {
+            verseText = postProcessHtml(verseText);
             html << "<" << verseTag << " class=\"verse\" id=\"v" << verse << "\">";
             html << "<sup class=\"versenum\">" << verse << "</sup> ";
             html << verseText;
@@ -218,7 +220,7 @@ std::string SwordManager::getParallelText(
                 mod->setKey(ref.c_str());
                 if (!mod->popError()) {
                     html << "<sup class=\"versenum\">" << v << "</sup> ";
-                    html << mod->renderText();
+                    html << postProcessHtml(std::string(mod->renderText().c_str()));
                 }
             }
             html << "</td>\n";
@@ -648,6 +650,140 @@ void SwordManager::configureFilters(sword::SWModule* mod) {
     // Filters are configured globally in the manager
     // This method can be used for per-module filter adjustments if needed
     (void)mod;
+}
+
+std::string SwordManager::postProcessHtml(const std::string& html) const {
+    // Helper: replace all regex matches using a formatter function
+    static const auto replaceAll = [](
+        const std::string& str,
+        const std::regex& re,
+        std::function<std::string(const std::smatch&)> fmt) -> std::string {
+        std::string out;
+        std::sregex_iterator it(str.begin(), str.end(), re);
+        std::sregex_iterator end;
+        size_t lastEnd = 0;
+        for (; it != end; ++it) {
+            const auto& m = *it;
+            out += str.substr(lastEnd, static_cast<size_t>(m.position()) - lastEnd);
+            out += fmt(m);
+            lastEnd = static_cast<size_t>(m.position()) + static_cast<size_t>(m.length());
+        }
+        out += str.substr(lastEnd);
+        return out;
+    };
+
+    std::string result = html;
+
+    // 1. Transform OSIS <w> elements to hoverable spans.
+    //    <w lemma="strong:H7225" morph="x-Robinson:Ncfsa">word</w>
+    //    → <span class="w" data-strong="H7225" data-morph="Ncfsa">word</span>
+    {
+        std::regex wRe(R"(<w\b([^>]*)>([^<]*)</w>)", std::regex::icase);
+        result = replaceAll(result, wRe, [](const std::smatch& m) -> std::string {
+            std::string attrs   = m[1].str();
+            std::string content = m[2].str();
+
+            // Extract all strong numbers from lemma attribute (may be space-separated)
+            std::string strong;
+            std::regex lemmaRe(R"re(lemma="([^"]+)")re");
+            std::smatch lm;
+            if (std::regex_search(attrs, lm, lemmaRe)) {
+                std::string lemmaVal = lm[1].str();
+                std::regex strongNumRe(R"(strong:([A-Za-z]?\d+[a-z]?))");
+                auto sit = std::sregex_iterator(lemmaVal.begin(), lemmaVal.end(), strongNumRe);
+                for (; sit != std::sregex_iterator(); ++sit) {
+                    std::string s = (*sit)[1].str();
+                    if (!s.empty()) {
+                        // Normalize prefix to uppercase
+                        if (std::islower(static_cast<unsigned char>(s[0])))
+                            s[0] = static_cast<char>(std::toupper(static_cast<unsigned char>(s[0])));
+                        if (!strong.empty()) strong += '|';
+                        strong += s;
+                    }
+                }
+            }
+
+            // Extract morph code (take the part after the last ':' prefix)
+            std::string morph;
+            std::regex morphRe(R"re(morph="([^"]+)")re");
+            std::smatch mm;
+            if (std::regex_search(attrs, mm, morphRe)) {
+                morph = mm[1].str();
+                auto colonPos = morph.find(':');
+                if (colonPos != std::string::npos &&
+                    morph.substr(0, colonPos).find(' ') == std::string::npos) {
+                    morph = morph.substr(colonPos + 1);
+                }
+            }
+
+            if (strong.empty() && morph.empty())
+                return content;
+
+            std::string span = R"(<span class="w")";
+            if (!strong.empty()) span += R"( data-strong=")" + strong + '"';
+            if (!morph.empty())  span += R"( data-morph=")"  + morph  + '"';
+            span += '>' + content + "</span>";
+            return span;
+        });
+    }
+
+    // 2. Transform anchor Strong's links.
+    //    If anchor text is a Strong's number → strip it entirely (don't show number).
+    //    If anchor text is a word → wrap it in <span class="w" data-strong="...">.
+    {
+        std::regex aStrongsRe(
+            R"re(<a\b[^>]*href="strongs:([A-Za-z]?\d+[a-z]?)"[^>]*>([^<]*)</a>)re",
+            std::regex::icase);
+        result = replaceAll(result, aStrongsRe, [](const std::smatch& m) -> std::string {
+            std::string strong = m[1].str();
+            std::string text   = m[2].str();
+
+            // Normalize prefix to uppercase
+            if (!strong.empty() && std::islower(static_cast<unsigned char>(strong[0])))
+                strong[0] = static_cast<char>(std::toupper(static_cast<unsigned char>(strong[0])));
+
+            // If text is a Strong's number (optional letter + digits) → strip it
+            bool textIsNumber = !text.empty();
+            for (size_t i = 0; i < text.size(); ++i) {
+                unsigned char c = static_cast<unsigned char>(text[i]);
+                if (i == 0 && std::isalpha(c)) continue;
+                if (!std::isdigit(c)) { textIsNumber = false; break; }
+            }
+
+            if (textIsNumber || text.empty())
+                return "";  // Suppress the inline Strong's number
+
+            return R"(<span class="w" data-strong=")" + strong + "\">" + text + "</span>";
+        });
+    }
+
+    // 3. Strip anchor morph links (morph code shown as text).
+    {
+        std::regex aMorphRe(R"(<a\b[^>]*href="morph:[^"]*"[^>]*>[^<]*</a>)",
+                            std::regex::icase);
+        result = std::regex_replace(result, aMorphRe, std::string(""));
+    }
+
+    // 4. Strip GBF-style inline Strong's markers: <H0776> or <G123>.
+    {
+        std::regex gbfStrongsRe(R"(<[HGhg]\d{1,6}>)");
+        result = std::regex_replace(result, gbfStrongsRe, std::string(""));
+    }
+
+    // 5. Strip HTML-escaped GBF Strong's markers: &lt;H0776&gt; or &lt;0776&gt;.
+    {
+        std::regex escapedRe(R"(&lt;[HGhg]?\d{1,6}&gt;)");
+        result = std::regex_replace(result, escapedRe, std::string(""));
+    }
+
+    // 6. Strip GBF morph codes in parentheses, e.g. (8804) or (8804b) —
+    //    typically 4-5 digits with an optional trailing letter.
+    {
+        std::regex gbfMorphRe(R"(\(\d{4,5}[A-Za-z]?\))");
+        result = std::regex_replace(result, gbfMorphRe, std::string(""));
+    }
+
+    return result;
 }
 
 ModuleInfo SwordManager::buildModuleInfo(sword::SWModule* mod) const {

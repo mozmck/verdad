@@ -86,74 +86,75 @@ void MainWindow::showDictionary(const std::string& key) {
 }
 
 void MainWindow::showWordInfo(const std::string& word, const std::string& href,
+                               const std::string& strong, const std::string& morph,
                                int screenX, int screenY) {
-    if (!tooltipWindow_) return;
-
-    // Get word info from SWORD
-    std::string currentModule = biblePane_ ? biblePane_->currentModule() : "";
-    std::string currentRef = "";
-    if (biblePane_) {
-        currentRef = biblePane_->currentBook() + " "
-                     + std::to_string(biblePane_->currentChapter());
+    // Resolve strong number: prefer the data attribute, fall back to href parsing
+    std::string strongNum = strong;
+    if (strongNum.empty() && href.find("strongs:") == 0) {
+        strongNum = href.substr(8);
+    } else if (strongNum.empty() && href.find("strong:") == 0) {
+        strongNum = href.substr(7);
     }
 
-    // Build tooltip HTML
+    // Resolve morph code: prefer the data attribute, fall back to href parsing
+    std::string morphCode = morph;
+    if (morphCode.empty() && href.find("morph:") == 0) {
+        morphCode = href.substr(6);
+    }
+
+    if (strongNum.empty() && morphCode.empty()) return;
+
+    // Build Mag HTML (shown in left-pane preview and optionally as tooltip)
     std::ostringstream html;
-    html << "<div class=\"tooltip\">";
-
-    // Try to extract Strong's number from href
-    std::string strongsNum;
-    if (href.find("strongs:") == 0) {
-        strongsNum = href.substr(8);
-    } else if (href.find("strong:") == 0) {
-        strongsNum = href.substr(7);
-    }
-
-    if (!strongsNum.empty()) {
-        html << "<span class=\"strongs-label\">Strong's: " << strongsNum << "</span><br/>";
-
-        std::string def = app_->swordManager().getStrongsDefinition(strongsNum);
-        if (!def.empty()) {
-            html << "<span class=\"definition\">" << def << "</span><br/>";
-        }
-    }
+    html << "<div class=\"mag\">";
 
     if (!word.empty()) {
-        // Try to get word info
-        WordInfo info = app_->swordManager().getWordInfo(
-            currentModule, currentRef, word);
+        html << "<div class=\"mag-word\">" << word << "</div>";
+    }
 
-        if (!info.strongsNumber.empty() && strongsNum.empty()) {
-            html << "<span class=\"strongs-label\">Strong's: "
-                 << info.strongsNumber << "</span><br/>";
-            if (!info.strongsDef.empty()) {
-                html << "<span class=\"definition\">"
-                     << info.strongsDef << "</span><br/>";
+    // Strong's: handle pipe-separated multiple numbers (e.g. "H7225|H1254")
+    if (!strongNum.empty()) {
+        std::istringstream ss(strongNum);
+        std::string tok;
+        while (std::getline(ss, tok, '|')) {
+            if (tok.empty()) continue;
+            html << "<div class=\"mag-strongs\"><b>Strong's " << tok << "</b></div>";
+            std::string def = app_->swordManager().getStrongsDefinition(tok);
+            if (!def.empty()) {
+                html << "<div class=\"mag-def\">" << def << "</div>";
             }
         }
+    }
 
-        if (!info.morphCode.empty()) {
-            html << "<span class=\"morph-label\">Morph: "
-                 << info.morphCode << "</span><br/>";
-            if (!info.morphDef.empty()) {
-                html << "<span class=\"definition\">"
-                     << info.morphDef << "</span>";
-            }
+    // Morphology
+    if (!morphCode.empty()) {
+        html << "<div class=\"mag-morph\"><b>Morph: " << morphCode << "</b></div>";
+        std::string def = app_->swordManager().getMorphDefinition(morphCode);
+        if (!def.empty()) {
+            html << "<div class=\"mag-def\">" << def << "</div>";
         }
     }
 
     html << "</div>";
+    std::string magHtml = html.str();
 
-    std::string tooltipHtml = html.str();
-    if (tooltipHtml.find("class=\"definition\"") != std::string::npos ||
-        tooltipHtml.find("class=\"strongs-label\"") != std::string::npos) {
-        tooltipWindow_->showAt(screenX + 15, screenY + 15, tooltipHtml);
+    // Show in left-pane Mag viewer (bottom preview area)
+    if (leftPane_) {
+        leftPane_->setPreviewText(magHtml);
+    }
+
+    // Also show as tooltip
+    if (tooltipWindow_) {
+        tooltipWindow_->showAt(screenX + 15, screenY + 15, magHtml);
     }
 }
 
 void MainWindow::hideWordInfo() {
     if (tooltipWindow_) {
         tooltipWindow_->hideTooltip();
+    }
+    if (leftPane_) {
+        leftPane_->setPreviewText("");
     }
 }
 

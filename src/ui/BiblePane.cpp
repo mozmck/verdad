@@ -56,8 +56,10 @@ BiblePane::BiblePane(VerdadApp* app, int X, int Y, int W, int H)
     defaultTab.htmlWidget->setLinkCallback(
         [this](const std::string& url) { onLinkClicked(url); });
     defaultTab.htmlWidget->setHoverCallback(
-        [this](const std::string& word, const std::string& href, int x, int y) {
-            onWordHover(word, href, x, y);
+        [this](const std::string& word, const std::string& href,
+               const std::string& strong, const std::string& morph,
+               int x, int y) {
+            onWordHover(word, href, strong, morph, x, y);
         });
     defaultTab.htmlWidget->setContextCallback(
         [this](const std::string& word, const std::string& href, int x, int y) {
@@ -166,8 +168,10 @@ void BiblePane::addTab(const std::string& moduleName) {
     newTab.htmlWidget->setLinkCallback(
         [this](const std::string& url) { onLinkClicked(url); });
     newTab.htmlWidget->setHoverCallback(
-        [this](const std::string& word, const std::string& href, int x, int y) {
-            onWordHover(word, href, x, y);
+        [this](const std::string& word, const std::string& href,
+               const std::string& strong, const std::string& morph,
+               int x, int y) {
+            onWordHover(word, href, strong, morph, x, y);
         });
     newTab.htmlWidget->setContextCallback(
         [this](const std::string& word, const std::string& href, int x, int y) {
@@ -577,10 +581,11 @@ void BiblePane::onLinkClicked(const std::string& url) {
 }
 
 void BiblePane::onWordHover(const std::string& word, const std::string& href,
+                             const std::string& strong, const std::string& morph,
                              int x, int y) {
     if (app_->mainWindow()) {
-        if (!word.empty() || !href.empty()) {
-            app_->mainWindow()->showWordInfo(word, href, x, y);
+        if (!strong.empty() || !morph.empty() || !href.empty()) {
+            app_->mainWindow()->showWordInfo(word, href, strong, morph, x, y);
         } else {
             app_->mainWindow()->hideWordInfo();
         }

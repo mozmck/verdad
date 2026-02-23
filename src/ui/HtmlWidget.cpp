@@ -211,31 +211,43 @@ int HtmlWidget::handle(int event) {
                     Fl::event_x() - x(), Fl::event_y() - y() + scrollY_,
                     [](const std::shared_ptr<litehtml::render_item>&) { return true; });
 
-                std::string word, href;
+                std::string word, href, strong, morph;
                 if (el) {
-                    auto parent = el->parent();
-                    if (parent) {
-                        auto attrHref = parent->get_attr("href");
-                        if (attrHref) href = attrHref;
+                    // Get text content of the element under the cursor
+                    litehtml::string elText;
+                    el->get_text(elText);
+                    word = elText;
 
-                        auto attrClass = parent->get_attr("class");
-                        if (attrClass) {
-                            std::string cls(attrClass);
-                            if (cls.find("strongs") != std::string::npos ||
-                                cls.find("lemma") != std::string::npos) {
-                                // This is a Strong's annotated word
-                            }
+                    // Walk up parent chain (max 5 levels) to find data-strong,
+                    // data-morph, and href attributes
+                    auto cur = el;
+                    for (int depth = 0; cur && depth < 5; ++depth) {
+                        if (href.empty()) {
+                            auto h = cur->get_attr("href");
+                            if (h && *h) href = h;
                         }
+                        if (strong.empty()) {
+                            auto s = cur->get_attr("data-strong");
+                            if (s && *s) strong = s;
+                        }
+                        if (morph.empty()) {
+                            auto m = cur->get_attr("data-morph");
+                            if (m && *m) morph = m;
+                        }
+                        if (!strong.empty() && !morph.empty() && !href.empty())
+                            break;
+                        cur = cur->parent();
                     }
                 }
 
-                if (href != lastHoverHref_ || word != lastHoverWord_) {
-                    lastHoverWord_ = word;
-                    lastHoverHref_ = href;
-                    if (!href.empty() || !word.empty()) {
-                        hoverCallback_(word, href,
-                                       Fl::event_x(), Fl::event_y());
-                    }
+                if (href != lastHoverHref_ || word != lastHoverWord_ ||
+                    strong != lastHoverStrong_ || morph != lastHoverMorph_) {
+                    lastHoverWord_   = word;
+                    lastHoverHref_   = href;
+                    lastHoverStrong_ = strong;
+                    lastHoverMorph_  = morph;
+                    hoverCallback_(word, href, strong, morph,
+                                   Fl::event_x(), Fl::event_y());
                 }
             }
         }

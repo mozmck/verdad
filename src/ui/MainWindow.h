@@ -33,8 +33,10 @@ public:
     /// Show dictionary entry
     void showDictionary(const std::string& key);
 
-    /// Show tooltip with word info at screen position
+    /// Show Mag viewer info in the left pane preview and an optional tooltip,
+    /// driven by strong/morph metadata extracted on hover.
     void showWordInfo(const std::string& word, const std::string& href,
+                      const std::string& strong, const std::string& morph,
                       int screenX, int screenY);
 
     /// Hide the word info tooltip

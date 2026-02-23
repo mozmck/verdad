@@ -137,6 +137,7 @@ private:
     // HTML widget callbacks
     void onLinkClicked(const std::string& url);
     void onWordHover(const std::string& word, const std::string& href,
+                     const std::string& strong, const std::string& morph,
                      int x, int y);
     void onContextMenu(const std::string& word, const std::string& href,
                        int x, int y);

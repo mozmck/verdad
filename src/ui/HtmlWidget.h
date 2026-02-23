@@ -58,6 +58,8 @@ public:
     using LinkCallback = std::function<void(const std::string& url)>;
     using HoverCallback = std::function<void(const std::string& word,
                                               const std::string& href,
+                                              const std::string& strong,
+                                              const std::string& morph,
                                               int x, int y)>;
     using ContextCallback = std::function<void(const std::string& word,
                                                 const std::string& href,
@@ -164,6 +166,8 @@ private:
     // Mouse tracking
     std::string lastHoverWord_;
     std::string lastHoverHref_;
+    std::string lastHoverStrong_;
+    std::string lastHoverMorph_;
 
     // Clip stack
     struct ClipRect {

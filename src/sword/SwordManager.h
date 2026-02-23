@@ -183,6 +183,10 @@ private:
 
     /// Build ModuleInfo from a SWORD module
     ModuleInfo buildModuleInfo(sword::SWModule* mod) const;
+
+    /// Post-process SWORD XHTML output: strip visible Strong's/morph codes and
+    /// wrap words with data-strong/data-morph attributes for hover (Mag) support.
+    std::string postProcessHtml(const std::string& html) const;
 };
 
 } // namespace verdad
