@@ -12,8 +12,21 @@
 #include <sstream>
 #include <cstring>
 #include <cctype>
+#include <regex>
 
 namespace verdad {
+
+// Strip Strong's number annotations from rendered text.
+// SWORD's XHTML filter emits these as visible text like &lt;0430&gt; or <0430>.
+static std::string stripStrongsNumbers(const std::string& text) {
+    // Remove HTML-entity-encoded Strong's: &lt;H0430&gt; or &lt;0430&gt;
+    static const std::regex entityRe(R"(\s*&lt;[HGhg]?\d+&gt;)");
+    std::string result = std::regex_replace(text, entityRe, "");
+    // Remove literal angle-bracket Strong's: <H0430> or <0430>
+    static const std::regex literalRe(R"(\s*<[HGhg]?\d+>)");
+    result = std::regex_replace(result, literalRe, "");
+    return result;
+}
 
 SwordManager::SwordManager() = default;
 SwordManager::~SwordManager() = default;
@@ -102,7 +115,7 @@ std::string SwordManager::getVerseText(const std::string& moduleName,
     if (!mod) return "<p><i>Module not found: " + moduleName + "</i></p>";
 
     mod->setKey(key.c_str());
-    std::string text = std::string(mod->renderText().c_str());
+    std::string text = stripStrongsNumbers(mod->renderText().c_str());
 
     if (text.empty()) {
         return "<p><i>No text available for " + key + "</i></p>";
@@ -143,7 +156,7 @@ std::string SwordManager::getChapterText(const std::string& moduleName,
 
     while (!mod->popError() && vk->getChapter() == currentChapter) {
         int verse = vk->getVerse();
-        std::string verseText = std::string(mod->renderText().c_str());
+        std::string verseText = stripStrongsNumbers(mod->renderText().c_str());
 
         if (!verseText.empty()) {
             html << "<" << verseTag << " class=\"verse\" id=\"v" << verse << "\">";
@@ -218,7 +231,7 @@ std::string SwordManager::getParallelText(
                 mod->setKey(ref.c_str());
                 if (!mod->popError()) {
                     html << "<sup class=\"versenum\">" << v << "</sup> ";
-                    html << mod->renderText();
+                    html << stripStrongsNumbers(mod->renderText().c_str());
                 }
             }
             html << "</td>\n";

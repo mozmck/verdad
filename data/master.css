@@ -54,6 +54,7 @@ span.morph {
 
 /* Verse display - verse-per-line mode (default) */
 div.verse {
+    display: block;
     margin-bottom: 2px;
 }
 
