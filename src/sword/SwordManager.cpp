@@ -698,7 +698,7 @@ std::string SwordManager::postProcessHtml(const std::string& html) const {
     {
         std::regex wordBlockRe(
             R"(([\w'\-]+))"        // Group 1: the word (including hyphens)
-            R"((\s*(?:)" + smallEmBlock + R"(\s*)+))",  // Group 2: block(s)
+            R"(((?:\s*)" + smallEmBlock + R"()+))",  // Group 2: block(s)
             std::regex::icase);
 
         // Regex to extract type and value from passagestudy.jsp URLs
