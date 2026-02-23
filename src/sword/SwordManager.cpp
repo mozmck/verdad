@@ -166,7 +166,7 @@ std::string SwordManager::getParallelText(
     const std::string& book, int chapter,
     bool paragraphMode) {
 
-    (void)paragraphMode; // Parallel view uses table layout; mode not applicable
+    (void)paragraphMode; // Parallel view uses column layout; mode not applicable
     if (moduleNames.empty()) return "";
 
     std::lock_guard<std::mutex> lock(mutex_);
@@ -198,22 +198,37 @@ std::string SwordManager::getParallelText(
 
     if (verseCount == 0) verseCount = 31; // fallback
 
+    // Use div-based float layout for reliable column rendering in litehtml
+    int numCols = static_cast<int>(moduleNames.size());
+    int colWidth = 100 / numCols;
+    int lastColWidth = 100 - colWidth * (numCols - 1);
+
     std::ostringstream html;
-    html << "<table class=\"parallel\">\n";
+    html << "<div class=\"parallel\">\n";
 
     // Header row
-    html << "<tr>\n";
-    for (const auto& modName : moduleNames) {
-        html << "<th>" << modName << "</th>\n";
+    html << "<div class=\"parallel-row\">\n";
+    for (size_t i = 0; i < moduleNames.size(); ++i) {
+        bool isLast = (i == moduleNames.size() - 1);
+        int w = isLast ? lastColWidth : colWidth;
+        const char* cellClass = isLast ? "parallel-header-last" : "parallel-header";
+        html << "<div style=\"float: left; width: " << w << "%;\">"
+             << "<div class=\"" << cellClass << "\">" << moduleNames[i] << "</div>"
+             << "</div>\n";
     }
-    html << "</tr>\n";
+    html << "<div style=\"clear: both;\"></div>\n";
+    html << "</div>\n";
 
     // Verse rows
     for (int v = 1; v <= verseCount; ++v) {
-        html << "<tr>\n";
-        for (const auto& modName : moduleNames) {
-            sword::SWModule* mod = getModule(modName);
-            html << "<td>";
+        html << "<div class=\"parallel-row\">\n";
+        for (size_t i = 0; i < moduleNames.size(); ++i) {
+            bool isLast = (i == moduleNames.size() - 1);
+            int w = isLast ? lastColWidth : colWidth;
+            const char* cellClass = isLast ? "parallel-cell-last" : "parallel-cell";
+            sword::SWModule* mod = getModule(moduleNames[i]);
+            html << "<div style=\"float: left; width: " << w << "%;\">"
+                 << "<div class=\"" << cellClass << "\">";
             if (mod) {
                 std::string ref = book + " " + std::to_string(chapter)
                                   + ":" + std::to_string(v);
@@ -223,12 +238,13 @@ std::string SwordManager::getParallelText(
                     html << postProcessHtml(std::string(mod->renderText().c_str()));
                 }
             }
-            html << "</td>\n";
+            html << "</div></div>\n";
         }
-        html << "</tr>\n";
+        html << "<div style=\"clear: both;\"></div>\n";
+        html << "</div>\n";
     }
 
-    html << "</table>\n";
+    html << "</div>\n";
     return html.str();
 }
 
