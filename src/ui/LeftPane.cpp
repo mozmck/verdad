@@ -9,6 +9,7 @@
 
 #include <FL/Fl.H>
 #include <FL/fl_ask.H>
+#include <fstream>
 
 namespace verdad {
 
@@ -75,6 +76,15 @@ LeftPane::LeftPane(VerdadApp* app, int X, int Y, int W, int H)
     int previewY = tabY + tabH + padding;
     previewWidget_ = new HtmlWidget(X + padding, previewY,
                                      W - 2 * padding, previewH);
+
+    // Use the same stylesheet as other HTML panes so MAG markup renders correctly.
+    std::string cssFile = app_->getDataDir() + "/master.css";
+    std::ifstream cssStream(cssFile);
+    if (cssStream.is_open()) {
+        std::string css((std::istreambuf_iterator<char>(cssStream)),
+                         std::istreambuf_iterator<char>());
+        previewWidget_->setMasterCSS(css);
+    }
 
     end();
     resizable(tabs_);

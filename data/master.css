@@ -147,28 +147,41 @@ span.searchhit, .highlight {
     border-radius: 2px;
 }
 
-/* Tooltip styles */
-div.tooltip {
+/* MAG preview text rendered in the left pane (white background) */
+div.mag-lite {
     font-family: "DejaVu Sans", "Liberation Sans", Arial, sans-serif;
     font-size: 12px;
     line-height: 1.4;
     padding: 6px 10px;
-    max-width: 350px;
+    color: #333;
+    background-color: #ffffff;
 }
 
-div.tooltip .strongs-label {
+div.mag-lite .mag-line {
+    display: block;
+}
+
+div.mag-lite .mag-wordline {
     font-weight: bold;
     color: #1a5276;
 }
 
-div.tooltip .morph-label {
+div.mag-lite .mag-label {
+    font-weight: bold;
+    color: #1a5276;
+}
+
+div.mag-lite .mag-morph-label {
     font-weight: bold;
     color: #555;
 }
 
-div.tooltip .definition {
-    margin-top: 4px;
+div.mag-lite .mag-defline {
     color: #333;
+}
+
+div.mag-lite .mag-gap {
+    height: 0.45em;
 }
 
 /* Commentary text */

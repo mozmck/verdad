@@ -15,6 +15,187 @@
 #include <cctype>
 
 namespace verdad {
+namespace {
+
+std::string trimCopy(const std::string& s) {
+    size_t start = 0;
+    while (start < s.size() &&
+           std::isspace(static_cast<unsigned char>(s[start]))) {
+        ++start;
+    }
+    size_t end = s.size();
+    while (end > start &&
+           std::isspace(static_cast<unsigned char>(s[end - 1]))) {
+        --end;
+    }
+    return s.substr(start, end - start);
+}
+
+bool decodeNextUtf8(const std::string& s, size_t& i, uint32_t& cp) {
+    if (i >= s.size()) return false;
+    unsigned char c0 = static_cast<unsigned char>(s[i]);
+    if (c0 < 0x80) {
+        cp = c0;
+        ++i;
+        return true;
+    }
+    if ((c0 & 0xE0) == 0xC0 && i + 1 < s.size()) {
+        unsigned char c1 = static_cast<unsigned char>(s[i + 1]);
+        cp = (static_cast<uint32_t>(c0 & 0x1F) << 6) |
+             static_cast<uint32_t>(c1 & 0x3F);
+        i += 2;
+        return true;
+    }
+    if ((c0 & 0xF0) == 0xE0 && i + 2 < s.size()) {
+        unsigned char c1 = static_cast<unsigned char>(s[i + 1]);
+        unsigned char c2 = static_cast<unsigned char>(s[i + 2]);
+        cp = (static_cast<uint32_t>(c0 & 0x0F) << 12) |
+             (static_cast<uint32_t>(c1 & 0x3F) << 6) |
+             static_cast<uint32_t>(c2 & 0x3F);
+        i += 3;
+        return true;
+    }
+    if ((c0 & 0xF8) == 0xF0 && i + 3 < s.size()) {
+        unsigned char c1 = static_cast<unsigned char>(s[i + 1]);
+        unsigned char c2 = static_cast<unsigned char>(s[i + 2]);
+        unsigned char c3 = static_cast<unsigned char>(s[i + 3]);
+        cp = (static_cast<uint32_t>(c0 & 0x07) << 18) |
+             (static_cast<uint32_t>(c1 & 0x3F) << 12) |
+             (static_cast<uint32_t>(c2 & 0x3F) << 6) |
+             static_cast<uint32_t>(c3 & 0x3F);
+        i += 4;
+        return true;
+    }
+    // Invalid leading byte; skip it.
+    cp = c0;
+    ++i;
+    return true;
+}
+
+bool isCjkCodepoint(uint32_t cp) {
+    // CJK Unified Ideographs + Extensions + Compatibility + Japanese/Korean ranges.
+    return
+        (cp >= 0x3400 && cp <= 0x4DBF) ||
+        (cp >= 0x4E00 && cp <= 0x9FFF) ||
+        (cp >= 0xF900 && cp <= 0xFAFF) ||
+        (cp >= 0x20000 && cp <= 0x2EBEF) ||
+        (cp >= 0x30000 && cp <= 0x3134F) ||
+        (cp >= 0x3040 && cp <= 0x30FF) ||
+        (cp >= 0x31F0 && cp <= 0x31FF) ||
+        (cp >= 0xAC00 && cp <= 0xD7AF);
+}
+
+bool containsCjkText(const std::string& s) {
+    size_t i = 0;
+    uint32_t cp = 0;
+    while (decodeNextUtf8(s, i, cp)) {
+        if (isCjkCodepoint(cp)) return true;
+    }
+    return false;
+}
+
+std::string stripCjkText(const std::string& s) {
+    std::string out;
+    out.reserve(s.size());
+    size_t i = 0;
+    while (i < s.size()) {
+        size_t start = i;
+        uint32_t cp = 0;
+        if (!decodeNextUtf8(s, i, cp)) break;
+        if (!isCjkCodepoint(cp)) {
+            out.append(s.substr(start, i - start));
+        }
+    }
+    return trimCopy(out);
+}
+
+std::string cleanupLexiconText(const std::string& s) {
+    // Preserve full lexicon payload; only trim outer whitespace.
+    return trimCopy(s);
+}
+
+std::string normalizeStrongsKey(const std::string& strongsNumber) {
+    std::string key = trimCopy(strongsNumber);
+    if (key.empty()) return key;
+
+    static const std::regex keyRe(R"(([A-Za-z]?\d+[A-Za-z]?))");
+    std::smatch match;
+    if (std::regex_search(key, match, keyRe)) {
+        key = match[1].str();
+    }
+
+    for (char& c : key) {
+        if (std::isalpha(static_cast<unsigned char>(c))) {
+            c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+        }
+    }
+
+    if (!key.empty() && std::isalpha(static_cast<unsigned char>(key[0]))) {
+        // Strong's prefixes are H (Hebrew) or G (Greek). Reject unknown prefixes
+        // to avoid lookups drifting to stale/incorrect lexicon keys.
+        if (key[0] != 'H' && key[0] != 'G') return "";
+    }
+    return key;
+}
+
+std::string canonicalLexKey(const std::string& keyText) {
+    std::string key = normalizeStrongsKey(keyText);
+    if (key.empty()) return key;
+
+    size_t i = 0;
+    std::string prefix;
+    if (std::isalpha(static_cast<unsigned char>(key[i]))) {
+        prefix.push_back(key[i]);
+        ++i;
+    }
+
+    size_t j = i;
+    while (j < key.size() && std::isdigit(static_cast<unsigned char>(key[j]))) ++j;
+    if (j == i) return key;
+
+    std::string digits = key.substr(i, j - i);
+    size_t nz = digits.find_first_not_of('0');
+    digits = (nz == std::string::npos) ? "0" : digits.substr(nz);
+
+    std::string suffix = key.substr(j);
+    return prefix + digits + suffix;
+}
+
+bool keyMatchesRequest(const std::string& requestedKey, const std::string& resolvedKey) {
+    std::string req = canonicalLexKey(requestedKey);
+    std::string got = canonicalLexKey(resolvedKey);
+    if (req.empty() || got.empty()) return false;
+    if (req == got) return true;
+
+    // Allow prefixed/unprefixed equivalent forms (e.g. H7225 vs 7225).
+    if (req.size() > 1 && std::isalpha(static_cast<unsigned char>(req[0])) &&
+        req.substr(1) == got) {
+        return true;
+    }
+    if (got.size() > 1 && std::isalpha(static_cast<unsigned char>(got[0])) &&
+        got.substr(1) == req) {
+        return true;
+    }
+    return false;
+}
+
+std::string readLexiconEntry(sword::SWModule* lex, const std::string& key) {
+    if (!lex || key.empty()) return "";
+
+    lex->setKey(key.c_str());
+    if (lex->popError()) return "";
+
+    // Ensure entry text is loaded for this key before stripping markup.
+    (void)lex->renderText();
+    if (lex->popError()) return "";
+
+    const char* resolvedKey = lex->getKeyText();
+    if (!resolvedKey || !keyMatchesRequest(key, resolvedKey)) return "";
+
+    return cleanupLexiconText(lex->stripText());
+}
+
+} // namespace
 
 SwordManager::SwordManager() = default;
 SwordManager::~SwordManager() = default;
@@ -424,49 +605,63 @@ std::string SwordManager::getStrongsDefinition(const std::string& strongsNumber)
     std::lock_guard<std::mutex> lock(mutex_);
     if (!mgr_) return "";
 
+    std::string key = normalizeStrongsKey(strongsNumber);
+    if (key.empty()) return "";
+
+    char prefix = 0;
+    if (!key.empty() && std::isalpha(static_cast<unsigned char>(key[0]))) {
+        prefix = static_cast<char>(
+            std::toupper(static_cast<unsigned char>(key[0])));
+    }
+
     // Try various Strong's lexicons
     std::vector<std::string> lexicons;
-
-    // Determine if Hebrew or Greek
-    if (!strongsNumber.empty()) {
-        char prefix = static_cast<char>(
-            std::toupper(static_cast<unsigned char>(strongsNumber[0])));
-        if (prefix == 'H') {
-            lexicons = {"StrongsHebrew", "StrongsRealHebrew", "TWOT"};
-        } else if (prefix == 'G') {
-            lexicons = {"StrongsGreek", "StrongsRealGreek", "Thayer"};
-        }
+    if (prefix == 'H') {
+        lexicons = {"StrongsHebrew", "TWOT", "StrongsRealHebrew"};
+    } else if (prefix == 'G') {
+        lexicons = {"StrongsGreek", "Thayer", "StrongsRealGreek"};
+    } else {
+        // If prefix is missing, try both families.
+        lexicons = {"StrongsHebrew", "TWOT", "StrongsRealHebrew",
+                    "StrongsGreek", "Thayer", "StrongsRealGreek"};
     }
 
+    std::vector<std::string> lookupKeys;
+    lookupKeys.push_back(key);
+    if (prefix && key.length() > 1) {
+        lookupKeys.push_back(key.substr(1));
+    } else if (!key.empty() &&
+               std::isdigit(static_cast<unsigned char>(key[0]))) {
+        lookupKeys.push_back("H" + key);
+        lookupKeys.push_back("G" + key);
+    }
+
+    std::string fallbackWithoutCjk;
     for (const auto& lexName : lexicons) {
         sword::SWModule* lex = getModule(lexName);
-        if (lex) {
-            // Try with and without the H/G prefix
-            lex->setKey(strongsNumber.c_str());
-            if (!lex->popError()) {
-                std::string text = lex->stripText();
-                if (!text.empty()) return text;
-            }
-
-            // Try just the number part
-            if (strongsNumber.length() > 1) {
-                std::string numOnly = strongsNumber.substr(1);
-                lex->setKey(numOnly.c_str());
-                if (!lex->popError()) {
-                    std::string text = lex->stripText();
-                    if (!text.empty()) return text;
-                }
+        if (!lex) continue;
+        for (const auto& lookupKey : lookupKeys) {
+            std::string text = readLexiconEntry(lex, lookupKey);
+            if (text.empty()) continue;
+            if (!containsCjkText(text)) return text;
+            if (fallbackWithoutCjk.empty()) {
+                std::string stripped = stripCjkText(text);
+                if (!stripped.empty()) fallbackWithoutCjk = stripped;
             }
         }
     }
 
-    return "";
+    return fallbackWithoutCjk;
 }
 
 std::string SwordManager::getMorphDefinition(const std::string& morphCode) {
     std::lock_guard<std::mutex> lock(mutex_);
     if (!mgr_) return "";
 
+    std::string key = trimCopy(morphCode);
+    if (key.empty()) return "";
+
+    std::string fallbackWithoutCjk;
     // Try morphology lexicons
     std::vector<std::string> morphLexicons = {
         "Robinson", "Packard", "OSHM"
@@ -475,15 +670,17 @@ std::string SwordManager::getMorphDefinition(const std::string& morphCode) {
     for (const auto& lexName : morphLexicons) {
         sword::SWModule* lex = getModule(lexName);
         if (lex) {
-            lex->setKey(morphCode.c_str());
-            if (!lex->popError()) {
-                std::string text = lex->stripText();
-                if (!text.empty()) return text;
+            std::string text = readLexiconEntry(lex, key);
+            if (text.empty()) continue;
+            if (!containsCjkText(text)) return text;
+            if (fallbackWithoutCjk.empty()) {
+                std::string stripped = stripCjkText(text);
+                if (!stripped.empty()) fallbackWithoutCjk = stripped;
             }
         }
     }
 
-    return "";
+    return fallbackWithoutCjk;
 }
 
 std::vector<std::string> SwordManager::getBookNames(const std::string& moduleName) {

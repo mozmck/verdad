@@ -13,7 +13,6 @@ class VerdadApp;
 class LeftPane;
 class BiblePane;
 class RightPane;
-class ToolTipWindow;
 
 /// Main application window with three-pane layout
 class MainWindow : public Fl_Double_Window {
@@ -33,13 +32,13 @@ public:
     /// Show dictionary entry
     void showDictionary(const std::string& key);
 
-    /// Show Mag viewer info in the left pane preview and an optional tooltip,
-    /// driven by strong/morph metadata extracted on hover.
+    /// Queue Mag viewer info update in the left pane preview, driven by
+    /// strong/morph metadata extracted on hover.
     void showWordInfo(const std::string& word, const std::string& href,
                       const std::string& strong, const std::string& morph,
                       int screenX, int screenY);
 
-    /// Hide the word info tooltip
+    /// Cancel pending hover update (does not clear current MAG content).
     void hideWordInfo();
 
     /// Show search results in the left pane
@@ -61,6 +60,13 @@ protected:
     int handle(int event) override;
 
 private:
+    struct PendingWordInfo {
+        std::string word;
+        std::string href;
+        std::string strong;
+        std::string morph;
+    };
+
     VerdadApp* app_;
 
     // Menu bar
@@ -74,8 +80,15 @@ private:
     BiblePane* biblePane_;
     RightPane* rightPane_;
 
-    // Tooltip window
-    ToolTipWindow* tooltipWindow_;
+    // Delayed hover state for MAG updates
+    PendingWordInfo pendingWordInfo_;
+    bool hoverDelayScheduled_ = false;
+
+    /// Apply the currently queued word info to the MAG viewer.
+    void applyPendingWordInfo();
+
+    /// FLTK timeout callback used for delayed MAG updates.
+    static void onHoverDelayTimeout(void* data);
 
     /// Build the menu bar
     void buildMenu();

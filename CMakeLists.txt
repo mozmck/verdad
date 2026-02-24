@@ -53,7 +53,6 @@ set(SOURCES
     src/ui/ModulePanel.cpp
     src/ui/BookmarkPanel.cpp
     src/ui/TagPanel.cpp
-    src/ui/ToolTipWindow.cpp
     src/ui/VerseContext.cpp
 )
 
@@ -71,7 +70,6 @@ set(HEADERS
     src/ui/ModulePanel.h
     src/ui/BookmarkPanel.h
     src/ui/TagPanel.h
-    src/ui/ToolTipWindow.h
     src/ui/VerseContext.h
 )
 
