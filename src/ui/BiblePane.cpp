@@ -8,6 +8,7 @@
 #include <FL/Fl.H>
 #include <FL/fl_ask.H>
 
+#include <algorithm>
 #include <sstream>
 #include <fstream>
 
@@ -15,93 +16,150 @@ namespace verdad {
 
 BiblePane::BiblePane(VerdadApp* app, int X, int Y, int W, int H)
     : Fl_Group(X, Y, W, H)
-    , app_(app) {
+    , app_(app)
+    , navBar_(nullptr)
+    , bookChoice_(nullptr)
+    , chapterChoice_(nullptr)
+    , moduleChoice_(nullptr)
+    , refInput_(nullptr)
+    , goButton_(nullptr)
+    , prevButton_(nullptr)
+    , nextButton_(nullptr)
+    , parallelButton_(nullptr)
+    , paragraphButton_(nullptr)
+    , htmlWidget_(nullptr)
+    , currentBook_("Genesis")
+    , currentChapter_(1) {
+    //box(FL_FLAT_BOX);
+    //color(FL_BACKGROUND2_COLOR);
 
     begin();
 
     int navH = 30;
     int padding = 2;
 
-    // Build navigation bar
     navBar_ = new Fl_Group(X, Y, W, navH);
     navBar_->begin();
     buildNavBar();
     navBar_->end();
 
-    // Tabs area for Bible text
-    int tabY = Y + navH + padding;
-    int tabH = H - navH - padding;
+    int contentY = Y + navH + padding;
+    int contentH = H - navH - padding;
 
-    tabs_ = new Fl_Tabs(X, tabY, W, tabH);
-    tabs_->callback(onTabChange, this);
-    tabs_->begin();
+    htmlWidget_ = new HtmlWidget(X, contentY, W, contentH);
 
-    // Create default tab
-    BibleTab defaultTab;
-    defaultTab.tabGroup = new Fl_Group(X, tabY + 25, W, tabH - 25, "Bible");
-    defaultTab.tabGroup->begin();
-
-    defaultTab.htmlWidget = new HtmlWidget(X, tabY + 25, W, tabH - 25);
-
-    // Load master CSS
     std::string cssFile = app_->getDataDir() + "/master.css";
     std::ifstream cssStream(cssFile);
     if (cssStream.is_open()) {
         std::string css((std::istreambuf_iterator<char>(cssStream)),
                          std::istreambuf_iterator<char>());
-        defaultTab.htmlWidget->setMasterCSS(css);
+        htmlWidget_->setMasterCSS(css);
     }
 
-    // Set up callbacks
-    defaultTab.htmlWidget->setLinkCallback(
+    htmlWidget_->setLinkCallback(
         [this](const std::string& url) { onLinkClicked(url); });
-    defaultTab.htmlWidget->setHoverCallback(
+    htmlWidget_->setHoverCallback(
         [this](const std::string& word, const std::string& href,
                const std::string& strong, const std::string& morph,
                int x, int y) {
             onWordHover(word, href, strong, morph, x, y);
         });
-    defaultTab.htmlWidget->setContextCallback(
+    htmlWidget_->setContextCallback(
         [this](const std::string& word, const std::string& href, int x, int y) {
             onContextMenu(word, href, x, y);
         });
 
-    defaultTab.tabGroup->end();
-    defaultTab.tabGroup->resizable(defaultTab.htmlWidget);
-
-    tabs_->end();
-
-    bibleTabs_.push_back(defaultTab);
-    activeTabIndex_ = 0;
-
     end();
-    resizable(tabs_);
+    resizable(htmlWidget_);
 
-    // Initialize with first available Bible module
+    // Select default module (if available). Initial navigation is performed
+    // by MainWindow after this pane is attached to a context tab.
     auto bibles = app_->swordManager().getBibleModules();
     if (!bibles.empty()) {
-        setModule(bibles[0].name);
-        navigateTo("Genesis", 1);
+        moduleName_ = bibles[0].name;
+        setModule(moduleName_);
     }
 }
 
 BiblePane::~BiblePane() = default;
 
-void BiblePane::navigateTo(const std::string& book, int chapter) {
-    BibleTab* tab = activeTab();
-    if (!tab) return;
+void BiblePane::resize(int X, int Y, int W, int H) {
+    Fl_Group::resize(X, Y, W, H);
 
-    tab->currentBook = book;
-    tab->currentChapter = chapter;
+    if (!navBar_ || !bookChoice_ || !chapterChoice_ || !moduleChoice_ ||
+        !refInput_ || !goButton_ || !prevButton_ || !nextButton_ ||
+        !parallelButton_ || !paragraphButton_ || !htmlWidget_) {
+        return;
+    }
+
+    const int navH = 30;
+    const int padding = 2;
+    const int spacing = 2;
+    const int buttonW = 30;
+    const int bookW = 120;
+    const int chapW = 50;
+    const int moduleW = 100;
+    const int smallBtnW = 25;
+    const int minRefW = 60;
+
+    navBar_->resize(X, Y, W, navH);
+    int cy = Y + 2;
+    int nh = navH - 4;
+    int cx = X + 2;
+
+    prevButton_->resize(cx, cy, buttonW, nh);
+    cx += buttonW + spacing;
+
+    bookChoice_->resize(cx, cy, bookW, nh);
+    cx += bookW + spacing;
+
+    chapterChoice_->resize(cx, cy, chapW, nh);
+    cx += chapW + spacing;
+
+    nextButton_->resize(cx, cy, buttonW, nh);
+    cx += buttonW + spacing;
+
+    int rightFixed =
+        buttonW + spacing + moduleW + spacing + smallBtnW + spacing + smallBtnW + 2;
+    int refW = std::max(minRefW, (X + W) - cx - rightFixed);
+    refInput_->resize(cx, cy, refW, nh);
+    cx += refW + spacing;
+
+    goButton_->resize(cx, cy, buttonW, nh);
+    cx += buttonW + spacing;
+
+    moduleChoice_->resize(cx, cy, moduleW, nh);
+    cx += moduleW + spacing;
+
+    parallelButton_->resize(cx, cy, smallBtnW, nh);
+    cx += smallBtnW + spacing;
+
+    paragraphButton_->resize(cx, cy, smallBtnW, nh);
+
+    int contentY = Y + navH + padding;
+    int contentH = std::max(20, H - navH - padding);
+    htmlWidget_->resize(X, contentY, W, contentH);
+}
+
+void BiblePane::navigateTo(const std::string& book, int chapter, int verse) {
+    if (moduleName_.empty()) return;
+
+    currentBook_ = book;
+    currentChapter_ = chapter;
+    int maxVerse = app_->swordManager().getVerseCount(moduleName_, currentBook_, currentChapter_);
+    if (maxVerse <= 0) maxVerse = 1;
+    currentVerse_ = std::max(1, std::min(verse, maxVerse));
 
     updateDisplay();
-
-    // Update navigation controls
+    if (htmlWidget_ && currentVerse_ > 1) {
+        htmlWidget_->scrollToAnchor("v" + std::to_string(currentVerse_));
+    }
     populateChapters();
+    notifyContextChanged();
 
-    // Also update commentary in right pane
     if (app_->mainWindow()) {
-        std::string ref = book + " " + std::to_string(chapter) + ":1";
+        std::string ref = currentBook_ + " " + std::to_string(currentChapter_) +
+                          ":" + std::to_string(currentVerse_);
         app_->mainWindow()->showCommentary(ref);
     }
 }
@@ -109,141 +167,50 @@ void BiblePane::navigateTo(const std::string& book, int chapter) {
 void BiblePane::navigateToReference(const std::string& reference) {
     auto ref = SwordManager::parseVerseRef(reference);
     if (!ref.book.empty() && ref.chapter > 0) {
-        navigateTo(ref.book, ref.chapter);
+        int verse = ref.verse > 0 ? ref.verse : 1;
+        navigateTo(ref.book, ref.chapter, verse);
     }
 }
 
 void BiblePane::setModule(const std::string& moduleName) {
-    BibleTab* tab = activeTab();
-    if (!tab) return;
+    if (moduleName.empty()) return;
+    moduleName_ = moduleName;
 
-    tab->moduleName = moduleName;
-
-    // Update module choice widget
     if (moduleChoice_) {
         for (int i = 0; i < moduleChoice_->size(); i++) {
             const Fl_Menu_Item& item = moduleChoice_->menu()[i];
-            if (item.label() && moduleName == item.label()) {
+            if (item.label() && moduleName_ == item.label()) {
                 moduleChoice_->value(i);
                 break;
             }
         }
     }
 
-    // Update tab label
-    if (tab->tabGroup) {
-        tab->tabGroup->copy_label(moduleName.c_str());
-    }
-
     populateBooks();
     updateDisplay();
-}
-
-void BiblePane::addTab(const std::string& moduleName) {
-    BibleTab newTab;
-    newTab.moduleName = moduleName;
-
-    int tabY = tabs_->y() + 25;
-    int tabH = tabs_->h() - 25;
-
-    tabs_->begin();
-
-    newTab.tabGroup = new Fl_Group(tabs_->x(), tabY,
-                                    tabs_->w(), tabH,
-                                    moduleName.c_str());
-    newTab.tabGroup->begin();
-
-    newTab.htmlWidget = new HtmlWidget(tabs_->x(), tabY,
-                                        tabs_->w(), tabH);
-
-    // Load master CSS
-    std::string cssFile = app_->getDataDir() + "/master.css";
-    std::ifstream cssStream(cssFile);
-    if (cssStream.is_open()) {
-        std::string css((std::istreambuf_iterator<char>(cssStream)),
-                         std::istreambuf_iterator<char>());
-        newTab.htmlWidget->setMasterCSS(css);
-    }
-
-    newTab.htmlWidget->setLinkCallback(
-        [this](const std::string& url) { onLinkClicked(url); });
-    newTab.htmlWidget->setHoverCallback(
-        [this](const std::string& word, const std::string& href,
-               const std::string& strong, const std::string& morph,
-               int x, int y) {
-            onWordHover(word, href, strong, morph, x, y);
-        });
-    newTab.htmlWidget->setContextCallback(
-        [this](const std::string& word, const std::string& href, int x, int y) {
-            onContextMenu(word, href, x, y);
-        });
-
-    newTab.tabGroup->end();
-    newTab.tabGroup->resizable(newTab.htmlWidget);
-
-    tabs_->end();
-    tabs_->redraw();
-
-    bibleTabs_.push_back(newTab);
-
-    // Switch to new tab
-    activeTabIndex_ = static_cast<int>(bibleTabs_.size()) - 1;
-    tabs_->value(newTab.tabGroup);
-
-    // Navigate to same position as current tab
-    if (bibleTabs_.size() > 1) {
-        auto& prevTab = bibleTabs_[activeTabIndex_ - 1];
-        newTab.currentBook = prevTab.currentBook;
-        newTab.currentChapter = prevTab.currentChapter;
-    } else {
-        newTab.currentBook = "Genesis";
-        newTab.currentChapter = 1;
-    }
-
-    setModule(moduleName);
-}
-
-void BiblePane::closeCurrentTab() {
-    if (bibleTabs_.size() <= 1) return; // Don't close last tab
-
-    BibleTab* tab = activeTab();
-    if (!tab || !tab->tabGroup) return;
-
-    tabs_->remove(tab->tabGroup);
-    delete tab->tabGroup;
-
-    bibleTabs_.erase(bibleTabs_.begin() + activeTabIndex_);
-    if (activeTabIndex_ >= static_cast<int>(bibleTabs_.size())) {
-        activeTabIndex_ = static_cast<int>(bibleTabs_.size()) - 1;
-    }
-
-    if (!bibleTabs_.empty()) {
-        tabs_->value(bibleTabs_[activeTabIndex_].tabGroup);
-    }
-
-    tabs_->redraw();
+    notifyContextChanged();
 }
 
 std::string BiblePane::currentModule() const {
-    const BibleTab* tab = activeTab();
-    return tab ? tab->moduleName : "";
+    return moduleName_;
 }
 
 std::string BiblePane::currentBook() const {
-    const BibleTab* tab = activeTab();
-    return tab ? tab->currentBook : "";
+    return currentBook_;
 }
 
 int BiblePane::currentChapter() const {
-    const BibleTab* tab = activeTab();
-    return tab ? tab->currentChapter : 0;
+    return currentChapter_;
+}
+
+int BiblePane::currentVerse() const {
+    return currentVerse_;
 }
 
 void BiblePane::toggleParallel() {
     parallelMode_ = !parallelMode_;
 
     if (parallelMode_ && parallelModules_.empty()) {
-        // Ask user to select modules for parallel view
         auto bibles = app_->swordManager().getBibleModules();
         if (bibles.size() < 2) {
             fl_alert("Need at least 2 Bible modules for parallel view.");
@@ -251,7 +218,6 @@ void BiblePane::toggleParallel() {
             return;
         }
 
-        // Default: use current module plus next available
         parallelModules_.push_back(currentModule());
         for (const auto& mod : bibles) {
             if (mod.name != currentModule()) {
@@ -277,19 +243,16 @@ void BiblePane::setParallelModules(const std::vector<std::string>& modules) {
 }
 
 void BiblePane::nextChapter() {
-    BibleTab* tab = activeTab();
-    if (!tab) return;
+    if (moduleName_.empty() || currentBook_.empty()) return;
 
-    int maxChapter = app_->swordManager().getChapterCount(
-        tab->moduleName, tab->currentBook);
+    int maxChapter = app_->swordManager().getChapterCount(moduleName_, currentBook_);
 
-    if (tab->currentChapter < maxChapter) {
-        navigateTo(tab->currentBook, tab->currentChapter + 1);
+    if (currentChapter_ < maxChapter) {
+        navigateTo(currentBook_, currentChapter_ + 1);
     } else {
-        // Go to next book
-        auto books = app_->swordManager().getBookNames(tab->moduleName);
-        for (size_t i = 0; i < books.size() - 1; i++) {
-            if (books[i] == tab->currentBook) {
+        auto books = app_->swordManager().getBookNames(moduleName_);
+        for (size_t i = 0; i + 1 < books.size(); i++) {
+            if (books[i] == currentBook_) {
                 navigateTo(books[i + 1], 1);
                 populateBooks();
                 break;
@@ -299,18 +262,15 @@ void BiblePane::nextChapter() {
 }
 
 void BiblePane::prevChapter() {
-    BibleTab* tab = activeTab();
-    if (!tab) return;
+    if (moduleName_.empty() || currentBook_.empty()) return;
 
-    if (tab->currentChapter > 1) {
-        navigateTo(tab->currentBook, tab->currentChapter - 1);
+    if (currentChapter_ > 1) {
+        navigateTo(currentBook_, currentChapter_ - 1);
     } else {
-        // Go to previous book's last chapter
-        auto books = app_->swordManager().getBookNames(tab->moduleName);
+        auto books = app_->swordManager().getBookNames(moduleName_);
         for (size_t i = 1; i < books.size(); i++) {
-            if (books[i] == tab->currentBook) {
-                int lastCh = app_->swordManager().getChapterCount(
-                    tab->moduleName, books[i - 1]);
+            if (books[i] == currentBook_) {
+                int lastCh = app_->swordManager().getChapterCount(moduleName_, books[i - 1]);
                 navigateTo(books[i - 1], lastCh);
                 populateBooks();
                 break;
@@ -323,155 +283,164 @@ void BiblePane::refresh() {
     updateDisplay();
 }
 
+void BiblePane::redrawChrome() {
+    if (navBar_) navBar_->redraw();
+}
+
+void BiblePane::selectVerse(int verse) {
+    if (moduleName_.empty() || currentBook_.empty()) return;
+
+    int maxVerse = app_->swordManager().getVerseCount(moduleName_, currentBook_, currentChapter_);
+    if (maxVerse <= 0) maxVerse = 1;
+    int clampedVerse = std::max(1, std::min(verse, maxVerse));
+    if (clampedVerse == currentVerse_) return;
+
+    currentVerse_ = clampedVerse;
+    updateDisplay();
+    if (htmlWidget_) {
+        htmlWidget_->scrollToAnchor("v" + std::to_string(currentVerse_));
+    }
+    notifyContextChanged();
+
+    if (app_->mainWindow()) {
+        std::string ref = currentBook_ + " " + std::to_string(currentChapter_) +
+                          ":" + std::to_string(currentVerse_);
+        app_->mainWindow()->showCommentary(ref);
+    }
+}
+
 void BiblePane::buildNavBar() {
     int cx = navBar_->x() + 2;
     int cy = navBar_->y() + 2;
     int nh = navBar_->h() - 4;
 
-    // Previous button
     prevButton_ = new Fl_Button(cx, cy, 30, nh, "@<");
     prevButton_->callback(onPrev, this);
     prevButton_->tooltip("Previous chapter");
     cx += 32;
 
-    // Book selector
     bookChoice_ = new Fl_Choice(cx, cy, 120, nh);
     bookChoice_->callback(onBookChange, this);
     bookChoice_->tooltip("Select book");
     cx += 122;
 
-    // Chapter selector
     chapterChoice_ = new Fl_Choice(cx, cy, 50, nh);
     chapterChoice_->callback(onChapterChange, this);
     chapterChoice_->tooltip("Select chapter");
     cx += 52;
 
-    // Next button
     nextButton_ = new Fl_Button(cx, cy, 30, nh, "@>");
     nextButton_->callback(onNext, this);
     nextButton_->tooltip("Next chapter");
     cx += 32;
 
-    // Reference input
     refInput_ = new Fl_Input(cx, cy, 120, nh);
     refInput_->tooltip("Type a reference (e.g. 'Gen 1:1')");
     cx += 122;
 
-    // Go button
     goButton_ = new Fl_Button(cx, cy, 30, nh, "Go");
     goButton_->callback(onGo, this);
     cx += 32;
 
-    // Module selector
     moduleChoice_ = new Fl_Choice(cx, cy, 100, nh);
     moduleChoice_->callback(onModuleChange, this);
     moduleChoice_->tooltip("Select Bible module");
 
-    // Populate module choices
     auto bibles = app_->swordManager().getBibleModules();
     for (const auto& mod : bibles) {
         moduleChoice_->add(mod.name.c_str());
     }
     if (moduleChoice_->size() > 0) {
         moduleChoice_->value(0);
+        const Fl_Menu_Item& item = moduleChoice_->menu()[0];
+        if (item.label()) {
+            moduleName_ = item.label();
+        }
     }
     cx += 102;
 
-    // Parallel button
     parallelButton_ = new Fl_Button(cx, cy, 25, nh, "||");
     parallelButton_->callback(onParallel, this);
     parallelButton_->tooltip("Toggle parallel Bible view");
     parallelButton_->type(FL_TOGGLE_BUTTON);
     cx += 27;
 
-    // Paragraph mode toggle button
     paragraphButton_ = new Fl_Button(cx, cy, 25, nh, "\xC2\xB6");
     paragraphButton_->callback(onParagraphToggle, this);
     paragraphButton_->tooltip("Toggle paragraph / verse-per-line display");
     paragraphButton_->type(FL_TOGGLE_BUTTON);
-    cx += 27;
-
-    // Add tab button
-    addTabButton_ = new Fl_Button(cx, cy, 25, nh, "+");
-    addTabButton_->callback(onAddTab, this);
-    addTabButton_->tooltip("Open new Bible tab");
 
     navBar_->resizable(refInput_);
 }
 
 void BiblePane::updateDisplay() {
-    BibleTab* tab = activeTab();
-    if (!tab || !tab->htmlWidget) return;
+    if (!htmlWidget_ || moduleName_.empty() || currentBook_.empty()) return;
 
     std::string html;
 
     if (parallelMode_ && !parallelModules_.empty()) {
         html = app_->swordManager().getParallelText(
-            parallelModules_, tab->currentBook, tab->currentChapter,
-            paragraphMode_);
+            parallelModules_, currentBook_, currentChapter_, paragraphMode_,
+            currentVerse_);
     } else {
         html = app_->swordManager().getChapterText(
-            tab->moduleName, tab->currentBook, tab->currentChapter,
-            paragraphMode_);
+            moduleName_, currentBook_, currentChapter_, paragraphMode_,
+            currentVerse_);
     }
 
-    tab->htmlWidget->setHtml(html);
-    tab->htmlWidget->scrollToTop();
+    htmlWidget_->setHtml(html);
+    htmlWidget_->scrollToTop();
 }
 
 void BiblePane::populateBooks() {
-    BibleTab* tab = activeTab();
-    if (!tab || !bookChoice_) return;
+    if (!bookChoice_ || moduleName_.empty()) return;
 
     bookChoice_->clear();
-    auto books = app_->swordManager().getBookNames(tab->moduleName);
+    auto books = app_->swordManager().getBookNames(moduleName_);
     for (const auto& book : books) {
         bookChoice_->add(book.c_str());
     }
 
-    // Select current book
+    if (books.empty()) return;
+
+    bool foundCurrent = false;
     for (int i = 0; i < bookChoice_->size(); i++) {
         const Fl_Menu_Item& item = bookChoice_->menu()[i];
-        if (item.label() && tab->currentBook == item.label()) {
+        if (item.label() && currentBook_ == item.label()) {
             bookChoice_->value(i);
+            foundCurrent = true;
             break;
         }
+    }
+
+    if (!foundCurrent) {
+        currentBook_ = books.front();
+        bookChoice_->value(0);
     }
 
     populateChapters();
 }
 
 void BiblePane::populateChapters() {
-    BibleTab* tab = activeTab();
-    if (!tab || !chapterChoice_) return;
+    if (!chapterChoice_ || moduleName_.empty() || currentBook_.empty()) return;
 
     chapterChoice_->clear();
-    int count = app_->swordManager().getChapterCount(
-        tab->moduleName, tab->currentBook);
+    int count = app_->swordManager().getChapterCount(moduleName_, currentBook_);
 
     for (int i = 1; i <= count; i++) {
         chapterChoice_->add(std::to_string(i).c_str());
     }
 
-    if (tab->currentChapter > 0 && tab->currentChapter <= count) {
-        chapterChoice_->value(tab->currentChapter - 1);
-    }
+    if (count <= 0) return;
+    if (currentChapter_ < 1) currentChapter_ = 1;
+    if (currentChapter_ > count) currentChapter_ = count;
+    chapterChoice_->value(currentChapter_ - 1);
 }
 
-BibleTab* BiblePane::activeTab() {
-    if (activeTabIndex_ >= 0 &&
-        activeTabIndex_ < static_cast<int>(bibleTabs_.size())) {
-        return &bibleTabs_[activeTabIndex_];
+void BiblePane::notifyContextChanged() {
+    if (app_->mainWindow()) {
+        app_->mainWindow()->updateActiveStudyTabLabel();
     }
-    return nullptr;
-}
-
-const BibleTab* BiblePane::activeTab() const {
-    if (activeTabIndex_ >= 0 &&
-        activeTabIndex_ < static_cast<int>(bibleTabs_.size())) {
-        return &bibleTabs_[activeTabIndex_];
-    }
-    return nullptr;
 }
 
 void BiblePane::onGo(Fl_Widget* /*w*/, void* data) {
@@ -504,10 +473,7 @@ void BiblePane::onChapterChange(Fl_Widget* /*w*/, void* data) {
     auto* self = static_cast<BiblePane*>(data);
     int idx = self->chapterChoice_->value();
     if (idx >= 0) {
-        BibleTab* tab = self->activeTab();
-        if (tab) {
-            self->navigateTo(tab->currentBook, idx + 1);
-        }
+        self->navigateTo(self->currentBook_, idx + 1);
     }
 }
 
@@ -529,50 +495,24 @@ void BiblePane::onParagraphToggle(Fl_Widget* /*w*/, void* data) {
     self->toggleParagraphMode();
 }
 
-void BiblePane::onAddTab(Fl_Widget* /*w*/, void* data) {
-    auto* self = static_cast<BiblePane*>(data);
-
-    // Show dialog to pick a module
-    auto bibles = self->app_->swordManager().getBibleModules();
-    if (bibles.empty()) {
-        fl_alert("No Bible modules available.");
-        return;
-    }
-
-    const char* name = fl_input("Enter Bible module name:", "KJV");
-    if (name && name[0]) {
-        self->addTab(name);
-    }
-}
-
-void BiblePane::onTabChange(Fl_Widget* /*w*/, void* data) {
-    auto* self = static_cast<BiblePane*>(data);
-
-    // Find which tab is now active
-    Fl_Widget* val = self->tabs_->value();
-    for (size_t i = 0; i < self->bibleTabs_.size(); i++) {
-        if (self->bibleTabs_[i].tabGroup == val) {
-            self->activeTabIndex_ = static_cast<int>(i);
-            self->populateBooks();
-            break;
-        }
-    }
-}
-
 void BiblePane::onLinkClicked(const std::string& url) {
-    // Handle various link types
-    if (url.find("strongs:") == 0 || url.find("strong:") == 0) {
+    if (url.find("verse:") == 0) {
+        try {
+            int verse = std::stoi(url.substr(6));
+            selectVerse(verse);
+        } catch (...) {
+            // Ignore malformed verse links.
+        }
+    } else if (url.find("strongs:") == 0 || url.find("strong:") == 0) {
         size_t colonPos = url.find(':');
         std::string num = url.substr(colonPos + 1);
         if (app_->mainWindow()) {
             app_->mainWindow()->showDictionary(num);
         }
     } else if (url.find("sword://") == 0) {
-        // SWORD protocol link
         std::string ref = url.substr(8);
         navigateToReference(ref);
     } else if (url.find("morph:") == 0) {
-        // Morphology link
         std::string code = url.substr(6);
         if (app_->mainWindow()) {
             app_->mainWindow()->showDictionary(code);
@@ -594,11 +534,8 @@ void BiblePane::onWordHover(const std::string& word, const std::string& href,
 
 void BiblePane::onContextMenu(const std::string& word, const std::string& href,
                                int x, int y) {
-    BibleTab* tab = activeTab();
-    if (!tab) return;
-
-    std::string verseKey = tab->currentBook + " "
-                           + std::to_string(tab->currentChapter);
+    std::string verseKey = currentBook_ + " " + std::to_string(currentChapter_) +
+                           ":" + std::to_string(currentVerse_);
 
     VerseContext ctx(app_);
     ctx.show(word, href, verseKey, x, y);

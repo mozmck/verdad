@@ -54,6 +54,9 @@ public:
     /// Get current scroll position
     int scrollY() const { return scrollY_; }
 
+    /// Handle widget geometry updates and rerender on resize.
+    void resize(int X, int Y, int W, int H) override;
+
     // Callbacks
     using LinkCallback = std::function<void(const std::string& url)>;
     using HoverCallback = std::function<void(const std::string& word,
@@ -162,6 +165,9 @@ private:
     LinkCallback linkCallback_;
     HoverCallback hoverCallback_;
     ContextCallback contextCallback_;
+    std::string pendingLinkUrl_;
+    bool linkCallbackScheduled_ = false;
+    bool reflowScheduled_ = false;
 
     // Mouse tracking
     std::string lastHoverWord_;
@@ -183,6 +189,12 @@ private:
 
     /// Static scrollbar callback
     static void scrollbarCallback(Fl_Widget* w, void* data);
+
+    /// Deferred link dispatch callback to avoid mutating the document inside litehtml click handling.
+    static void dispatchDeferredLink(void* data);
+
+    /// Deferred document reflow callback used to coalesce rapid resize events.
+    static void dispatchDeferredReflow(void* data);
 
     /// Map an FLTK font from a face name
     Fl_Font mapFont(const char* faceName, int weight, bool italic);

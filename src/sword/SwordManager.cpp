@@ -195,6 +195,52 @@ std::string readLexiconEntry(sword::SWModule* lex, const std::string& key) {
     return cleanupLexiconText(lex->stripText());
 }
 
+template <typename Formatter>
+std::string regexReplaceAll(const std::string& str,
+                            const std::regex& re,
+                            Formatter&& fmt) {
+    std::string out;
+    out.reserve(str.size() + 16);
+    std::sregex_iterator it(str.begin(), str.end(), re);
+    std::sregex_iterator end;
+    size_t lastEnd = 0;
+    for (; it != end; ++it) {
+        const auto& m = *it;
+        out.append(str, lastEnd, static_cast<size_t>(m.position()) - lastEnd);
+        out += fmt(m);
+        lastEnd = static_cast<size_t>(m.position()) + static_cast<size_t>(m.length());
+    }
+    out.append(str, lastEnd, std::string::npos);
+    return out;
+}
+
+bool mayContainMorphOrStrongsMarkup(const std::string& html) {
+    return
+        html.find("<small") != std::string::npos ||
+        html.find("<SMALL") != std::string::npos ||
+        html.find("passagestudy.jsp") != std::string::npos ||
+        html.find("<w") != std::string::npos ||
+        html.find("<W") != std::string::npos ||
+        html.find("strongs:") != std::string::npos ||
+        html.find("STRONGS:") != std::string::npos ||
+        html.find("morph:") != std::string::npos ||
+        html.find("MORPH:") != std::string::npos ||
+        html.find("&lt;H") != std::string::npos ||
+        html.find("&lt;G") != std::string::npos ||
+        html.find("&lt;h") != std::string::npos ||
+        html.find("&lt;g") != std::string::npos ||
+        html.find("&lt;0") != std::string::npos ||
+        html.find("&lt;1") != std::string::npos ||
+        html.find("&lt;2") != std::string::npos ||
+        html.find("&lt;3") != std::string::npos ||
+        html.find("&lt;4") != std::string::npos ||
+        html.find("&lt;5") != std::string::npos ||
+        html.find("&lt;6") != std::string::npos ||
+        html.find("&lt;7") != std::string::npos ||
+        html.find("&lt;8") != std::string::npos ||
+        html.find("&lt;9") != std::string::npos;
+}
+
 } // namespace
 
 SwordManager::SwordManager() = default;
@@ -296,7 +342,8 @@ std::string SwordManager::getVerseText(const std::string& moduleName,
 std::string SwordManager::getChapterText(const std::string& moduleName,
                                           const std::string& book,
                                           int chapter,
-                                          bool paragraphMode) {
+                                          bool paragraphMode,
+                                          int selectedVerse) {
     std::lock_guard<std::mutex> lock(mutex_);
     sword::SWModule* mod = getModule(moduleName);
     if (!mod) return "<p><i>Module not found: " + moduleName + "</i></p>";
@@ -323,14 +370,65 @@ std::string SwordManager::getChapterText(const std::string& moduleName,
     // verse-per-line (default) uses <div>, paragraph mode uses <span>
     const char* verseTag = paragraphMode ? "span" : "div";
 
+    auto tryGetVerseHtmlCache =
+        [this](const std::string& key, std::string& valueOut) -> bool {
+        auto it = verseHtmlCache_.find(key);
+        if (it == verseHtmlCache_.end()) return false;
+
+        verseHtmlLru_.splice(verseHtmlLru_.begin(),
+                             verseHtmlLru_,
+                             it->second.lruIt);
+        valueOut = it->second.value;
+        return true;
+    };
+
+    auto storeVerseHtmlCache =
+        [this](const std::string& key, const std::string& value) {
+        auto it = verseHtmlCache_.find(key);
+        if (it != verseHtmlCache_.end()) {
+            it->second.value = value;
+            verseHtmlLru_.splice(verseHtmlLru_.begin(),
+                                 verseHtmlLru_,
+                                 it->second.lruIt);
+            return;
+        }
+
+        verseHtmlLru_.push_front(key);
+        verseHtmlCache_.emplace(key, VerseHtmlCacheEntry{
+            value, verseHtmlLru_.begin()
+        });
+
+        if (verseHtmlCache_.size() > kVerseHtmlCacheLimit) {
+            const std::string& evictKey = verseHtmlLru_.back();
+            verseHtmlCache_.erase(evictKey);
+            verseHtmlLru_.pop_back();
+        }
+    };
+
     while (!mod->popError() && vk->getChapter() == currentChapter) {
         int verse = vk->getVerse();
-        std::string verseText = std::string(mod->renderText().c_str());
+        std::string verseRef = book + " " + std::to_string(chapter) +
+                               ":" + std::to_string(verse);
+        std::string cacheKey = moduleName + "|" + verseRef;
+        std::string verseText;
+
+        if (!tryGetVerseHtmlCache(cacheKey, verseText)) {
+            verseText = std::string(mod->renderText().c_str());
+            if (!verseText.empty()) {
+                verseText = postProcessHtml(verseText);
+                storeVerseHtmlCache(cacheKey, verseText);
+            }
+        }
 
         if (!verseText.empty()) {
-            verseText = postProcessHtml(verseText);
-            html << "<" << verseTag << " class=\"verse\" id=\"v" << verse << "\">";
-            html << "<sup class=\"versenum\">" << verse << "</sup> ";
+            std::string verseClass = "verse";
+            if (selectedVerse > 0 && verse == selectedVerse) {
+                verseClass += " verse-selected";
+            }
+            html << "<" << verseTag << " class=\"" << verseClass
+                 << "\" id=\"v" << verse << "\">";
+            html << "<a class=\"versenum-link\" href=\"verse:" << verse << "\">"
+                 << "<sup class=\"versenum\">" << verse << "</sup></a> ";
             html << verseText;
             html << "</" << verseTag << ">\n";
         }
@@ -345,7 +443,8 @@ std::string SwordManager::getChapterText(const std::string& moduleName,
 std::string SwordManager::getParallelText(
     const std::vector<std::string>& moduleNames,
     const std::string& book, int chapter,
-    bool paragraphMode) {
+    bool paragraphMode,
+    int selectedVerse) {
 
     (void)paragraphMode; // Parallel view uses column layout; mode not applicable
     if (moduleNames.empty()) return "";
@@ -400,6 +499,41 @@ std::string SwordManager::getParallelText(
     html << "<div style=\"clear: both;\"></div>\n";
     html << "</div>\n";
 
+    auto tryGetVerseHtmlCache =
+        [this](const std::string& key, std::string& valueOut) -> bool {
+        auto it = verseHtmlCache_.find(key);
+        if (it == verseHtmlCache_.end()) return false;
+
+        verseHtmlLru_.splice(verseHtmlLru_.begin(),
+                             verseHtmlLru_,
+                             it->second.lruIt);
+        valueOut = it->second.value;
+        return true;
+    };
+
+    auto storeVerseHtmlCache =
+        [this](const std::string& key, const std::string& value) {
+        auto it = verseHtmlCache_.find(key);
+        if (it != verseHtmlCache_.end()) {
+            it->second.value = value;
+            verseHtmlLru_.splice(verseHtmlLru_.begin(),
+                                 verseHtmlLru_,
+                                 it->second.lruIt);
+            return;
+        }
+
+        verseHtmlLru_.push_front(key);
+        verseHtmlCache_.emplace(key, VerseHtmlCacheEntry{
+            value, verseHtmlLru_.begin()
+        });
+
+        if (verseHtmlCache_.size() > kVerseHtmlCacheLimit) {
+            const std::string& evictKey = verseHtmlLru_.back();
+            verseHtmlCache_.erase(evictKey);
+            verseHtmlLru_.pop_back();
+        }
+    };
+
     // Verse rows
     for (int v = 1; v <= verseCount; ++v) {
         html << "<div class=\"parallel-row\">\n";
@@ -407,16 +541,30 @@ std::string SwordManager::getParallelText(
             bool isLast = (i == moduleNames.size() - 1);
             int w = isLast ? lastColWidth : colWidth;
             const char* cellClass = isLast ? "parallel-cell-last" : "parallel-cell";
+            std::string cellClasses = cellClass;
+            if (selectedVerse > 0 && v == selectedVerse) {
+                cellClasses += " verse-selected";
+            }
             sword::SWModule* mod = getModule(moduleNames[i]);
             html << "<div style=\"float: left; width: " << w << "%;\">"
-                 << "<div class=\"" << cellClass << "\">";
+                 << "<div class=\"" << cellClasses << "\">";
             if (mod) {
                 std::string ref = book + " " + std::to_string(chapter)
                                   + ":" + std::to_string(v);
                 mod->setKey(ref.c_str());
                 if (!mod->popError()) {
-                    html << "<sup class=\"versenum\">" << v << "</sup> ";
-                    html << postProcessHtml(std::string(mod->renderText().c_str()));
+                    std::string cacheKey = moduleNames[i] + "|" + ref;
+                    std::string verseText;
+                    if (!tryGetVerseHtmlCache(cacheKey, verseText)) {
+                        verseText = std::string(mod->renderText().c_str());
+                        if (!verseText.empty()) {
+                            verseText = postProcessHtml(verseText);
+                            storeVerseHtmlCache(cacheKey, verseText);
+                        }
+                    }
+                    html << "<a class=\"versenum-link\" href=\"verse:" << v << "\">"
+                         << "<sup class=\"versenum\">" << v << "</sup></a> ";
+                    html << verseText;
                 }
             }
             html << "</div></div>\n";
@@ -866,24 +1014,40 @@ void SwordManager::configureFilters(sword::SWModule* mod) {
 }
 
 std::string SwordManager::postProcessHtml(const std::string& html) const {
-    // Helper: replace all regex matches using a formatter function
-    static const auto replaceAll = [](
-        const std::string& str,
-        const std::regex& re,
-        std::function<std::string(const std::smatch&)> fmt) -> std::string {
-        std::string out;
-        std::sregex_iterator it(str.begin(), str.end(), re);
-        std::sregex_iterator end;
-        size_t lastEnd = 0;
-        for (; it != end; ++it) {
-            const auto& m = *it;
-            out += str.substr(lastEnd, static_cast<size_t>(m.position()) - lastEnd);
-            out += fmt(m);
-            lastEnd = static_cast<size_t>(m.position()) + static_cast<size_t>(m.length());
+    auto cacheIt = postProcessCache_.find(html);
+    if (cacheIt != postProcessCache_.end()) {
+        postProcessLru_.splice(postProcessLru_.begin(),
+                               postProcessLru_,
+                               cacheIt->second.lruIt);
+        return cacheIt->second.value;
+    }
+
+    auto cacheStore = [this](const std::string& key, const std::string& value) {
+        auto it = postProcessCache_.find(key);
+        if (it != postProcessCache_.end()) {
+            it->second.value = value;
+            postProcessLru_.splice(postProcessLru_.begin(),
+                                   postProcessLru_,
+                                   it->second.lruIt);
+            return;
         }
-        out += str.substr(lastEnd);
-        return out;
+
+        postProcessLru_.push_front(key);
+        postProcessCache_.emplace(key, PostProcessCacheEntry{
+            value, postProcessLru_.begin()
+        });
+
+        if (postProcessCache_.size() > kPostProcessCacheLimit) {
+            const std::string& evictKey = postProcessLru_.back();
+            postProcessCache_.erase(evictKey);
+            postProcessLru_.pop_back();
+        }
     };
+
+    if (!mayContainMorphOrStrongsMarkup(html)) {
+        cacheStore(html, html);
+        return html;
+    }
 
     std::string result = html;
 
@@ -906,47 +1070,62 @@ std::string SwordManager::postProcessHtml(const std::string& html) const {
     static const std::string smallEmBlock =
         R"(<small>\s*<em\b[^>]*>[^<]*(?:<a\b[^>]*>[^<]*</a>[^<]*)?</em>\s*</small>)";
 
-    // 1. Transform word + SWORD Strong's/morph blocks into hoverable <span>.
-    //    Matches a word followed by one or more <small><em> blocks.
-    {
-        std::regex wordBlockRe(
-            R"(([\w'\-]+))"        // Group 1: the word (including hyphens)
-            R"(((?:\s*)" + smallEmBlock + R"()+))",  // Group 2: block(s)
-            std::regex::icase);
+    static const std::regex wordBlockRe(
+        std::string(R"(([\w'\-]+))") +
+            std::string(R"(((?:\s*)") + smallEmBlock + R"()+))",
+        std::regex::icase);
+    static const std::regex typeValueRe(
+        R"(type=([^&]+)&[^"]*value=([^"&]+))",
+        std::regex::icase);
+    static const std::regex oneBlockRe(
+        R"(<small>\s*<em\b([^>]*)>[^<]*(?:<a\b[^>]*>[^<]*</a>[^<]*)?</em>\s*</small>)",
+        std::regex::icase);
+    static const std::regex remainingSmallRe(smallEmBlock, std::regex::icase);
+    static const std::regex aPassageStudyRe(
+        R"re(<a\b[^>]*href="passagestudy\.jsp\?[^"]*showStrongs[^"]*type=(\w+)[^"]*value=([^"&]+)"[^>]*>([^<]*)</a>)re",
+        std::regex::icase);
+    static const std::regex aMorphPassageRe(
+        R"(<a\b[^>]*href="passagestudy\.jsp\?[^"]*showMorph[^"]*"[^>]*>[^<]*</a>)",
+        std::regex::icase);
+    static const std::regex wRe(R"(<w\b([^>]*)>([\s\S]*?)</w>)", std::regex::icase);
+    static const std::regex lemmaRe(R"re(lemma="([^"]+)")re");
+    static const std::regex strongNumRe(R"(strong:([A-Za-z]?\d+[a-z]?))");
+    static const std::regex morphRe(R"re(morph="([^"]+)")re");
+    static const std::regex aStrongsRe(
+        R"re(<a\b[^>]*href="strongs:([A-Za-z]?\d+[a-z]?)"[^>]*>([^<]*)</a>)re",
+        std::regex::icase);
+    static const std::regex aMorphRe(
+        R"(<a\b[^>]*href="morph:[^"]*"[^>]*>[^<]*</a>)",
+        std::regex::icase);
+    static const std::regex gbfStrongsRe(R"(<[HGhg]?\d{1,6}>)");
+    static const std::regex escapedRe(R"(&lt;[HGhg]?\d{1,6}&gt;)");
+    static const std::regex gbfMorphRe(R"(\(\d{4,5}[A-Za-z]?\))");
+    static const std::regex multiSpaceRe(R"( {2,})");
 
-        // Regex to extract type and value from passagestudy.jsp URLs
-        // type may be URL-encoded (e.g. robinson%3AV-QAL), so use [^&]+ not \w+
-        static const std::regex typeValueRe(
-            R"(type=([^&]+)&[^"]*value=([^"&]+))", std::regex::icase);
+    const bool hasSmallBlocks =
+        result.find("<small") != std::string::npos ||
+        result.find("<SMALL") != std::string::npos;
 
-        result = replaceAll(result, wordBlockRe,
-            [](const std::smatch& m) -> std::string {
+    if (hasSmallBlocks) {
+        // 1. Transform word + SWORD Strong's/morph blocks into hoverable spans.
+        result = regexReplaceAll(result, wordBlockRe, [](const std::smatch& m) -> std::string {
             std::string word = m[1].str();
             std::string blocks = m[2].str();
 
-            // Classify each <small><em> block as Strong's or morph
             std::string strongNums;
             std::string morphCode;
-
-            // Split blocks by finding each <small>...</small> segment
-            std::regex oneBlockRe(
-                R"(<small>\s*<em\b([^>]*)>[^<]*(?:<a\b[^>]*>[^<]*</a>[^<]*)?</em>\s*</small>)",
-                std::regex::icase);
-            auto bit = std::sregex_iterator(blocks.begin(), blocks.end(),
-                                            oneBlockRe);
+            auto bit = std::sregex_iterator(blocks.begin(), blocks.end(), oneBlockRe);
             for (; bit != std::sregex_iterator(); ++bit) {
                 std::string emAttrs = (*bit)[1].str();
                 std::string blockStr = (*bit)[0].str();
                 bool isStrongs = emAttrs.find("strongs") != std::string::npos;
-                bool isMorph   = emAttrs.find("morph")   != std::string::npos;
+                bool isMorph = emAttrs.find("morph") != std::string::npos;
 
-                // Extract type and value from URL within this block
                 std::smatch tv;
                 if (std::regex_search(blockStr, tv, typeValueRe)) {
                     if (isStrongs) {
-                        std::string type  = tv[1].str();
+                        std::string type = tv[1].str();
                         std::string value = tv[2].str();
-                        // Map type name to H/G prefix
                         std::string prefix;
                         if (type.find("ebrew") != std::string::npos) prefix = "H";
                         else if (type.find("reek") != std::string::npos) prefix = "G";
@@ -960,89 +1139,75 @@ std::string SwordManager::postProcessHtml(const std::string& html) const {
                 }
             }
 
-            if (strongNums.empty() && morphCode.empty())
-                return word;
+            if (strongNums.empty() && morphCode.empty()) return word;
 
             std::string span = R"(<span class="w")";
             if (!strongNums.empty()) span += R"( data-strong=")" + strongNums + '"';
-            if (!morphCode.empty())  span += R"( data-morph=")"  + morphCode  + '"';
+            if (!morphCode.empty()) span += R"( data-morph=")" + morphCode + '"';
             span += '>' + word + "</span>";
             return span;
         });
-    }
 
-    // 2. Strip remaining <small><em class="strongs/morph"> blocks not preceded by a word.
-    {
-        std::regex remainingSmallRe(smallEmBlock, std::regex::icase);
+        // 2. Strip remaining <small><em class="strongs/morph"> blocks.
         result = std::regex_replace(result, remainingSmallRe, std::string(" "));
     }
 
-    // 3. Handle passagestudy.jsp Strong's anchor links outside <small> blocks.
-    //    Strip the number text; wrap word text with data-strong attribute.
-    {
-        std::regex aPassageStudyRe(
-            R"re(<a\b[^>]*href="passagestudy\.jsp\?[^"]*showStrongs[^"]*type=(\w+)[^"]*value=([^"&]+)"[^>]*>([^<]*)</a>)re",
-            std::regex::icase);
-        result = replaceAll(result, aPassageStudyRe,
+    const bool hasPassageStudy = result.find("passagestudy.jsp") != std::string::npos;
+    if (hasPassageStudy) {
+        // 3. Handle passagestudy.jsp Strong's anchor links outside <small> blocks.
+        result = regexReplaceAll(result, aPassageStudyRe,
             [](const std::smatch& m) -> std::string {
-            std::string type  = m[1].str();
+            std::string type = m[1].str();
             std::string value = m[2].str();
-            std::string text  = m[3].str();
+            std::string text = m[3].str();
             std::string prefix;
             if (type.find("ebrew") != std::string::npos) prefix = "H";
             else if (type.find("reek") != std::string::npos) prefix = "G";
             std::string strong = prefix + value;
 
-            // If text is all digits (a Strong's number) → suppress it
             bool allDigits = !text.empty();
-            for (auto c : text)
-                if (!std::isdigit(static_cast<unsigned char>(c))) { allDigits = false; break; }
+            for (char c : text) {
+                if (!std::isdigit(static_cast<unsigned char>(c))) {
+                    allDigits = false;
+                    break;
+                }
+            }
             if (allDigits) return " ";
 
             return R"(<span class="w" data-strong=")" + strong + "\">" + text + "</span>";
         });
-    }
 
-    // 4. Strip passagestudy.jsp morph anchor links.
-    {
-        std::regex aMorphPassageRe(
-            R"(<a\b[^>]*href="passagestudy\.jsp\?[^"]*showMorph[^"]*"[^>]*>[^<]*</a>)",
-            std::regex::icase);
+        // 4. Strip passagestudy.jsp morph anchor links.
         result = std::regex_replace(result, aMorphPassageRe, std::string(" "));
     }
 
-    // 5. Transform OSIS <w> elements to hoverable spans (some SWORD configs
-    //    may preserve these).
-    //    <w lemma="strong:H7225" morph="x-Robinson:Ncfsa">word</w>
-    //    → <span class="w" data-strong="H7225" data-morph="Ncfsa">word</span>
-    {
-        std::regex wRe(R"(<w\b([^>]*)>([\s\S]*?)</w>)", std::regex::icase);
-        result = replaceAll(result, wRe, [](const std::smatch& m) -> std::string {
-            std::string attrs   = m[1].str();
+    const bool hasWTag = result.find("<w") != std::string::npos ||
+                         result.find("<W") != std::string::npos;
+    if (hasWTag) {
+        // 5. Transform OSIS <w> elements to hoverable spans.
+        result = regexReplaceAll(result, wRe, [](const std::smatch& m) -> std::string {
+            std::string attrs = m[1].str();
             std::string content = m[2].str();
 
-            // Extract all strong numbers from lemma attribute (may be space-separated)
             std::string strong;
-            std::regex lemmaRe(R"re(lemma="([^"]+)")re");
             std::smatch lm;
             if (std::regex_search(attrs, lm, lemmaRe)) {
                 std::string lemmaVal = lm[1].str();
-                std::regex strongNumRe(R"(strong:([A-Za-z]?\d+[a-z]?))");
                 auto sit = std::sregex_iterator(lemmaVal.begin(), lemmaVal.end(), strongNumRe);
                 for (; sit != std::sregex_iterator(); ++sit) {
                     std::string s = (*sit)[1].str();
                     if (!s.empty()) {
-                        if (std::islower(static_cast<unsigned char>(s[0])))
-                            s[0] = static_cast<char>(std::toupper(static_cast<unsigned char>(s[0])));
+                        if (std::islower(static_cast<unsigned char>(s[0]))) {
+                            s[0] = static_cast<char>(
+                                std::toupper(static_cast<unsigned char>(s[0])));
+                        }
                         if (!strong.empty()) strong += '|';
                         strong += s;
                     }
                 }
             }
 
-            // Extract morph code (take the part after the last ':' prefix)
             std::string morph;
-            std::regex morphRe(R"re(morph="([^"]+)")re");
             std::smatch mm;
             if (std::regex_search(attrs, mm, morphRe)) {
                 morph = mm[1].str();
@@ -1053,76 +1218,85 @@ std::string SwordManager::postProcessHtml(const std::string& html) const {
                 }
             }
 
-            if (strong.empty() && morph.empty())
-                return content;
+            if (strong.empty() && morph.empty()) return content;
 
             std::string span = R"(<span class="w")";
             if (!strong.empty()) span += R"( data-strong=")" + strong + '"';
-            if (!morph.empty())  span += R"( data-morph=")"  + morph  + '"';
+            if (!morph.empty()) span += R"( data-morph=")" + morph + '"';
             span += '>' + content + "</span>";
             return span;
         });
     }
 
     // 6. Transform anchor Strong's links (strongs: scheme).
-    //    If anchor text is a Strong's number → strip it entirely.
-    //    If anchor text is a word → wrap it in <span class="w" data-strong="...">.
-    {
-        std::regex aStrongsRe(
-            R"re(<a\b[^>]*href="strongs:([A-Za-z]?\d+[a-z]?)"[^>]*>([^<]*)</a>)re",
-            std::regex::icase);
-        result = replaceAll(result, aStrongsRe, [](const std::smatch& m) -> std::string {
+    if (result.find("strongs:") != std::string::npos ||
+        result.find("STRONGS:") != std::string::npos) {
+        result = regexReplaceAll(result, aStrongsRe, [](const std::smatch& m) -> std::string {
             std::string strong = m[1].str();
-            std::string text   = m[2].str();
+            std::string text = m[2].str();
 
-            if (!strong.empty() && std::islower(static_cast<unsigned char>(strong[0])))
-                strong[0] = static_cast<char>(std::toupper(static_cast<unsigned char>(strong[0])));
+            if (!strong.empty() && std::islower(static_cast<unsigned char>(strong[0]))) {
+                strong[0] = static_cast<char>(
+                    std::toupper(static_cast<unsigned char>(strong[0])));
+            }
 
             bool textIsNumber = !text.empty();
             for (size_t i = 0; i < text.size(); ++i) {
                 unsigned char c = static_cast<unsigned char>(text[i]);
                 if (i == 0 && std::isalpha(c)) continue;
-                if (!std::isdigit(c)) { textIsNumber = false; break; }
+                if (!std::isdigit(c)) {
+                    textIsNumber = false;
+                    break;
+                }
             }
-
-            if (textIsNumber || text.empty())
-                return " ";
+            if (textIsNumber || text.empty()) return " ";
 
             return R"(<span class="w" data-strong=")" + strong + "\">" + text + "</span>";
         });
     }
 
     // 7. Strip anchor morph links (morph: scheme).
-    {
-        std::regex aMorphRe(R"(<a\b[^>]*href="morph:[^"]*"[^>]*>[^<]*</a>)",
-                            std::regex::icase);
+    if (result.find("morph:") != std::string::npos ||
+        result.find("MORPH:") != std::string::npos) {
         result = std::regex_replace(result, aMorphRe, std::string(" "));
     }
 
     // 8. Strip GBF-style inline Strong's markers: <H0776>, <G123>, or <0776>.
-    {
-        std::regex gbfStrongsRe(R"(<[HGhg]?\d{1,6}>)");
+    const bool hasInlineMarker =
+        result.find("<H") != std::string::npos ||
+        result.find("<G") != std::string::npos ||
+        result.find("<h") != std::string::npos ||
+        result.find("<g") != std::string::npos ||
+        result.find("<0") != std::string::npos ||
+        result.find("<1") != std::string::npos ||
+        result.find("<2") != std::string::npos ||
+        result.find("<3") != std::string::npos ||
+        result.find("<4") != std::string::npos ||
+        result.find("<5") != std::string::npos ||
+        result.find("<6") != std::string::npos ||
+        result.find("<7") != std::string::npos ||
+        result.find("<8") != std::string::npos ||
+        result.find("<9") != std::string::npos;
+    if (hasInlineMarker) {
         result = std::regex_replace(result, gbfStrongsRe, std::string(" "));
     }
 
-    // 9. Strip HTML-escaped GBF Strong's markers: &lt;H0776&gt; or &lt;0776&gt;.
-    {
-        std::regex escapedRe(R"(&lt;[HGhg]?\d{1,6}&gt;)");
+    // 9. Strip escaped GBF Strong's markers.
+    if (result.find("&lt;") != std::string::npos) {
         result = std::regex_replace(result, escapedRe, std::string(" "));
     }
 
-    // 10. Strip GBF morph codes in parentheses, e.g. (8804) or (8804b).
-    {
-        std::regex gbfMorphRe(R"(\(\d{4,5}[A-Za-z]?\))");
+    // 10. Strip GBF morph codes in parentheses.
+    if (result.find('(') != std::string::npos) {
         result = std::regex_replace(result, gbfMorphRe, std::string(" "));
     }
 
     // 11. Collapse multiple consecutive spaces into a single space.
-    {
-        std::regex multiSpaceRe(R"( {2,})");
+    if (result.find("  ") != std::string::npos) {
         result = std::regex_replace(result, multiSpaceRe, std::string(" "));
     }
 
+    cacheStore(html, result);
     return result;
 }
 

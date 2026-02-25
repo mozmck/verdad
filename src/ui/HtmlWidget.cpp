@@ -27,10 +27,30 @@ HtmlWidget::HtmlWidget(int X, int Y, int W, int H, const char* label)
 }
 
 HtmlWidget::~HtmlWidget() {
-    delete scrollbar_;
+    if (linkCallbackScheduled_) {
+        Fl::remove_timeout(dispatchDeferredLink, this);
+        linkCallbackScheduled_ = false;
+    }
+    if (reflowScheduled_) {
+        Fl::remove_timeout(dispatchDeferredReflow, this);
+        reflowScheduled_ = false;
+    }
+
+    // Destroy the document while callback targets (fonts_, etc.) are still live.
+    doc_.reset();
+    fonts_.clear();
+
+    // The scrollbar is created while a parent Fl_Group is current, so FLTK owns
+    // and destroys it with the group children list.
+    scrollbar_ = nullptr;
 }
 
 void HtmlWidget::setHtml(const std::string& html, const std::string& baseUrl) {
+    if (reflowScheduled_) {
+        Fl::remove_timeout(dispatchDeferredReflow, this);
+        reflowScheduled_ = false;
+    }
+
     currentHtml_ = html;
     baseUrl_ = baseUrl;
     scrollY_ = 0;
@@ -293,6 +313,37 @@ int HtmlWidget::handle(int event) {
     return Fl_Widget::handle(event);
 }
 
+void HtmlWidget::resize(int X, int Y, int W, int H) {
+    Fl_Widget::resize(X, Y, W, H);
+
+    if (scrollbar_) {
+        const int sbW = 16;
+        scrollbar_->resize(X + W - sbW, Y, sbW, H);
+    }
+
+    if (doc_) {
+        // Coalesce many resize events while dragging splitters.
+        if (reflowScheduled_) {
+            Fl::remove_timeout(dispatchDeferredReflow, this);
+        }
+        Fl::add_timeout(0.04, dispatchDeferredReflow, this);
+        reflowScheduled_ = true;
+    }
+    redraw();
+}
+
+void HtmlWidget::dispatchDeferredReflow(void* data) {
+    auto* self = static_cast<HtmlWidget*>(data);
+    if (!self) return;
+
+    self->reflowScheduled_ = false;
+    if (!self->doc_) return;
+
+    self->renderDocument();
+    self->updateScrollbar();
+    self->redraw();
+}
+
 // --- litehtml::document_container implementation ---
 
 litehtml::uint_ptr HtmlWidget::create_font(const litehtml::font_description& descr,
@@ -480,9 +531,28 @@ void HtmlWidget::link(const std::shared_ptr<litehtml::document>& /*doc*/,
 
 void HtmlWidget::on_anchor_click(const char* url,
                                   const litehtml::element::ptr& /*el*/) {
-    if (url && linkCallback_) {
-        linkCallback_(url);
+    if (!url || !linkCallback_) return;
+
+    // Defer callback execution until after litehtml finishes processing the
+    // current mouse event. This avoids invalidating doc_ during on_lbutton_up.
+    pendingLinkUrl_ = url;
+    if (linkCallbackScheduled_) {
+        Fl::remove_timeout(dispatchDeferredLink, this);
     }
+    Fl::add_timeout(0.0, dispatchDeferredLink, this);
+    linkCallbackScheduled_ = true;
+}
+
+void HtmlWidget::dispatchDeferredLink(void* data) {
+    auto* self = static_cast<HtmlWidget*>(data);
+    if (!self) return;
+
+    self->linkCallbackScheduled_ = false;
+    if (!self->linkCallback_ || self->pendingLinkUrl_.empty()) return;
+
+    std::string url = std::move(self->pendingLinkUrl_);
+    self->pendingLinkUrl_.clear();
+    self->linkCallback_(url);
 }
 
 void HtmlWidget::on_mouse_event(const litehtml::element::ptr& /*el*/,

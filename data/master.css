@@ -19,6 +19,15 @@ sup.versenum {
     cursor: pointer;
 }
 
+a.versenum-link {
+    text-decoration: none;
+    color: inherit;
+}
+
+a.versenum-link:hover {
+    text-decoration: none;
+}
+
 /* Chapter numbers */
 span.chapnum {
     font-size: 1.8em;
@@ -61,6 +70,11 @@ span.morph {
 div.verse {
     display: block;
     margin-bottom: 2px;
+}
+
+.verse-selected,
+.verse-selected * {
+    color: #1f7f1f !important;
 }
 
 /* Footnotes */

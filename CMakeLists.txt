@@ -103,6 +103,16 @@ if(APPLE)
     )
 endif()
 
+# Copy runtime CSS asset into the build tree on every build invocation.
+add_custom_target(copy_runtime_assets ALL
+    COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_BINARY_DIR}/data"
+    COMMAND ${CMAKE_COMMAND} -E copy
+            "${CMAKE_SOURCE_DIR}/data/master.css"
+            "${CMAKE_BINARY_DIR}/data/master.css"
+    VERBATIM
+)
+add_dependencies(verdad copy_runtime_assets)
+
 # Installation
 install(TARGETS verdad DESTINATION bin)
 install(FILES data/master.css DESTINATION share/verdad)

@@ -5,6 +5,7 @@
 
 #include <FL/Fl.H>
 
+#include <algorithm>
 #include <fstream>
 
 namespace verdad {
@@ -12,6 +13,8 @@ namespace verdad {
 RightPane::RightPane(VerdadApp* app, int X, int Y, int W, int H)
     : Fl_Group(X, Y, W, H)
     , app_(app) {
+    //box(FL_FLAT_BOX);
+    //color(FL_BACKGROUND2_COLOR);
 
     begin();
 
@@ -20,6 +23,7 @@ RightPane::RightPane(VerdadApp* app, int X, int Y, int W, int H)
     // Tabs for commentary and dictionary
     tabs_ = new Fl_Tabs(X + padding, Y + padding,
                          W - 2 * padding, H - 2 * padding);
+    tabs_->selection_color(tabs_->color());
     tabs_->begin();
 
     int tabY = Y + padding + 25;
@@ -87,6 +91,42 @@ RightPane::RightPane(VerdadApp* app, int X, int Y, int W, int H)
 }
 
 RightPane::~RightPane() = default;
+
+void RightPane::resize(int X, int Y, int W, int H) {
+    Fl_Group::resize(X, Y, W, H);
+
+    if (!tabs_ || !commentaryGroup_ || !commentaryChoice_ || !commentaryHtml_ ||
+        !dictionaryGroup_ || !dictionaryChoice_ || !dictionaryHtml_) {
+        return;
+    }
+
+    const int padding = 2;
+    const int tabsHeaderH = 25;
+    const int choiceH = 25;
+
+    int tabsW = std::max(20, W - 2 * padding);
+    int tabsH = std::max(20, H - 2 * padding);
+    tabs_->resize(X + padding, Y + padding, tabsW, tabsH);
+
+    int tabY = Y + padding + tabsHeaderH;
+    int tabH = std::max(20, H - 2 * padding - tabsHeaderH);
+    int panelW = std::max(20, W - 2 * padding);
+
+    commentaryGroup_->resize(X + padding, tabY, panelW, tabH);
+    dictionaryGroup_->resize(X + padding, tabY, panelW, tabH);
+
+    int choiceW = std::max(20, W - 2 * padding - 4);
+    commentaryChoice_->resize(X + padding + 2, tabY + 2, choiceW, choiceH);
+    dictionaryChoice_->resize(X + padding + 2, tabY + 2, choiceW, choiceH);
+
+    int htmlY = tabY + choiceH + 4;
+    int htmlH = std::max(10, tabH - choiceH - 6);
+    int htmlW = std::max(20, W - 2 * padding - 4);
+    commentaryHtml_->resize(X + padding + 2, htmlY, htmlW, htmlH);
+    dictionaryHtml_->resize(X + padding + 2, htmlY, htmlW, htmlH);
+
+    tabs_->redraw();
+}
 
 void RightPane::showCommentary(const std::string& reference) {
     if (currentCommentary_.empty()) return;
@@ -181,6 +221,22 @@ void RightPane::setDictionaryModule(const std::string& moduleName) {
             break;
         }
     }
+}
+
+bool RightPane::isDictionaryTabActive() const {
+    return tabs_ && tabs_->value() == dictionaryGroup_;
+}
+
+void RightPane::setDictionaryTabActive(bool dictionaryActive) {
+    if (!tabs_) return;
+    tabs_->value(dictionaryActive ? dictionaryGroup_ : commentaryGroup_);
+    tabs_->redraw();
+}
+
+void RightPane::redrawChrome() {
+    if (tabs_) tabs_->redraw();
+    if (commentaryChoice_) commentaryChoice_->redraw();
+    if (dictionaryChoice_) dictionaryChoice_->redraw();
 }
 
 void RightPane::refresh() {

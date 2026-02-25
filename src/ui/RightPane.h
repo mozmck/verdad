@@ -37,8 +37,32 @@ public:
     /// Set the current dictionary module
     void setDictionaryModule(const std::string& moduleName);
 
+    /// Current commentary module
+    const std::string& currentCommentaryModule() const { return currentCommentary_; }
+
+    /// Current commentary reference
+    const std::string& currentCommentaryReference() const { return currentCommentaryRef_; }
+
+    /// Current dictionary module
+    const std::string& currentDictionaryModule() const { return currentDictionary_; }
+
+    /// Current dictionary key
+    const std::string& currentDictionaryKey() const { return currentDictKey_; }
+
+    /// Returns true if dictionary tab is active, false for commentary tab.
+    bool isDictionaryTabActive() const;
+
+    /// Select the visible tab: true = dictionary, false = commentary.
+    void setDictionaryTabActive(bool dictionaryActive);
+
+    /// Redraw tabs/chrome during live layout changes.
+    void redrawChrome();
+
     /// Refresh display
     void refresh();
+
+protected:
+    void resize(int X, int Y, int W, int H) override;
 
 private:
     VerdadApp* app_;

@@ -9,6 +9,7 @@
 
 #include <FL/Fl.H>
 #include <FL/fl_ask.H>
+#include <algorithm>
 #include <fstream>
 
 namespace verdad {
@@ -16,6 +17,8 @@ namespace verdad {
 LeftPane::LeftPane(VerdadApp* app, int X, int Y, int W, int H)
     : Fl_Group(X, Y, W, H)
     , app_(app) {
+    //box(FL_FLAT_BOX);
+    //color(FL_BACKGROUND2_COLOR);
 
     begin();
 
@@ -47,6 +50,7 @@ LeftPane::LeftPane(VerdadApp* app, int X, int Y, int W, int H)
     int tabH = H - searchH - previewH - 4 * padding;
 
     tabs_ = new Fl_Tabs(X + padding, tabY, W - 2 * padding, tabH);
+    tabs_->selection_color(tabs_->color());
     tabs_->begin();
 
     // Modules tab
@@ -92,6 +96,45 @@ LeftPane::LeftPane(VerdadApp* app, int X, int Y, int W, int H)
 
 LeftPane::~LeftPane() = default;
 
+void LeftPane::resize(int X, int Y, int W, int H) {
+    Fl_Group::resize(X, Y, W, H);
+
+    if (!searchInput_ || !searchButton_ || !tabs_ ||
+        !modulePanel_ || !searchPanel_ || !bookmarkPanel_ || !tagPanel_ ||
+        !previewWidget_) {
+        return;
+    }
+
+    const int padding = 2;
+    const int searchH = 30;
+    const int previewH = 150;
+    const int buttonW = 60;
+    const int tabHeaderH = 25;
+
+    int searchW = std::max(10, W - 2 * padding - buttonW - 2);
+    searchInput_->resize(X + padding, Y + padding, searchW, searchH);
+    searchButton_->resize(X + W - padding - buttonW, Y + padding, buttonW, searchH);
+
+    int tabY = Y + padding + searchH + padding;
+    int tabH = std::max(40, H - searchH - previewH - 4 * padding);
+    tabs_->resize(X + padding, tabY, std::max(20, W - 2 * padding), tabH);
+
+    int contentY = tabY + tabHeaderH;
+    int contentH = std::max(10, tabH - tabHeaderH);
+    int contentW = std::max(20, W - 2 * padding);
+    modulePanel_->resize(X + padding, contentY, contentW, contentH);
+    searchPanel_->resize(X + padding, contentY, contentW, contentH);
+    bookmarkPanel_->resize(X + padding, contentY, contentW, contentH);
+    tagPanel_->resize(X + padding, contentY, contentW, contentH);
+
+    int previewY = tabY + tabH + padding;
+    int previewW = std::max(20, W - 2 * padding);
+    int previewActualH = std::max(40, H - (previewY - Y) - padding);
+    previewWidget_->resize(X + padding, previewY, previewW, previewActualH);
+
+    tabs_->redraw();
+}
+
 void LeftPane::doSearch(const std::string& query) {
     searchInput_->value(query.c_str());
     if (searchPanel_) {
@@ -132,6 +175,12 @@ void LeftPane::setPreviewText(const std::string& html) {
     if (previewWidget_) {
         previewWidget_->setHtml(html);
     }
+}
+
+void LeftPane::redrawChrome() {
+    if (searchInput_) searchInput_->redraw();
+    if (searchButton_) searchButton_->redraw();
+    if (tabs_) tabs_->redraw();
 }
 
 void LeftPane::refresh() {

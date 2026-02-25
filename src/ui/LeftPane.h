@@ -41,6 +41,9 @@ public:
     /// Update the preview area with text
     void setPreviewText(const std::string& html);
 
+    /// Redraw top chrome (search + tabs header) during live layout changes.
+    void redrawChrome();
+
     /// Refresh all tabs
     void refresh();
 
@@ -55,6 +58,9 @@ public:
 
     /// Get tag panel
     TagPanel* tagPanel() { return tagPanel_; }
+
+protected:
+    void resize(int X, int Y, int W, int H) override;
 
 private:
     VerdadApp* app_;

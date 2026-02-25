@@ -7,6 +7,8 @@
 #include <functional>
 #include <map>
 #include <mutex>
+#include <list>
+#include <unordered_map>
 
 // Forward declarations for SWORD library types
 namespace sword {
@@ -86,10 +88,12 @@ public:
     /// @param chapter       Chapter number
     /// @param paragraphMode If true, display verses inline (paragraph style);
     ///                      if false (default), display one verse per line
+    /// @param selectedVerse Verse number to highlight in the output
     /// @return XHTML string with all verses
     std::string getChapterText(const std::string& moduleName,
                                const std::string& book, int chapter,
-                               bool paragraphMode = false);
+                               bool paragraphMode = false,
+                               int selectedVerse = 0);
 
     /// Get rendered XHTML for parallel Bibles showing the same chapter
     /// @param moduleNames    List of modules to show in parallel
@@ -97,10 +101,12 @@ public:
     /// @param chapter        Chapter number
     /// @param paragraphMode  If true, display verses inline (paragraph style);
     ///                       if false (default), display one verse per line
+    /// @param selectedVerse  Verse number to highlight in the output
     /// @return XHTML table with parallel columns
     std::string getParallelText(const std::vector<std::string>& moduleNames,
                                 const std::string& book, int chapter,
-                                bool paragraphMode = false);
+                                bool paragraphMode = false,
+                                int selectedVerse = 0);
 
     /// Get commentary text for a given verse reference
     std::string getCommentaryText(const std::string& moduleName,
@@ -172,8 +178,23 @@ public:
         getEntryAttributes(const std::string& moduleName);
 
 private:
+    struct PostProcessCacheEntry {
+        std::string value;
+        std::list<std::string>::iterator lruIt;
+    };
+    struct VerseHtmlCacheEntry {
+        std::string value;
+        std::list<std::string>::iterator lruIt;
+    };
+
     std::unique_ptr<sword::SWMgr> mgr_;
     mutable std::mutex mutex_;
+    mutable std::unordered_map<std::string, PostProcessCacheEntry> postProcessCache_;
+    mutable std::list<std::string> postProcessLru_;
+    static constexpr size_t kPostProcessCacheLimit = 4096;
+    mutable std::unordered_map<std::string, VerseHtmlCacheEntry> verseHtmlCache_;
+    mutable std::list<std::string> verseHtmlLru_;
+    static constexpr size_t kVerseHtmlCacheLimit = 16384;
 
     /// Get a SWORD module by name (returns nullptr if not found)
     sword::SWModule* getModule(const std::string& name) const;
