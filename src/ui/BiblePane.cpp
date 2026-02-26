@@ -40,12 +40,14 @@ BiblePane::BiblePane(VerdadApp* app, int X, int Y, int W, int H)
     , htmlWidget_(nullptr)
     , currentBook_("Genesis")
     , currentChapter_(1) {
-    //box(FL_FLAT_BOX);
+    box(FL_FLAT_BOX);
     //color(FL_BACKGROUND2_COLOR);
 
     begin();
 
     navBar_ = new Fl_Group(X, Y, W, kNavH);
+    //navBar_->box(FL_FLAT_BOX);
+    //navBar_->color(FL_BACKGROUND2_COLOR);
     navBar_->begin();
     buildNavBar();
     navBar_->end();
@@ -54,6 +56,8 @@ BiblePane::BiblePane(VerdadApp* app, int X, int Y, int W, int H)
     int contentH = H - kNavH - kContentPadding;
 
     parallelHeader_ = new Fl_Group(X, contentY, W, kParallelHeaderH);
+    //parallelHeader_->box(FL_FLAT_BOX);
+    //parallelHeader_->color(FL_BACKGROUND2_COLOR);
     parallelHeader_->end();
     parallelHeader_->hide();
 
@@ -166,6 +170,7 @@ void BiblePane::resize(int X, int Y, int W, int H) {
     } else {
         parallelHeader_->hide();
     }
+    parallelHeader_->damage(FL_DAMAGE_ALL);
     layoutParallelHeader();
 
     int textY = contentY + headerH;
@@ -339,13 +344,21 @@ void BiblePane::refresh() {
 }
 
 void BiblePane::redrawChrome() {
-    if (navBar_) navBar_->redraw();
+    damage(FL_DAMAGE_ALL);
+    if (navBar_) {
+        navBar_->damage(FL_DAMAGE_ALL);
+        navBar_->redraw();
+    }
     if (parallelAddButton_) parallelAddButton_->redraw();
-    if (parallelHeader_) parallelHeader_->redraw();
+    if (parallelHeader_) {
+        parallelHeader_->damage(FL_DAMAGE_ALL);
+        parallelHeader_->redraw();
+    }
     for (auto& col : parallelHeaderColumns_) {
         if (col.moduleChoice) col.moduleChoice->redraw();
         if (col.removeButton) col.removeButton->redraw();
     }
+    redraw();
 }
 
 void BiblePane::selectVerse(int verse) {
@@ -609,6 +622,7 @@ void BiblePane::updateDisplay() {
     int contentY = y() + kNavH + kContentPadding;
     int headerH = parallelMode_ ? kParallelHeaderH : 0;
     parallelHeader_->resize(x(), contentY, w(), headerH);
+    parallelHeader_->damage(FL_DAMAGE_ALL);
     layoutParallelHeader();
     int textY = contentY + headerH;
     int textH = std::max(20, h() - kNavH - kContentPadding - headerH);
@@ -617,6 +631,7 @@ void BiblePane::updateDisplay() {
     htmlWidget_->setHtml(html);
     htmlWidget_->scrollToTop();
     htmlWidget_->redraw();
+    redrawChrome();
 }
 
 void BiblePane::normalizeParallelModules() {
@@ -694,6 +709,8 @@ void BiblePane::syncParallelHeader() {
         ParallelHeaderColumn col;
         col.group = new Fl_Group(parallelHeader_->x(), parallelHeader_->y(),
                                  parallelHeader_->w(), parallelHeader_->h());
+        col.group->box(FL_FLAT_BOX);
+        //col.group->color(FL_BACKGROUND2_COLOR);
         col.group->begin();
 
         col.moduleChoice = new Fl_Choice(col.group->x() + 2, col.group->y() + 2,
@@ -766,6 +783,7 @@ void BiblePane::layoutParallelHeader() {
 
         x += colW + spacing;
     }
+    parallelHeader_->damage(FL_DAMAGE_ALL);
 }
 
 void BiblePane::addParallelModule() {

@@ -17,7 +17,7 @@ namespace verdad {
 LeftPane::LeftPane(VerdadApp* app, int X, int Y, int W, int H)
     : Fl_Group(X, Y, W, H)
     , app_(app) {
-    //box(FL_FLAT_BOX);
+    box(FL_FLAT_BOX);
     //color(FL_BACKGROUND2_COLOR);
 
     begin();
@@ -178,6 +178,11 @@ void LeftPane::setPreviewText(const std::string& html) {
 }
 
 void LeftPane::redrawChrome() {
+    damage(FL_DAMAGE_ALL);
+    if (tabs_) {
+        tabs_->damage(FL_DAMAGE_ALL);
+        tabs_->redraw();
+    }
     if (searchInput_) searchInput_->redraw();
     if (searchButton_) searchButton_->redraw();
     if (tabs_) tabs_->redraw();

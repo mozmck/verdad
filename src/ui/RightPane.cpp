@@ -9,11 +9,26 @@
 #include <fstream>
 
 namespace verdad {
+namespace {
+
+class AutoRedrawTabs : public Fl_Tabs {
+public:
+    AutoRedrawTabs(int X, int Y, int W, int H, const char* L = nullptr)
+        : Fl_Tabs(X, Y, W, H, L) {}
+
+    void resize(int X, int Y, int W, int H) override {
+        Fl_Tabs::resize(X, Y, W, H);
+        damage(FL_DAMAGE_ALL);
+        redraw();
+    }
+};
+
+} // namespace
 
 RightPane::RightPane(VerdadApp* app, int X, int Y, int W, int H)
     : Fl_Group(X, Y, W, H)
     , app_(app) {
-    //box(FL_FLAT_BOX);
+    box(FL_FLAT_BOX);
     //color(FL_BACKGROUND2_COLOR);
 
     begin();
@@ -21,9 +36,11 @@ RightPane::RightPane(VerdadApp* app, int X, int Y, int W, int H)
     int padding = 2;
 
     // Tabs for commentary and dictionary
-    tabs_ = new Fl_Tabs(X + padding, Y + padding,
-                         W - 2 * padding, H - 2 * padding);
-    tabs_->selection_color(tabs_->color());
+    tabs_ = new AutoRedrawTabs(X + padding, Y + padding,
+                               W - 2 * padding, H - 2 * padding);
+    //tabs_->box(FL_FLAT_BOX);
+    //tabs_->color(FL_BACKGROUND2_COLOR);
+    //tabs_->selection_color(tabs_->color());
     tabs_->begin();
 
     int tabY = Y + padding + 25;
@@ -33,6 +50,8 @@ RightPane::RightPane(VerdadApp* app, int X, int Y, int W, int H)
     // --- Commentary tab ---
     commentaryGroup_ = new Fl_Group(X + padding, tabY,
                                      W - 2 * padding, tabH, "Commentary");
+    //commentaryGroup_->box(FL_FLAT_BOX);
+    //commentaryGroup_->color(FL_BACKGROUND2_COLOR);
     commentaryGroup_->begin();
 
     commentaryChoice_ = new Fl_Choice(X + padding + 2, tabY + 2,
@@ -58,6 +77,8 @@ RightPane::RightPane(VerdadApp* app, int X, int Y, int W, int H)
     // --- Dictionary tab ---
     dictionaryGroup_ = new Fl_Group(X + padding, tabY,
                                      W - 2 * padding, tabH, "Dictionary");
+    //dictionaryGroup_->box(FL_FLAT_BOX);
+    //dictionaryGroup_->color(FL_BACKGROUND2_COLOR);
     dictionaryGroup_->begin();
 
     dictionaryChoice_ = new Fl_Choice(X + padding + 2, tabY + 2,
@@ -125,7 +146,12 @@ void RightPane::resize(int X, int Y, int W, int H) {
     commentaryHtml_->resize(X + padding + 2, htmlY, htmlW, htmlH);
     dictionaryHtml_->resize(X + padding + 2, htmlY, htmlW, htmlH);
 
+    commentaryGroup_->damage(FL_DAMAGE_ALL);
+    dictionaryGroup_->damage(FL_DAMAGE_ALL);
+    tabs_->damage(FL_DAMAGE_ALL);
     tabs_->redraw();
+    damage(FL_DAMAGE_ALL);
+    redraw();
 }
 
 void RightPane::showCommentary(const std::string& reference) {
@@ -278,9 +304,16 @@ void RightPane::restoreDisplayBuffer(const DisplayBuffer& buffer, bool dictionar
 }
 
 void RightPane::redrawChrome() {
-    if (tabs_) tabs_->redraw();
+    damage(FL_DAMAGE_ALL);
+    if (tabs_) {
+        tabs_->damage(FL_DAMAGE_ALL);
+        tabs_->redraw();
+    }
     if (commentaryChoice_) commentaryChoice_->redraw();
     if (dictionaryChoice_) dictionaryChoice_->redraw();
+    if (commentaryGroup_) commentaryGroup_->redraw();
+    if (dictionaryGroup_) dictionaryGroup_->redraw();
+    redraw();
 }
 
 void RightPane::refresh() {

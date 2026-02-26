@@ -8,6 +8,7 @@
 #include <FL/Fl.H>
 #include <FL/fl_ask.H>
 #include <FL/Fl_Menu_Item.H>
+#include <FL/fl_draw.H>
 
 #include <algorithm>
 #include <cctype>
@@ -25,8 +26,18 @@ public:
     AutoRedrawTabs(int X, int Y, int W, int H, const char* L = nullptr)
         : Fl_Tabs(X, Y, W, H, L) {}
 
+    void draw() override {
+        fl_push_clip(x(), y(), w(), h());
+        Fl_Color bg = parent() ? parent()->color() : FL_BACKGROUND_COLOR;
+        fl_color(bg);
+        fl_rectf(x(), y(), w(), h());
+        fl_pop_clip();
+        Fl_Tabs::draw();
+    }
+
     void resize(int X, int Y, int W, int H) override {
         Fl_Tabs::resize(X, Y, W, H);
+        damage(FL_DAMAGE_ALL);
         redraw();
     }
 };
@@ -206,6 +217,7 @@ MainWindow::MainWindow(VerdadApp* app, int W, int H, const char* title)
     const int newTabButtonPad = 2;
     const int tabsHeaderH = 25;
     studyArea_ = new Fl_Group(studyX, menuH, studyW, H - menuH);
+    studyArea_->box(FL_FLAT_BOX);
     studyArea_->begin();
 
     newStudyTabButton_ = new Fl_Button(studyX + newTabButtonPad,
@@ -219,6 +231,7 @@ MainWindow::MainWindow(VerdadApp* app, int W, int H, const char* title)
         menuH,
         studyW - newTabButtonW - (newTabButtonPad * 2),
         tabsHeaderH);
+    //studyTabsWidget_->box(FL_FLAT_BOX);
     studyTabsWidget_->selection_color(studyTabsWidget_->color());
     studyTabsWidget_->callback(onStudyTabChange, this);
     // Close the tabs group so subsequent widgets are added to studyArea_,
@@ -443,6 +456,12 @@ void MainWindow::applyTabState(int index) {
         ctx.state.dictionaryActive);
     rightPane_->refresh();
     rightPane_->setDictionaryTabActive(ctx.state.dictionaryActive);
+    biblePane_->redrawChrome();
+    rightPane_->redrawChrome();
+    if (studyTabsWidget_) {
+        studyTabsWidget_->damage(FL_DAMAGE_ALL);
+        studyTabsWidget_->redraw();
+    }
 
     applyingTabState_ = false;
 }
@@ -712,10 +731,23 @@ void MainWindow::restoreSessionState(const SessionState& state) {
 int MainWindow::handle(int event) {
     if (event == FL_DRAG || event == FL_RELEASE) {
         if (newStudyTabButton_) newStudyTabButton_->redraw();
-        if (studyTabsWidget_) studyTabsWidget_->redraw();
+        if (studyTabsWidget_) {
+            studyTabsWidget_->damage(FL_DAMAGE_ALL);
+            studyTabsWidget_->redraw();
+        }
         if (leftPane_) leftPane_->redrawChrome();
         if (biblePane_) biblePane_->redrawChrome();
         if (rightPane_) rightPane_->redrawChrome();
+        if (studyArea_) {
+            studyArea_->damage(FL_DAMAGE_ALL);
+            studyArea_->redraw();
+        }
+        if (contentTile_) {
+            contentTile_->damage(FL_DAMAGE_ALL);
+            contentTile_->redraw();
+        }
+        damage(FL_DAMAGE_ALL);
+        redraw();
     }
 
     if (event == FL_SHORTCUT) {
@@ -767,6 +799,10 @@ void MainWindow::onViewParallel(Fl_Widget* /*w*/, void* data) {
     auto* self = static_cast<MainWindow*>(data);
     if (self->biblePane_) {
         self->biblePane_->toggleParallel();
+        self->biblePane_->redrawChrome();
+    }
+    if (self->rightPane_) {
+        self->rightPane_->redrawChrome();
     }
 }
 
