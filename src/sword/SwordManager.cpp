@@ -1182,6 +1182,128 @@ bool mayContainMorphOrStrongsMarkup(const std::string& html) {
         html.find("&lt;9") != std::string::npos;
 }
 
+bool isParallelInlineTag(const std::string& tagName) {
+    return
+        tagName == "a" ||
+        tagName == "span" ||
+        tagName == "sup" ||
+        tagName == "sub" ||
+        tagName == "i" ||
+        tagName == "b" ||
+        tagName == "em" ||
+        tagName == "strong" ||
+        tagName == "small" ||
+        tagName == "u" ||
+        tagName == "font" ||
+        tagName == "mark";
+}
+
+bool isParallelSpacerTag(const std::string& tagName) {
+    return
+        tagName == "div" ||
+        tagName == "p" ||
+        tagName == "li" ||
+        tagName == "tr" ||
+        tagName == "table" ||
+        tagName == "tbody" ||
+        tagName == "thead" ||
+        tagName == "tfoot" ||
+        tagName == "td" ||
+        tagName == "th" ||
+        tagName == "ul" ||
+        tagName == "ol" ||
+        tagName == "h1" ||
+        tagName == "h2" ||
+        tagName == "h3" ||
+        tagName == "h4" ||
+        tagName == "h5" ||
+        tagName == "h6";
+}
+
+bool hasOpenTag(const std::vector<std::string>& openTags,
+                const std::string& tagName) {
+    for (auto it = openTags.rbegin(); it != openTags.rend(); ++it) {
+        if (*it == tagName) return true;
+    }
+    return false;
+}
+
+void eraseLastOpenTag(std::vector<std::string>& openTags,
+                      const std::string& tagName) {
+    for (auto it = openTags.rbegin(); it != openTags.rend(); ++it) {
+        if (*it == tagName) {
+            openTags.erase(std::next(it).base());
+            return;
+        }
+    }
+}
+
+std::string sanitizeParallelVerseHtml(const std::string& html) {
+    if (html.empty()) return html;
+
+    std::string out;
+    out.reserve(html.size() + 16);
+    std::vector<std::string> openTags;
+
+    size_t pos = 0;
+    while (pos < html.size()) {
+        if (html[pos] != '<') {
+            out.push_back(html[pos]);
+            ++pos;
+            continue;
+        }
+
+        size_t tagEnd = std::string::npos;
+        std::string tagName;
+        bool isClosing = false;
+        bool isSelfClosing = false;
+        if (!parseTag(html, pos, tagEnd, tagName, isClosing, isSelfClosing)) {
+            out.push_back(html[pos]);
+            ++pos;
+            continue;
+        }
+
+        std::string rawTag = html.substr(pos, tagEnd - pos + 1);
+
+        if (tagName == "br") {
+            out += "<br/>";
+            pos = tagEnd + 1;
+            continue;
+        }
+
+        if (isParallelInlineTag(tagName)) {
+            if (isClosing) {
+                if (hasOpenTag(openTags, tagName)) {
+                    out += rawTag;
+                    eraseLastOpenTag(openTags, tagName);
+                }
+            } else {
+                out += rawTag;
+                if (!isSelfClosing) {
+                    openTags.push_back(tagName);
+                }
+            }
+            pos = tagEnd + 1;
+            continue;
+        }
+
+        if (isParallelSpacerTag(tagName)) {
+            out.push_back(' ');
+        }
+
+        pos = tagEnd + 1;
+    }
+
+    while (!openTags.empty()) {
+        out += "</";
+        out += openTags.back();
+        out += ">";
+        openTags.pop_back();
+    }
+
+    return collapseSpacesOutsideTags(out);
+}
+
 } // namespace
 
 SwordManager::SwordManager() = default;
@@ -1426,18 +1548,6 @@ std::string SwordManager::getParallelText(
 
     std::ostringstream html;
     html << "<div class=\"parallel\">\n";
-    html << "<div class=\"parallel-row\">\n";
-    for (size_t i = 0; i < moduleNames.size(); ++i) {
-        bool isLast = (i + 1 == moduleNames.size());
-        int w = isLast ? lastColWidth : colWidth;
-        const char* colClass = isLast ? "parallel-col-last" : "parallel-col";
-        const char* headerClass = isLast ? "parallel-header-last" : "parallel-header";
-        html << "<div class=\"" << colClass << "\" style=\"width: " << w << "%;\">"
-             << "<div class=\"" << headerClass << "\">" << moduleNames[i] << "</div>"
-             << "</div>\n";
-    }
-    html << "<div class=\"parallel-clear\"></div>\n";
-    html << "</div>\n";
 
     auto tryGetVerseHtmlCache =
         [this](const std::string& key, std::string& valueOut) -> bool {
@@ -1502,6 +1612,7 @@ std::string SwordManager::getParallelText(
                             storeVerseHtmlCache(cacheKey, verseText);
                         }
                     }
+                    verseText = sanitizeParallelVerseHtml(verseText);
                     html << "<a class=\"versenum-link\" href=\"verse:" << v << "\">"
                          << "<sup class=\"versenum\">" << v << "</sup></a> ";
                     html << verseText;

@@ -124,22 +124,34 @@ div.indented, .indent1 {
 /* Parallel Bible columns */
 div.parallel {
     width: 100%;
+    display: table;
+    table-layout: fixed;
+    border-collapse: collapse;
 }
 
 div.parallel-row {
-    clear: both;
+    display: table-row;
 }
 
 div.parallel-col,
 div.parallel-col-last {
-    float: left;
+    display: table-cell;
+    float: none;
+    box-sizing: border-box;
+    vertical-align: top;
+}
+
+div.parallel-col {
+    padding-right: 8px;
+    border-right: 1px solid #ddd;
+}
+
+div.parallel-col-last {
+    padding-right: 0;
 }
 
 div.parallel-clear {
-    clear: both;
-    height: 0;
-    line-height: 0;
-    font-size: 0;
+    display: none;
 }
 
 div.parallel-header {
@@ -147,8 +159,6 @@ div.parallel-header {
     background-color: #f0f0f0;
     padding: 4px 8px;
     border-bottom: 2px solid #ccc;
-    border-right: 1px solid #ddd;
-    margin-right: 10px;
     margin-bottom: 2px;
 }
 
@@ -162,12 +172,11 @@ div.parallel-header-last {
 
 div.parallel-cell {
     padding: 4px 8px;
-    border-right: 1px solid #ddd;
-    margin-right: 10px;
     margin-bottom: 1px;
     vertical-align: top;
     overflow-wrap: break-word;
     word-break: normal;
+    overflow: hidden;
 }
 
 div.parallel-cell-last {
@@ -176,6 +185,7 @@ div.parallel-cell-last {
     vertical-align: top;
     overflow-wrap: break-word;
     word-break: normal;
+    overflow: hidden;
 }
 
 /* Search result highlighting */

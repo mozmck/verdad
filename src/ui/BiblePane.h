@@ -5,6 +5,7 @@
 #include <FL/Fl_Choice.H>
 #include <FL/Fl_Input.H>
 #include <FL/Fl_Button.H>
+#include <FL/Fl_Box.H>
 #include <string>
 #include <vector>
 
@@ -112,6 +113,9 @@ private:
     Fl_Button* nextButton_;
     Fl_Button* parallelButton_;
     Fl_Button* paragraphButton_;
+    Fl_Button* parallelAddButton_;
+    Fl_Box* navSpacer_;
+    Fl_Group* parallelHeader_;
 
     // Content
     HtmlWidget* htmlWidget_;
@@ -121,8 +125,16 @@ private:
     int currentVerse_ = 1;
 
     // Parallel mode
+    struct ParallelHeaderColumn {
+        Fl_Group* group = nullptr;
+        Fl_Choice* moduleChoice = nullptr;
+        Fl_Button* removeButton = nullptr;
+    };
+
+    static constexpr int kMaxParallelColumns = 7;
     bool parallelMode_ = false;
     std::vector<std::string> parallelModules_;
+    std::vector<ParallelHeaderColumn> parallelHeaderColumns_;
 
     // Display mode: false = verse-per-line (default), true = paragraph style
     bool paragraphMode_ = false;
@@ -132,6 +144,16 @@ private:
 
     /// Update the chapter text display
     void updateDisplay();
+    void normalizeParallelModules();
+    void syncParallelHeader();
+    void clearParallelHeader();
+    void layoutParallelHeader();
+    void populateParallelChoice(Fl_Choice* choice) const;
+    void applyModuleChoiceValue(Fl_Choice* choice, const std::string& module) const;
+    int parallelColumnIndexForWidget(Fl_Widget* w) const;
+    void addParallelModule();
+    void removeParallelModuleAt(int index);
+    void setParallelModuleAt(int index, const std::string& module);
 
     /// Populate book choices for current module
     void populateBooks();
@@ -151,6 +173,9 @@ private:
     static void onModuleChange(Fl_Widget* w, void* data);
     static void onParallel(Fl_Widget* w, void* data);
     static void onParagraphToggle(Fl_Widget* w, void* data);
+    static void onParallelAdd(Fl_Widget* w, void* data);
+    static void onParallelRemove(Fl_Widget* w, void* data);
+    static void onParallelModuleChange(Fl_Widget* w, void* data);
 
     // HTML widget callbacks
     void onLinkClicked(const std::string& url);
