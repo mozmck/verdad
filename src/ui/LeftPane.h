@@ -2,6 +2,8 @@
 #define VERDAD_LEFT_PANE_H
 
 #include <FL/Fl_Group.H>
+#include <FL/Fl_Tile.H>
+#include <FL/Fl_Box.H>
 #include <FL/Fl_Tabs.H>
 #include <FL/Fl_Input.H>
 #include <FL/Fl_Button.H>
@@ -37,6 +39,12 @@ public:
     /// Update the preview area with text
     void setPreviewText(const std::string& html);
 
+    /// Current preview widget height in pixels.
+    int previewHeight() const;
+
+    /// Set preview widget height in pixels (clamped to valid splitter range).
+    void setPreviewHeight(int height);
+
     /// Redraw top chrome (search + tabs header) during live layout changes.
     void redrawChrome();
 
@@ -59,8 +67,13 @@ private:
     VerdadApp* app_;
 
     // Search box (always visible at top)
+    Fl_Group* searchGroup_;
     Fl_Input* searchInput_;
     Fl_Button* searchButton_;
+
+    // Splitter area (tabs + preview)
+    Fl_Tile* contentTile_;
+    Fl_Box* contentResizeBox_;
 
     // Tabbed area
     Fl_Tabs* tabs_;

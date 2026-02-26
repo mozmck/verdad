@@ -611,6 +611,7 @@ MainWindow::SessionState MainWindow::captureSessionState() {
     state.windowH = h();
     if (leftPane_) {
         state.leftPaneWidth = leftPane_->w();
+        state.leftPanePreviewHeight = leftPane_->previewHeight();
     }
     state.activeStudyTab = activeStudyTab_;
 
@@ -645,6 +646,9 @@ void MainWindow::restoreSessionState(const SessionState& state) {
 
         static_cast<Fl_Widget*>(leftPane_)->resize(0, menuH, leftW, totalH);
         studyArea_->resize(leftW, menuH, totalW - leftW, totalH);
+        if (state.leftPanePreviewHeight > 0) {
+            leftPane_->setPreviewHeight(state.leftPanePreviewHeight);
+        }
 
         if (newStudyTabButton_ && studyTabsWidget_) {
             const int newTabButtonPad = 2;

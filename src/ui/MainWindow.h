@@ -44,6 +44,7 @@ public:
         int windowW = 1200;
         int windowH = 800;
         int leftPaneWidth = 300;
+        int leftPanePreviewHeight = 150;
         int activeStudyTab = 0;
         std::vector<StudyTabState> studyTabs;
     };
