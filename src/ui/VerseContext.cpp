@@ -105,13 +105,7 @@ void VerseContext::onSearchStrongs(Fl_Widget* /*w*/, void* data) {
         }
 
         if (!currentModule.empty()) {
-            // Perform search
-            auto results = self->app_->swordManager().searchStrongs(
-                currentModule, strongsNum);
-
-            // Show in search panel
-            self->app_->mainWindow()->showSearchResults(
-                "Strong's: " + strongsNum);
+            self->app_->mainWindow()->showSearchResults(strongsNum);
         }
     }
 }

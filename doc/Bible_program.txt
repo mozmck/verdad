@@ -11,9 +11,9 @@ Here is the basic layout and features:
         - Search functionality should use SQLite FTS5
         - Do background indexing of modules into a single db, but don't put anything else in that db.
     - Search results show book of the bible, chapter and verse.
-        - Clicking on a result shows in pane at bottom.
+        - Clicking on a result shows verse in preview pane at bottom.
         - Double-click on a result shows selected verse in bible pane (commentary should change also).
-        - Middle-click (and option in right-click) will show verse in a new tab in Right Pane.
+        - Middle-click (and option in right-click) will open verse in a new tab in Right Pane.
 - Right Pane for Bibles/Commentaries/Books.
     - There will be a tabbed dual-pane window in the Right Pane. The tabs at the top will display the bible version and key (book/chapter/verse)
         - On the left is a pane for bible display

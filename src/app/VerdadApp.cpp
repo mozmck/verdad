@@ -1,5 +1,6 @@
 #include "app/VerdadApp.h"
 #include "sword/SwordManager.h"
+#include "search/SearchIndexer.h"
 #include "tags/TagManager.h"
 #include "ui/MainWindow.h"
 #include "ui/BiblePane.h"
@@ -88,6 +89,7 @@ VerdadApp* VerdadApp::instance_ = nullptr;
 
 VerdadApp::VerdadApp()
     : swordMgr_(std::make_unique<SwordManager>())
+    , searchIndexer_(nullptr)
     , tagMgr_(std::make_unique<TagManager>()) {
     instance_ = this;
 }
@@ -116,6 +118,10 @@ bool VerdadApp::initialize(int argc, char* argv[]) {
     // Load tags
     tagMgr_->load(getConfigDir() + "/tags.dat");
 
+    // Initialize FTS5 index database (separate from tags/settings data).
+    searchIndexer_ = std::make_unique<SearchIndexer>(
+        getConfigDir() + "/module_index.db");
+
     // Set up FLTK
     Fl::scheme("gtk+");
     Fl_File_Icon::load_system_icons();
@@ -125,6 +131,23 @@ bool VerdadApp::initialize(int argc, char* argv[]) {
 
     // Load user preferences
     loadPreferences();
+
+    // Index current Bible first, then queue remaining Bible modules.
+    if (searchIndexer_) {
+        std::string activeModule;
+        if (mainWindow_ && mainWindow_->biblePane()) {
+            activeModule = trimCopy(mainWindow_->biblePane()->currentModule());
+        }
+        if (!activeModule.empty()) {
+            searchIndexer_->queueModuleIndex(activeModule);
+        }
+
+        std::vector<std::string> bibleModules;
+        for (const auto& mod : swordMgr_->getBibleModules()) {
+            if (!mod.name.empty()) bibleModules.push_back(mod.name);
+        }
+        searchIndexer_->queueModuleIndex(bibleModules);
+    }
 
     return true;
 }

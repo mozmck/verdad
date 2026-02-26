@@ -50,12 +50,22 @@ private:
     // Stored results
     std::vector<SearchResult> results_;
 
+    // Indexing indicator state
+    bool indexingIndicatorActive_ = false;
+    std::string indexingModule_;
+    bool swordSearchInProgress_ = false;
+
     /// Populate module choices
     void populateModules();
+    void setResultCountLabel(const std::string& suffix = "");
+    void startIndexingIndicator(const std::string& moduleName);
+    void stopIndexingIndicator();
+    void updateIndexingIndicator();
 
     // Callbacks
     static void onResultSelect(Fl_Widget* w, void* data);
     static void onResultDoubleClick(Fl_Widget* w, void* data);
+    static void onIndexingPoll(void* data);
 };
 
 } // namespace verdad

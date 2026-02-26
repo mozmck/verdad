@@ -7,6 +7,7 @@
 namespace verdad {
 
 class SwordManager;
+class SearchIndexer;
 class TagManager;
 class MainWindow;
 
@@ -29,6 +30,10 @@ public:
     /// Get the tag manager
     TagManager& tagManager() { return *tagMgr_; }
 
+    /// Get the search indexer (may be nullptr if initialization failed)
+    SearchIndexer* searchIndexer() { return searchIndexer_.get(); }
+    const SearchIndexer* searchIndexer() const { return searchIndexer_.get(); }
+
     /// Get the main window
     MainWindow* mainWindow() { return mainWindow_.get(); }
 
@@ -45,6 +50,7 @@ private:
     static VerdadApp* instance_;
 
     std::unique_ptr<SwordManager> swordMgr_;
+    std::unique_ptr<SearchIndexer> searchIndexer_;
     std::unique_ptr<TagManager> tagMgr_;
     std::unique_ptr<MainWindow> mainWindow_;
 

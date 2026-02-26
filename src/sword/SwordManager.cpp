@@ -1679,6 +1679,8 @@ std::vector<SearchResult> SwordManager::search(
     std::lock_guard<std::mutex> lock(mutex_);
     std::vector<SearchResult> results;
 
+    if (moduleName.empty() || searchText.empty()) return results;
+
     sword::SWModule* mod = getModule(moduleName);
     if (!mod) return results;
 
@@ -1700,13 +1702,19 @@ std::vector<SearchResult> SwordManager::search(
 
     // Collect results
     for (resultKeys = sword::TOP; !resultKeys.popError(); resultKeys++) {
+        const char* keyText = resultKeys.getText();
+        if (!keyText || !*keyText) {
+            continue;
+        }
+
         SearchResult result;
-        result.key = resultKeys.getText();
+        result.key = keyText;
         result.module = moduleName;
 
         // Get preview text
-        mod->setKey(resultKeys.getText());
-        result.text = mod->stripText();
+        mod->setKey(keyText);
+        const char* preview = mod->stripText();
+        result.text = preview ? preview : "";
 
         // Truncate long preview
         if (result.text.length() > 200) {

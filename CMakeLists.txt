@@ -28,6 +28,9 @@ if(NOT SWORD_FOUND)
     message(FATAL_ERROR "SWORD not found. Install libsword-dev.")
 endif()
 
+# SQLite3 (FTS5 search index)
+find_package(SQLite3 REQUIRED)
+
 # litehtml (built as submodule)
 set(LITEHTML_BUILD_TESTING OFF CACHE BOOL "Disable litehtml tests")
 add_subdirectory(libs/litehtml)
@@ -42,6 +45,7 @@ set(SOURCES
     src/main.cpp
     src/app/VerdadApp.cpp
     src/sword/SwordManager.cpp
+    src/search/SearchIndexer.cpp
     src/tags/TagManager.cpp
     src/ui/MainWindow.cpp
     src/ui/HtmlWidget.cpp
@@ -57,6 +61,7 @@ set(SOURCES
 set(HEADERS
     src/app/VerdadApp.h
     src/sword/SwordManager.h
+    src/search/SearchIndexer.h
     src/tags/TagManager.h
     src/ui/MainWindow.h
     src/ui/HtmlWidget.h
@@ -82,6 +87,7 @@ target_include_directories(verdad PRIVATE
 target_link_libraries(verdad PRIVATE
     ${FLTK_LDFLAGS}
     ${SWORD_LIBRARIES}
+    SQLite::SQLite3
     litehtml
 )
 
