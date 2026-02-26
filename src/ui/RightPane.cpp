@@ -233,6 +233,50 @@ void RightPane::setDictionaryTabActive(bool dictionaryActive) {
     tabs_->redraw();
 }
 
+void RightPane::setStudyState(const std::string& commentaryModule,
+                              const std::string& commentaryReference,
+                              const std::string& dictionaryModule,
+                              const std::string& dictionaryKey,
+                              bool dictionaryActive) {
+    if (!commentaryModule.empty()) {
+        setCommentaryModule(commentaryModule);
+    }
+    if (!dictionaryModule.empty()) {
+        setDictionaryModule(dictionaryModule);
+    }
+
+    currentCommentaryRef_ = commentaryReference;
+    currentDictKey_ = dictionaryKey;
+    setDictionaryTabActive(dictionaryActive);
+}
+
+RightPane::DisplayBuffer RightPane::captureDisplayBuffer() const {
+    DisplayBuffer buf;
+    if (commentaryHtml_) {
+        buf.commentaryHtml = commentaryHtml_->currentHtml();
+        buf.commentaryScrollY = commentaryHtml_->scrollY();
+        buf.hasCommentary = !buf.commentaryHtml.empty();
+    }
+    if (dictionaryHtml_) {
+        buf.dictionaryHtml = dictionaryHtml_->currentHtml();
+        buf.dictionaryScrollY = dictionaryHtml_->scrollY();
+        buf.hasDictionary = !buf.dictionaryHtml.empty();
+    }
+    return buf;
+}
+
+void RightPane::restoreDisplayBuffer(const DisplayBuffer& buffer, bool dictionaryActive) {
+    if (commentaryHtml_ && buffer.hasCommentary) {
+        commentaryHtml_->setHtml(buffer.commentaryHtml);
+        commentaryHtml_->setScrollY(buffer.commentaryScrollY);
+    }
+    if (dictionaryHtml_ && buffer.hasDictionary) {
+        dictionaryHtml_->setHtml(buffer.dictionaryHtml);
+        dictionaryHtml_->setScrollY(buffer.dictionaryScrollY);
+    }
+    setDictionaryTabActive(dictionaryActive);
+}
+
 void RightPane::redrawChrome() {
     if (tabs_) tabs_->redraw();
     if (commentaryChoice_) commentaryChoice_->redraw();

@@ -89,6 +89,15 @@ void HtmlWidget::scrollToTop() {
     redraw();
 }
 
+void HtmlWidget::setScrollY(int y) {
+    int maxScroll = std::max(0, contentHeight_ - h());
+    scrollY_ = std::clamp(y, 0, maxScroll);
+    if (scrollbar_->visible()) {
+        scrollbar_->value(scrollY_, h(), 0, contentHeight_);
+    }
+    redraw();
+}
+
 void HtmlWidget::renderDocument() {
     if (!doc_) return;
 

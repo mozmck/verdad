@@ -54,6 +54,12 @@ public:
     /// Get current scroll position
     int scrollY() const { return scrollY_; }
 
+    /// Set vertical scroll position (clamped to content range).
+    void setScrollY(int y);
+
+    /// Get currently loaded HTML fragment.
+    const std::string& currentHtml() const { return currentHtml_; }
+
     /// Handle widget geometry updates and rerender on resize.
     void resize(int X, int Y, int W, int H) override;
 

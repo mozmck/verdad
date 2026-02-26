@@ -90,7 +90,7 @@ public:
     void refresh();
 
     /// Capture all session-restorable state.
-    SessionState captureSessionState() const;
+    SessionState captureSessionState();
 
     /// Restore session state (window geometry, splitters, study tabs and pane state).
     void restoreSessionState(const SessionState& state);
@@ -104,13 +104,12 @@ private:
         std::string href;
         std::string strong;
         std::string morph;
+        int tabIndex = -1;
     };
 
     struct StudyContext {
         Fl_Group* tabGroup = nullptr;
-        Fl_Tile* contentTile = nullptr;
-        BiblePane* biblePane = nullptr;
-        RightPane* rightPane = nullptr;
+        StudyTabState state;
     };
 
     VerdadApp* app_;
@@ -124,6 +123,7 @@ private:
     Fl_Group* studyArea_;
     Fl_Button* newStudyTabButton_;
     Fl_Tabs* studyTabsWidget_;
+    Fl_Tile* contentTile_;
 
     // Active workspace panes
     BiblePane* biblePane_;
@@ -132,6 +132,7 @@ private:
     // All workspace tabs
     std::vector<StudyContext> studyTabs_;
     int activeStudyTab_ = -1;
+    bool applyingTabState_ = false;
 
     // Delayed hover state for MAG updates
     PendingWordInfo pendingWordInfo_;
@@ -152,8 +153,14 @@ private:
     /// Activate a workspace tab by index.
     void activateStudyTab(int index);
 
-    /// Build a label like "KJV:Gen 1:1" for the given pane context.
-    static std::string studyTabLabel(const BiblePane* pane);
+    /// Build a label like "KJV:Gen 1:1" for the given tab state.
+    static std::string studyTabLabel(const StudyTabState& state);
+
+    /// Capture current shared pane state into the active tab context.
+    void captureActiveTabState();
+
+    /// Apply a tab context into the shared Bible/Right panes.
+    void applyTabState(int index);
 
     /// Apply the currently queued word info to the MAG viewer.
     void applyPendingWordInfo();

@@ -1419,25 +1419,24 @@ std::string SwordManager::getParallelText(
 
     if (verseCount == 0) verseCount = 31; // fallback
 
-    // Use div-based float layout for reliable column rendering in litehtml
+    // Float-based column layout for reliable litehtml rendering.
     int numCols = static_cast<int>(moduleNames.size());
     int colWidth = 100 / numCols;
     int lastColWidth = 100 - colWidth * (numCols - 1);
 
     std::ostringstream html;
     html << "<div class=\"parallel\">\n";
-
-    // Header row
     html << "<div class=\"parallel-row\">\n";
     for (size_t i = 0; i < moduleNames.size(); ++i) {
-        bool isLast = (i == moduleNames.size() - 1);
+        bool isLast = (i + 1 == moduleNames.size());
         int w = isLast ? lastColWidth : colWidth;
-        const char* cellClass = isLast ? "parallel-header-last" : "parallel-header";
-        html << "<div style=\"float: left; width: " << w << "%;\">"
-             << "<div class=\"" << cellClass << "\">" << moduleNames[i] << "</div>"
+        const char* colClass = isLast ? "parallel-col-last" : "parallel-col";
+        const char* headerClass = isLast ? "parallel-header-last" : "parallel-header";
+        html << "<div class=\"" << colClass << "\" style=\"width: " << w << "%;\">"
+             << "<div class=\"" << headerClass << "\">" << moduleNames[i] << "</div>"
              << "</div>\n";
     }
-    html << "<div style=\"clear: both;\"></div>\n";
+    html << "<div class=\"parallel-clear\"></div>\n";
     html << "</div>\n";
 
     auto tryGetVerseHtmlCache =
@@ -1479,15 +1478,15 @@ std::string SwordManager::getParallelText(
     for (int v = 1; v <= verseCount; ++v) {
         html << "<div class=\"parallel-row\">\n";
         for (size_t i = 0; i < moduleNames.size(); ++i) {
-            bool isLast = (i == moduleNames.size() - 1);
+            bool isLast = (i + 1 == moduleNames.size());
             int w = isLast ? lastColWidth : colWidth;
-            const char* cellClass = isLast ? "parallel-cell-last" : "parallel-cell";
-            std::string cellClasses = cellClass;
+            const char* colClass = isLast ? "parallel-col-last" : "parallel-col";
+            std::string cellClasses = isLast ? "parallel-cell-last" : "parallel-cell";
             if (selectedVerse > 0 && v == selectedVerse) {
                 cellClasses += " verse-selected";
             }
             sword::SWModule* mod = getModule(moduleNames[i]);
-            html << "<div style=\"float: left; width: " << w << "%;\">"
+            html << "<div class=\"" << colClass << "\" style=\"width: " << w << "%;\">"
                  << "<div class=\"" << cellClasses << "\">";
             if (mod) {
                 std::string ref = book + " " + std::to_string(chapter)
@@ -1510,7 +1509,7 @@ std::string SwordManager::getParallelText(
             }
             html << "</div></div>\n";
         }
-        html << "<div style=\"clear: both;\"></div>\n";
+        html << "<div class=\"parallel-clear\"></div>\n";
         html << "</div>\n";
     }
 

@@ -183,6 +183,7 @@ MainWindow::MainWindow(VerdadApp* app, int W, int H, const char* title)
     , studyArea_(nullptr)
     , newStudyTabButton_(nullptr)
     , studyTabsWidget_(nullptr)
+    , contentTile_(nullptr)
     , biblePane_(nullptr)
     , rightPane_(nullptr) {
 
@@ -203,9 +204,8 @@ MainWindow::MainWindow(VerdadApp* app, int W, int H, const char* title)
     int studyW = W - leftW;
     const int newTabButtonW = 24;
     const int newTabButtonPad = 2;
+    const int tabsHeaderH = 25;
     studyArea_ = new Fl_Group(studyX, menuH, studyW, H - menuH);
-    //studyArea_->box(FL_FLAT_BOX);
-    //studyArea_->color(FL_BACKGROUND_COLOR);
     studyArea_->begin();
 
     newStudyTabButton_ = new Fl_Button(studyX + newTabButtonPad,
@@ -218,11 +218,27 @@ MainWindow::MainWindow(VerdadApp* app, int W, int H, const char* title)
         studyX + newTabButtonW + (newTabButtonPad * 2),
         menuH,
         studyW - newTabButtonW - (newTabButtonPad * 2),
-        H - menuH);
+        tabsHeaderH);
     studyTabsWidget_->selection_color(studyTabsWidget_->color());
     studyTabsWidget_->callback(onStudyTabChange, this);
+    // Close the tabs group so subsequent widgets are added to studyArea_,
+    // not as tab page children.
+    studyTabsWidget_->end();
+    studyArea_->begin();
+
+    int contentY = menuH + tabsHeaderH;
+    int contentH = std::max(20, H - contentY);
+    contentTile_ = new Fl_Tile(studyX, contentY, studyW, contentH);
+    contentTile_->begin();
+
+    int bibleW = studyW * 2 / 3;
+    int commentaryW = studyW - bibleW;
+    biblePane_ = new BiblePane(app_, studyX, contentY, bibleW, contentH);
+    rightPane_ = new RightPane(app_, studyX + bibleW, contentY, commentaryW, contentH);
+
+    contentTile_->end();
     studyArea_->end();
-    studyArea_->resizable(studyTabsWidget_);
+    studyArea_->resizable(contentTile_);
 
     mainTile_->end();
     resizable(mainTile_);
@@ -244,56 +260,54 @@ void MainWindow::addStudyTab(const std::string& module,
                              int verse) {
     if (!studyTabsWidget_) return;
 
-    const int tabX = studyTabsWidget_->x();
-    const int tabY = studyTabsWidget_->y() + 25;
-    const int tabW = studyTabsWidget_->w();
-    const int tabH = studyTabsWidget_->h() - 25;
-
-    studyTabsWidget_->begin();
+    captureActiveTabState();
 
     StudyContext ctx;
-    ctx.tabGroup = new Fl_Group(tabX, tabY, tabW, tabH, "Loading...");
-    //ctx.tabGroup->box(FL_FLAT_BOX);
-    //ctx.tabGroup->color(FL_BACKGROUND2_COLOR);
-    ctx.tabGroup->begin();
+    std::string initModule = trimCopy(module);
+    std::string initBook = trimCopy(book);
+    int initChapter = chapter > 0 ? chapter : 1;
+    int initVerse = verse > 0 ? verse : 1;
 
-    ctx.contentTile = new Fl_Tile(tabX, tabY, tabW, tabH);
-    ctx.contentTile->begin();
-
-    int bibleW = tabW * 2 / 3;
-    int commentaryW = tabW - bibleW;
-    ctx.biblePane = new BiblePane(app_, tabX, tabY, bibleW, tabH);
-    ctx.rightPane = new RightPane(app_, tabX + bibleW, tabY, commentaryW, tabH);
-
-    ctx.contentTile->end();
-    ctx.tabGroup->end();
-    ctx.tabGroup->resizable(ctx.contentTile);
-
-    studyTabsWidget_->end();
-
-    studyTabs_.push_back(ctx);
-    int idx = static_cast<int>(studyTabs_.size()) - 1;
-    studyTabsWidget_->value(studyTabs_[idx].tabGroup);
-    activateStudyTab(idx);
-
-    std::string initModule = module;
     if (initModule.empty() && biblePane_) {
         initModule = biblePane_->currentModule();
     }
     if (initModule.empty()) {
         auto bibles = app_->swordManager().getBibleModules();
-        if (!bibles.empty()) initModule = bibles[0].name;
+        if (!bibles.empty()) initModule = bibles.front().name;
     }
+    if (initBook.empty()) initBook = "Genesis";
 
-    std::string initBook = book.empty() ? "Genesis" : book;
-    int initChapter = chapter > 0 ? chapter : 1;
-    int initVerse = verse > 0 ? verse : 1;
+    ctx.state.module = initModule;
+    ctx.state.book = initBook;
+    ctx.state.chapter = initChapter;
+    ctx.state.verse = initVerse;
+    ctx.state.paragraphMode = false;
+    ctx.state.parallelMode = false;
+    ctx.state.parallelModules.clear();
+    ctx.state.biblePaneWidth = biblePane_ ? biblePane_->w() : 0;
 
-    if (biblePane_) {
-        if (!initModule.empty()) biblePane_->setModule(initModule);
-        biblePane_->navigateTo(initBook, initChapter, initVerse);
+    if (rightPane_) {
+        ctx.state.commentaryModule = rightPane_->currentCommentaryModule();
+        ctx.state.dictionaryModule = rightPane_->currentDictionaryModule();
     }
-    updateActiveStudyTabLabel();
+    if (!ctx.state.commentaryModule.empty()) {
+        ctx.state.commentaryReference = initBook + " " + std::to_string(initChapter) +
+                                        ":" + std::to_string(initVerse);
+    }
+    ctx.state.dictionaryActive = false;
+
+    studyTabsWidget_->begin();
+    ctx.tabGroup = new Fl_Group(studyTabsWidget_->x(),
+                                studyTabsWidget_->y() + studyTabsWidget_->h(),
+                                1, 1);
+    ctx.tabGroup->copy_label(studyTabLabel(ctx.state).c_str());
+    ctx.tabGroup->end();
+    studyTabsWidget_->end();
+
+    studyTabs_.push_back(std::move(ctx));
+    int idx = static_cast<int>(studyTabs_.size()) - 1;
+    studyTabsWidget_->value(studyTabs_[idx].tabGroup);
+    activateStudyTab(idx);
 }
 
 void MainWindow::duplicateActiveStudyTab() {
@@ -302,59 +316,24 @@ void MainWindow::duplicateActiveStudyTab() {
         return;
     }
 
+    captureActiveTabState();
     const StudyContext& src = studyTabs_[activeStudyTab_];
-    if (!src.biblePane) {
-        addStudyTab("", "Genesis", 1, 1);
-        return;
-    }
 
-    const std::string module = src.biblePane->currentModule();
-    const std::string book = src.biblePane->currentBook();
-    const int chapter = std::max(1, src.biblePane->currentChapter());
-    const int verse = std::max(1, src.biblePane->currentVerse());
+    StudyContext dst;
+    dst.state = src.state;
 
-    const bool srcParagraphMode = src.biblePane->isParagraphMode();
-    const bool srcParallelMode = src.biblePane->isParallel();
-    const std::vector<std::string> srcParallelModules = src.biblePane->parallelModules();
+    studyTabsWidget_->begin();
+    dst.tabGroup = new Fl_Group(studyTabsWidget_->x(),
+                                studyTabsWidget_->y() + studyTabsWidget_->h(),
+                                1, 1);
+    dst.tabGroup->copy_label(studyTabLabel(dst.state).c_str());
+    dst.tabGroup->end();
+    studyTabsWidget_->end();
 
-    std::string srcCommentaryModule;
-    std::string srcCommentaryRef;
-    std::string srcDictionaryModule;
-    std::string srcDictionaryKey;
-    bool srcDictionaryActive = false;
-    if (src.rightPane) {
-        srcCommentaryModule = src.rightPane->currentCommentaryModule();
-        srcCommentaryRef = src.rightPane->currentCommentaryReference();
-        srcDictionaryModule = src.rightPane->currentDictionaryModule();
-        srcDictionaryKey = src.rightPane->currentDictionaryKey();
-        srcDictionaryActive = src.rightPane->isDictionaryTabActive();
-    }
-
-    addStudyTab(module, book, chapter, verse);
-    if (!biblePane_) return;
-
-    if (srcParallelMode) {
-        biblePane_->setParallelModules(srcParallelModules);
-        if (!biblePane_->isParallel()) {
-            biblePane_->toggleParallel();
-        }
-    }
-
-    if (srcParagraphMode != biblePane_->isParagraphMode()) {
-        biblePane_->toggleParagraphMode();
-    }
-
-    if (rightPane_) {
-        if (!srcCommentaryModule.empty() && !srcCommentaryRef.empty()) {
-            rightPane_->showCommentary(srcCommentaryModule, srcCommentaryRef);
-        }
-        if (!srcDictionaryModule.empty() && !srcDictionaryKey.empty()) {
-            rightPane_->showDictionaryEntry(srcDictionaryModule, srcDictionaryKey);
-        }
-        rightPane_->setDictionaryTabActive(srcDictionaryActive);
-    }
-
-    updateActiveStudyTabLabel();
+    studyTabs_.push_back(std::move(dst));
+    int idx = static_cast<int>(studyTabs_.size()) - 1;
+    studyTabsWidget_->value(studyTabs_[idx].tabGroup);
+    activateStudyTab(idx);
 }
 
 void MainWindow::clearStudyTabs() {
@@ -369,29 +348,30 @@ void MainWindow::clearStudyTabs() {
 
     studyTabs_.clear();
     activeStudyTab_ = -1;
-    biblePane_ = nullptr;
-    rightPane_ = nullptr;
     studyTabsWidget_->redraw();
 }
 
 void MainWindow::activateStudyTab(int index) {
     if (index < 0 || index >= static_cast<int>(studyTabs_.size())) return;
+    if (activeStudyTab_ == index) {
+        updateActiveStudyTabLabel();
+        return;
+    }
 
+    captureActiveTabState();
+    hideWordInfo();
     activeStudyTab_ = index;
-    biblePane_ = studyTabs_[index].biblePane;
-    rightPane_ = studyTabs_[index].rightPane;
+    applyTabState(index);
     updateActiveStudyTabLabel();
 }
 
-std::string MainWindow::studyTabLabel(const BiblePane* pane) {
-    if (!pane) return "Study";
-
-    std::string module = pane->currentModule();
+std::string MainWindow::studyTabLabel(const StudyTabState& state) {
+    std::string module = state.module;
     if (module.empty()) module = "Bible";
-    std::string book = pane->currentBook();
+    std::string book = state.book;
     if (book.empty()) book = "Genesis";
-    int chapter = std::max(1, pane->currentChapter());
-    int verse = std::max(1, pane->currentVerse());
+    int chapter = std::max(1, state.chapter);
+    int verse = std::max(1, state.verse);
     return module + ":" + abbreviateBookName(book) + " " +
            std::to_string(chapter) + ":" + std::to_string(verse);
 }
@@ -403,12 +383,68 @@ void MainWindow::updateActiveStudyTabLabel() {
         return;
     }
 
+    if (!applyingTabState_) captureActiveTabState();
+
     StudyContext& ctx = studyTabs_[activeStudyTab_];
     if (!ctx.tabGroup) return;
 
-    std::string label = studyTabLabel(ctx.biblePane);
+    std::string label = studyTabLabel(ctx.state);
     ctx.tabGroup->copy_label(label.c_str());
     studyTabsWidget_->redraw();
+}
+
+void MainWindow::captureActiveTabState() {
+    if (applyingTabState_) return;
+    if (activeStudyTab_ < 0 || activeStudyTab_ >= static_cast<int>(studyTabs_.size())) return;
+
+    StudyContext& ctx = studyTabs_[activeStudyTab_];
+    if (biblePane_) {
+        ctx.state.module = biblePane_->currentModule();
+        ctx.state.book = biblePane_->currentBook();
+        ctx.state.chapter = biblePane_->currentChapter();
+        ctx.state.verse = biblePane_->currentVerse();
+        ctx.state.paragraphMode = biblePane_->isParagraphMode();
+        ctx.state.parallelMode = biblePane_->isParallel();
+        ctx.state.parallelModules = biblePane_->parallelModules();
+        ctx.state.biblePaneWidth = biblePane_->w();
+    }
+
+    if (rightPane_) {
+        ctx.state.commentaryModule = rightPane_->currentCommentaryModule();
+        ctx.state.commentaryReference = rightPane_->currentCommentaryReference();
+        ctx.state.dictionaryModule = rightPane_->currentDictionaryModule();
+        ctx.state.dictionaryKey = rightPane_->currentDictionaryKey();
+        ctx.state.dictionaryActive = rightPane_->isDictionaryTabActive();
+    }
+}
+
+void MainWindow::applyTabState(int index) {
+    if (index < 0 || index >= static_cast<int>(studyTabs_.size())) return;
+    if (!biblePane_ || !rightPane_) return;
+
+    StudyContext& ctx = studyTabs_[index];
+    applyingTabState_ = true;
+
+    biblePane_->setStudyState(
+        ctx.state.module,
+        ctx.state.book,
+        ctx.state.chapter,
+        ctx.state.verse,
+        ctx.state.paragraphMode,
+        ctx.state.parallelMode,
+        ctx.state.parallelModules);
+    biblePane_->refresh();
+
+    rightPane_->setStudyState(
+        ctx.state.commentaryModule,
+        ctx.state.commentaryReference,
+        ctx.state.dictionaryModule,
+        ctx.state.dictionaryKey,
+        ctx.state.dictionaryActive);
+    rightPane_->refresh();
+    rightPane_->setDictionaryTabActive(ctx.state.dictionaryActive);
+
+    applyingTabState_ = false;
 }
 
 void MainWindow::navigateTo(const std::string& reference) {
@@ -427,12 +463,14 @@ void MainWindow::navigateTo(const std::string& module, const std::string& refere
 void MainWindow::showCommentary(const std::string& reference) {
     if (rightPane_) {
         rightPane_->showCommentary(reference);
+        if (!applyingTabState_) captureActiveTabState();
     }
 }
 
 void MainWindow::showDictionary(const std::string& key) {
     if (rightPane_) {
         rightPane_->showDictionaryEntry(key);
+        if (!applyingTabState_) captureActiveTabState();
     }
 }
 
@@ -443,6 +481,7 @@ void MainWindow::showWordInfo(const std::string& word, const std::string& href,
     pendingWordInfo_.href = href;
     pendingWordInfo_.strong = strong;
     pendingWordInfo_.morph = morph;
+    pendingWordInfo_.tabIndex = activeStudyTab_;
 
     if (hoverDelayScheduled_) {
         Fl::remove_timeout(onHoverDelayTimeout, this);
@@ -467,6 +506,8 @@ void MainWindow::onHoverDelayTimeout(void* data) {
 }
 
 void MainWindow::applyPendingWordInfo() {
+    if (pendingWordInfo_.tabIndex != activeStudyTab_) return;
+
     std::string strongNum = pendingWordInfo_.strong;
     if (strongNum.empty() && pendingWordInfo_.href.find("strongs:") == 0) {
         strongNum = pendingWordInfo_.href.substr(8);
@@ -536,13 +577,14 @@ void MainWindow::showSearchResults(const std::string& query) {
 
 void MainWindow::refresh() {
     if (leftPane_) leftPane_->refresh();
-    for (auto& ctx : studyTabs_) {
-        if (ctx.biblePane) ctx.biblePane->refresh();
-        if (ctx.rightPane) ctx.rightPane->refresh();
-    }
+    if (biblePane_) biblePane_->refresh();
+    if (rightPane_) rightPane_->refresh();
+    captureActiveTabState();
 }
 
-MainWindow::SessionState MainWindow::captureSessionState() const {
+MainWindow::SessionState MainWindow::captureSessionState() {
+    captureActiveTabState();
+
     SessionState state;
     state.windowX = x();
     state.windowY = y();
@@ -553,24 +595,11 @@ MainWindow::SessionState MainWindow::captureSessionState() const {
     }
     state.activeStudyTab = activeStudyTab_;
 
+    int sharedBiblePaneWidth = biblePane_ ? biblePane_->w() : 0;
     for (const auto& ctx : studyTabs_) {
-        StudyTabState tab;
-        if (ctx.biblePane) {
-            tab.module = ctx.biblePane->currentModule();
-            tab.book = ctx.biblePane->currentBook();
-            tab.chapter = ctx.biblePane->currentChapter();
-            tab.verse = ctx.biblePane->currentVerse();
-            tab.paragraphMode = ctx.biblePane->isParagraphMode();
-            tab.parallelMode = ctx.biblePane->isParallel();
-            tab.parallelModules = ctx.biblePane->parallelModules();
-            tab.biblePaneWidth = ctx.biblePane->w();
-        }
-        if (ctx.rightPane) {
-            tab.commentaryModule = ctx.rightPane->currentCommentaryModule();
-            tab.commentaryReference = ctx.rightPane->currentCommentaryReference();
-            tab.dictionaryModule = ctx.rightPane->currentDictionaryModule();
-            tab.dictionaryKey = ctx.rightPane->currentDictionaryKey();
-            tab.dictionaryActive = ctx.rightPane->isDictionaryTabActive();
+        StudyTabState tab = ctx.state;
+        if (tab.biblePaneWidth <= 0) {
+            tab.biblePaneWidth = sharedBiblePaneWidth;
         }
         state.studyTabs.push_back(tab);
     }
@@ -601,6 +630,7 @@ void MainWindow::restoreSessionState(const SessionState& state) {
         if (newStudyTabButton_ && studyTabsWidget_) {
             const int newTabButtonPad = 2;
             const int newTabButtonW = newStudyTabButton_->w();
+            const int tabsHeaderH = studyTabsWidget_->h();
             newStudyTabButton_->resize(studyArea_->x() + newTabButtonPad,
                                        studyArea_->y() + newTabButtonPad,
                                        newTabButtonW,
@@ -608,89 +638,71 @@ void MainWindow::restoreSessionState(const SessionState& state) {
             studyTabsWidget_->resize(studyArea_->x() + newTabButtonW + (newTabButtonPad * 2),
                                      studyArea_->y(),
                                      std::max(40, studyArea_->w() - newTabButtonW - (newTabButtonPad * 2)),
-                                     studyArea_->h());
+                                     tabsHeaderH);
+            if (contentTile_) {
+                int contentY = studyArea_->y() + tabsHeaderH;
+                int contentH = std::max(20, studyArea_->h() - tabsHeaderH);
+                contentTile_->resize(studyArea_->x(), contentY, studyArea_->w(), contentH);
+            }
         }
-    }
-
-    if (state.studyTabs.empty()) {
-        redraw();
-        return;
     }
 
     clearStudyTabs();
 
+    if (state.studyTabs.empty() || !studyTabsWidget_) {
+        addStudyTab("", "Genesis", 1, 1);
+        redraw();
+        return;
+    }
+
     for (const auto& tabState : state.studyTabs) {
-        addStudyTab(tabState.module, tabState.book, tabState.chapter, tabState.verse);
+        StudyContext ctx;
+        ctx.state = tabState;
 
-        if (biblePane_) {
-            if (tabState.parallelMode) {
-                if (!tabState.parallelModules.empty()) {
-                    biblePane_->setParallelModules(tabState.parallelModules);
-                }
-                if (!biblePane_->isParallel()) {
-                    biblePane_->toggleParallel();
-                }
-            } else if (biblePane_->isParallel()) {
-                biblePane_->toggleParallel();
-            }
+        studyTabsWidget_->begin();
+        ctx.tabGroup = new Fl_Group(studyTabsWidget_->x(),
+                                    studyTabsWidget_->y() + studyTabsWidget_->h(),
+                                    1, 1);
+        ctx.tabGroup->copy_label(studyTabLabel(ctx.state).c_str());
+        ctx.tabGroup->end();
+        studyTabsWidget_->end();
 
-            if (tabState.paragraphMode != biblePane_->isParagraphMode()) {
-                biblePane_->toggleParagraphMode();
+        studyTabs_.push_back(std::move(ctx));
+    }
+
+    if (contentTile_ && biblePane_ && rightPane_) {
+        int desired = 0;
+        if (!state.studyTabs.empty()) {
+            int idx = std::clamp(state.activeStudyTab, 0,
+                                 static_cast<int>(state.studyTabs.size()) - 1);
+            desired = state.studyTabs[idx].biblePaneWidth;
+        }
+        if (desired <= 0) {
+            for (const auto& t : state.studyTabs) {
+                if (t.biblePaneWidth > 0) {
+                    desired = t.biblePaneWidth;
+                    break;
+                }
             }
         }
-
-        if (rightPane_) {
-            if (!tabState.commentaryModule.empty()) {
-                rightPane_->setCommentaryModule(tabState.commentaryModule);
-            }
-            if (!tabState.dictionaryModule.empty()) {
-                rightPane_->setDictionaryModule(tabState.dictionaryModule);
-            }
-
-            if (!tabState.commentaryReference.empty()) {
-                std::string mod = tabState.commentaryModule.empty()
-                    ? rightPane_->currentCommentaryModule()
-                    : tabState.commentaryModule;
-                if (!mod.empty()) {
-                    rightPane_->showCommentary(mod, tabState.commentaryReference);
-                }
-            }
-
-            if (!tabState.dictionaryKey.empty()) {
-                std::string mod = tabState.dictionaryModule.empty()
-                    ? rightPane_->currentDictionaryModule()
-                    : tabState.dictionaryModule;
-                if (!mod.empty()) {
-                    rightPane_->showDictionaryEntry(mod, tabState.dictionaryKey);
-                }
-            }
-
-            rightPane_->setDictionaryTabActive(tabState.dictionaryActive);
-        }
-
-        if (activeStudyTab_ >= 0 &&
-            activeStudyTab_ < static_cast<int>(studyTabs_.size())) {
-            StudyContext& ctx = studyTabs_[activeStudyTab_];
-            if (ctx.contentTile && ctx.biblePane && ctx.rightPane &&
-                tabState.biblePaneWidth > 0) {
-                int tileX = ctx.contentTile->x();
-                int tileY = ctx.contentTile->y();
-                int tileW = ctx.contentTile->w();
-                int tileH = ctx.contentTile->h();
-                int bibleW = std::clamp(tabState.biblePaneWidth, 140, std::max(140, tileW - 140));
-                static_cast<Fl_Widget*>(ctx.biblePane)
-                    ->resize(tileX, tileY, bibleW, tileH);
-                static_cast<Fl_Widget*>(ctx.rightPane)
-                    ->resize(tileX + bibleW, tileY, tileW - bibleW, tileH);
-                ctx.contentTile->redraw();
-            }
+        if (desired > 0) {
+            int tileX = contentTile_->x();
+            int tileY = contentTile_->y();
+            int tileW = contentTile_->w();
+            int tileH = contentTile_->h();
+            int bibleW = std::clamp(desired, 140, std::max(140, tileW - 140));
+            static_cast<Fl_Widget*>(biblePane_)->resize(tileX, tileY, bibleW, tileH);
+            static_cast<Fl_Widget*>(rightPane_)
+                ->resize(tileX + bibleW, tileY, tileW - bibleW, tileH);
+            contentTile_->redraw();
         }
     }
 
-    if (!studyTabs_.empty() && studyTabsWidget_) {
+    if (!studyTabs_.empty()) {
         int idx = std::clamp(state.activeStudyTab, 0,
                              static_cast<int>(studyTabs_.size()) - 1);
         studyTabsWidget_->value(studyTabs_[idx].tabGroup);
+        activeStudyTab_ = -1;
         activateStudyTab(idx);
     }
 

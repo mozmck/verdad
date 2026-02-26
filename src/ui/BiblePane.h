@@ -17,6 +17,12 @@ class HtmlWidget;
 /// Single-view (no internal tabs). Context tabs are managed by MainWindow.
 class BiblePane : public Fl_Group {
 public:
+    struct DisplayBuffer {
+        std::string html;
+        int scrollY = 0;
+        bool valid = false;
+    };
+
     BiblePane(VerdadApp* app, int X, int Y, int W, int H);
     ~BiblePane() override;
 
@@ -70,6 +76,21 @@ public:
 
     /// Select a verse in the current chapter
     void selectVerse(int verse);
+
+    /// Apply Bible view state without fetching new text.
+    void setStudyState(const std::string& module,
+                       const std::string& book,
+                       int chapter,
+                       int verse,
+                       bool paragraphMode,
+                       bool parallelMode,
+                       const std::vector<std::string>& parallelModules);
+
+    /// Capture current rendered text/scroll for fast restore.
+    DisplayBuffer captureDisplayBuffer() const;
+
+    /// Restore previously captured rendered text/scroll.
+    void restoreDisplayBuffer(const DisplayBuffer& buffer);
 
     /// Redraw toolbar chrome during live layout changes.
     void redrawChrome();

@@ -16,6 +16,15 @@ class HtmlWidget;
 /// Uses tabs for multiple commentaries/dictionaries.
 class RightPane : public Fl_Group {
 public:
+    struct DisplayBuffer {
+        std::string commentaryHtml;
+        int commentaryScrollY = 0;
+        bool hasCommentary = false;
+        std::string dictionaryHtml;
+        int dictionaryScrollY = 0;
+        bool hasDictionary = false;
+    };
+
     RightPane(VerdadApp* app, int X, int Y, int W, int H);
     ~RightPane() override;
 
@@ -54,6 +63,19 @@ public:
 
     /// Select the visible tab: true = dictionary, false = commentary.
     void setDictionaryTabActive(bool dictionaryActive);
+
+    /// Apply modules/keys/tab selection without rendering new text.
+    void setStudyState(const std::string& commentaryModule,
+                       const std::string& commentaryReference,
+                       const std::string& dictionaryModule,
+                       const std::string& dictionaryKey,
+                       bool dictionaryActive);
+
+    /// Capture currently rendered text/scroll for fast restore.
+    DisplayBuffer captureDisplayBuffer() const;
+
+    /// Restore previously captured rendered text/scroll.
+    void restoreDisplayBuffer(const DisplayBuffer& buffer, bool dictionaryActive);
 
     /// Redraw tabs/chrome during live layout changes.
     void redrawChrome();

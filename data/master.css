@@ -121,13 +121,25 @@ div.indented, .indent1 {
     margin-left: 60px;
 }
 
-/* Parallel Bible columns (div-based float layout for litehtml compatibility) */
+/* Parallel Bible columns */
 div.parallel {
     width: 100%;
 }
 
 div.parallel-row {
-    overflow: hidden;
+    clear: both;
+}
+
+div.parallel-col,
+div.parallel-col-last {
+    float: left;
+}
+
+div.parallel-clear {
+    clear: both;
+    height: 0;
+    line-height: 0;
+    font-size: 0;
 }
 
 div.parallel-header {
@@ -136,6 +148,8 @@ div.parallel-header {
     padding: 4px 8px;
     border-bottom: 2px solid #ccc;
     border-right: 1px solid #ddd;
+    margin-right: 10px;
+    margin-bottom: 2px;
 }
 
 div.parallel-header-last {
@@ -143,15 +157,25 @@ div.parallel-header-last {
     background-color: #f0f0f0;
     padding: 4px 8px;
     border-bottom: 2px solid #ccc;
+    margin-bottom: 2px;
 }
 
 div.parallel-cell {
     padding: 4px 8px;
     border-right: 1px solid #ddd;
+    margin-right: 10px;
+    margin-bottom: 1px;
+    vertical-align: top;
+    overflow-wrap: break-word;
+    word-break: normal;
 }
 
 div.parallel-cell-last {
     padding: 4px 8px;
+    margin-bottom: 1px;
+    vertical-align: top;
+    overflow-wrap: break-word;
+    word-break: normal;
 }
 
 /* Search result highlighting */

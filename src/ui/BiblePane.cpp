@@ -150,6 +150,16 @@ void BiblePane::navigateTo(const std::string& book, int chapter, int verse) {
     if (maxVerse <= 0) maxVerse = 1;
     currentVerse_ = std::max(1, std::min(verse, maxVerse));
 
+    if (bookChoice_) {
+        for (int i = 0; i < bookChoice_->size(); ++i) {
+            const Fl_Menu_Item& item = bookChoice_->menu()[i];
+            if (item.label() && currentBook_ == item.label()) {
+                bookChoice_->value(i);
+                break;
+            }
+        }
+    }
+
     updateDisplay();
     if (htmlWidget_ && currentVerse_ > 1) {
         htmlWidget_->scrollToAnchor("v" + std::to_string(currentVerse_));
@@ -307,6 +317,80 @@ void BiblePane::selectVerse(int verse) {
                           ":" + std::to_string(currentVerse_);
         app_->mainWindow()->showCommentary(ref);
     }
+}
+
+void BiblePane::setStudyState(const std::string& module,
+                              const std::string& book,
+                              int chapter,
+                              int verse,
+                              bool paragraphMode,
+                              bool parallelMode,
+                              const std::vector<std::string>& parallelModules) {
+    if (!module.empty()) {
+        moduleName_ = module;
+    } else if (moduleName_.empty()) {
+        auto bibles = app_->swordManager().getBibleModules();
+        if (!bibles.empty()) moduleName_ = bibles.front().name;
+    }
+
+    currentBook_ = book.empty() ? currentBook_ : book;
+    if (currentBook_.empty()) currentBook_ = "Genesis";
+
+    currentChapter_ = std::max(1, chapter);
+    currentVerse_ = std::max(1, verse);
+    paragraphMode_ = paragraphMode;
+    parallelMode_ = parallelMode;
+    parallelModules_ = parallelModules;
+
+    if (parallelMode_ && parallelModules_.empty() && !moduleName_.empty()) {
+        parallelModules_.push_back(moduleName_);
+    }
+
+    if (moduleChoice_) {
+        for (int i = 0; i < moduleChoice_->size(); ++i) {
+            const Fl_Menu_Item& item = moduleChoice_->menu()[i];
+            if (item.label() && moduleName_ == item.label()) {
+                moduleChoice_->value(i);
+                break;
+            }
+        }
+    }
+
+    if (parallelButton_) {
+        parallelButton_->value(parallelMode_ ? 1 : 0);
+    }
+    if (paragraphButton_) {
+        paragraphButton_->value(paragraphMode_ ? 1 : 0);
+    }
+
+    populateBooks();
+    populateChapters();
+
+    int maxVerse = app_->swordManager().getVerseCount(moduleName_, currentBook_, currentChapter_);
+    if (maxVerse <= 0) maxVerse = 1;
+    currentVerse_ = std::max(1, std::min(currentVerse_, maxVerse));
+
+    if (refInput_) {
+        std::string ref = currentBook_ + " " + std::to_string(currentChapter_) +
+                          ":" + std::to_string(currentVerse_);
+        refInput_->value(ref.c_str());
+    }
+}
+
+BiblePane::DisplayBuffer BiblePane::captureDisplayBuffer() const {
+    DisplayBuffer buf;
+    if (!htmlWidget_) return buf;
+
+    buf.html = htmlWidget_->currentHtml();
+    buf.scrollY = htmlWidget_->scrollY();
+    buf.valid = !buf.html.empty();
+    return buf;
+}
+
+void BiblePane::restoreDisplayBuffer(const DisplayBuffer& buffer) {
+    if (!htmlWidget_ || !buffer.valid) return;
+    htmlWidget_->setHtml(buffer.html);
+    htmlWidget_->setScrollY(buffer.scrollY);
 }
 
 void BiblePane::buildNavBar() {
