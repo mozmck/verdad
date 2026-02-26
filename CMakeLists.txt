@@ -43,7 +43,6 @@ set(SOURCES
     src/app/VerdadApp.cpp
     src/sword/SwordManager.cpp
     src/tags/TagManager.cpp
-    src/bookmarks/BookmarkManager.cpp
     src/ui/MainWindow.cpp
     src/ui/HtmlWidget.cpp
     src/ui/LeftPane.cpp
@@ -51,7 +50,6 @@ set(SOURCES
     src/ui/RightPane.cpp
     src/ui/SearchPanel.cpp
     src/ui/ModulePanel.cpp
-    src/ui/BookmarkPanel.cpp
     src/ui/TagPanel.cpp
     src/ui/VerseContext.cpp
 )
@@ -60,7 +58,6 @@ set(HEADERS
     src/app/VerdadApp.h
     src/sword/SwordManager.h
     src/tags/TagManager.h
-    src/bookmarks/BookmarkManager.h
     src/ui/MainWindow.h
     src/ui/HtmlWidget.h
     src/ui/LeftPane.h
@@ -68,7 +65,6 @@ set(HEADERS
     src/ui/RightPane.h
     src/ui/SearchPanel.h
     src/ui/ModulePanel.h
-    src/ui/BookmarkPanel.h
     src/ui/TagPanel.h
     src/ui/VerseContext.h
 )

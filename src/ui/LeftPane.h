@@ -12,11 +12,10 @@ namespace verdad {
 class VerdadApp;
 class ModulePanel;
 class SearchPanel;
-class BookmarkPanel;
 class TagPanel;
 class HtmlWidget;
 
-/// Left pane with search box, tabs (modules/search/bookmarks/tags),
+/// Left pane with search box, tabs (modules/search/tags),
 /// and a preview area at the bottom.
 class LeftPane : public Fl_Group {
 public:
@@ -31,9 +30,6 @@ public:
 
     /// Switch to the module list tab
     void showModuleTab();
-
-    /// Switch to the bookmarks tab
-    void showBookmarkTab();
 
     /// Switch to the tags tab
     void showTagTab();
@@ -53,9 +49,6 @@ public:
     /// Get search panel
     SearchPanel* searchPanel() { return searchPanel_; }
 
-    /// Get bookmark panel
-    BookmarkPanel* bookmarkPanel() { return bookmarkPanel_; }
-
     /// Get tag panel
     TagPanel* tagPanel() { return tagPanel_; }
 
@@ -73,7 +66,6 @@ private:
     Fl_Tabs* tabs_;
     ModulePanel* modulePanel_;
     SearchPanel* searchPanel_;
-    BookmarkPanel* bookmarkPanel_;
     TagPanel* tagPanel_;
 
     // Preview area at bottom

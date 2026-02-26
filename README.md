@@ -13,7 +13,6 @@ A desktop Bible study application built with C++17, featuring:
 - **Left Pane** — Tabs for:
   - **Modules**: Tree view of all installed SWORD modules (Bibles, commentaries, dictionaries)
   - **Search**: Full-text search with multi-word, phrase, and regex modes; results list with preview
-  - **Bookmarks**: Organized bookmark list with folders
   - **Tags**: User-defined verse tags with verse lists per tag
   - Always-visible search box at top
   - Preview area at bottom for displaying selected search result text
@@ -35,7 +34,6 @@ A desktop Bible study application built with C++17, featuring:
 - **Right-Click Context Menu**:
   - Search for underlying Strong's number
   - Look up word in dictionary/lexicon
-  - Add bookmark
   - Add/remove verse tags
   - Copy verse reference or word
 - **Parallel Bible View**: Display multiple Bible translations side-by-side
@@ -141,7 +139,7 @@ sudo make install
 
 The application will:
 1. Initialize the SWORD library and detect installed modules
-2. Load user preferences, bookmarks, and tags from `~/.config/verdad/`
+2. Load user preferences and tags from `~/.config/verdad/`
 3. Display the main three-pane window
 
 ## Project Structure
@@ -164,18 +162,14 @@ verdad/
     ├── tags/
     │   ├── TagManager.h        # Verse tagging system
     │   └── TagManager.cpp
-    ├── bookmarks/
-    │   ├── BookmarkManager.h   # Bookmark management
-    │   └── BookmarkManager.cpp
     └── ui/
         ├── MainWindow.h/cpp    # Main window with three-pane layout
         ├── HtmlWidget.h/cpp    # FLTK widget using litehtml for XHTML
-        ├── LeftPane.h/cpp      # Left pane (modules/search/bookmarks/tags)
+        ├── LeftPane.h/cpp      # Left pane (modules/search/tags)
         ├── BiblePane.h/cpp     # Center pane (Bible text with tabs)
         ├── RightPane.h/cpp     # Right pane (commentary/dictionary)
         ├── SearchPanel.h/cpp   # Search results panel
         ├── ModulePanel.h/cpp   # Module tree panel
-        ├── BookmarkPanel.h/cpp # Bookmark list panel
         ├── TagPanel.h/cpp      # Tag management panel
         ├── ToolTipWindow.h/cpp # Floating tooltip for word info
         └── VerseContext.h/cpp  # Right-click context menu

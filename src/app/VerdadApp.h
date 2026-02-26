@@ -8,7 +8,6 @@ namespace verdad {
 
 class SwordManager;
 class TagManager;
-class BookmarkManager;
 class MainWindow;
 
 /// Main application class - owns all managers and the main window
@@ -30,9 +29,6 @@ public:
     /// Get the tag manager
     TagManager& tagManager() { return *tagMgr_; }
 
-    /// Get the bookmark manager
-    BookmarkManager& bookmarkManager() { return *bookmarkMgr_; }
-
     /// Get the main window
     MainWindow* mainWindow() { return mainWindow_.get(); }
 
@@ -50,7 +46,6 @@ private:
 
     std::unique_ptr<SwordManager> swordMgr_;
     std::unique_ptr<TagManager> tagMgr_;
-    std::unique_ptr<BookmarkManager> bookmarkMgr_;
     std::unique_ptr<MainWindow> mainWindow_;
 
     /// Ensure config directory exists

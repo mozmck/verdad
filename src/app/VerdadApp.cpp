@@ -1,7 +1,6 @@
 #include "app/VerdadApp.h"
 #include "sword/SwordManager.h"
 #include "tags/TagManager.h"
-#include "bookmarks/BookmarkManager.h"
 #include "ui/MainWindow.h"
 #include "ui/BiblePane.h"
 
@@ -89,8 +88,7 @@ VerdadApp* VerdadApp::instance_ = nullptr;
 
 VerdadApp::VerdadApp()
     : swordMgr_(std::make_unique<SwordManager>())
-    , tagMgr_(std::make_unique<TagManager>())
-    , bookmarkMgr_(std::make_unique<BookmarkManager>()) {
+    , tagMgr_(std::make_unique<TagManager>()) {
     instance_ = this;
 }
 
@@ -117,9 +115,6 @@ bool VerdadApp::initialize(int argc, char* argv[]) {
 
     // Load tags
     tagMgr_->load(getConfigDir() + "/tags.dat");
-
-    // Load bookmarks
-    bookmarkMgr_->load(getConfigDir() + "/bookmarks.dat");
 
     // Set up FLTK
     Fl::scheme("gtk+");

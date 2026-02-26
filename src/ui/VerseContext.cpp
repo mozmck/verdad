@@ -3,7 +3,6 @@
 #include "ui/MainWindow.h"
 #include "ui/BiblePane.h"
 #include "ui/LeftPane.h"
-#include "ui/BookmarkPanel.h"
 #include "ui/TagPanel.h"
 #include "sword/SwordManager.h"
 
@@ -66,8 +65,7 @@ void VerseContext::show(const std::string& word, const std::string& href,
         }
     }
 
-    // Bookmark/Tag options
-    menu.add("Add Bookmark", 0, onAddBookmark, this);
+    // Tag options
     menu.add("Add Tag...", 0, onAddTag, this);
 
     menu.popup();
@@ -115,20 +113,6 @@ void VerseContext::onSearchStrongs(Fl_Widget* /*w*/, void* data) {
             self->app_->mainWindow()->showSearchResults(
                 "Strong's: " + strongsNum);
         }
-    }
-}
-
-void VerseContext::onAddBookmark(Fl_Widget* /*w*/, void* data) {
-    auto* self = static_cast<VerseContext*>(data);
-
-    std::string module = "";
-    if (self->app_->mainWindow() && self->app_->mainWindow()->biblePane()) {
-        module = self->app_->mainWindow()->biblePane()->currentModule();
-    }
-
-    if (self->app_->mainWindow() && self->app_->mainWindow()->leftPane()) {
-        self->app_->mainWindow()->leftPane()->bookmarkPanel()->addBookmark(
-            self->currentVerseKey_, module);
     }
 }
 

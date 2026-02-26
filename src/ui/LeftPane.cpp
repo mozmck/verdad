@@ -2,7 +2,6 @@
 #include "app/VerdadApp.h"
 #include "ui/ModulePanel.h"
 #include "ui/SearchPanel.h"
-#include "ui/BookmarkPanel.h"
 #include "ui/TagPanel.h"
 #include "ui/HtmlWidget.h"
 #include "ui/MainWindow.h"
@@ -63,11 +62,6 @@ LeftPane::LeftPane(VerdadApp* app, int X, int Y, int W, int H)
                                     W - 2 * padding, tabH - 25);
     searchPanel_->label("Search");
 
-    // Bookmarks tab
-    bookmarkPanel_ = new BookmarkPanel(app_, X + padding, tabY + 25,
-                                        W - 2 * padding, tabH - 25);
-    bookmarkPanel_->label("Bookmarks");
-
     // Tags tab
     tagPanel_ = new TagPanel(app_, X + padding, tabY + 25,
                               W - 2 * padding, tabH - 25);
@@ -100,7 +94,7 @@ void LeftPane::resize(int X, int Y, int W, int H) {
     Fl_Group::resize(X, Y, W, H);
 
     if (!searchInput_ || !searchButton_ || !tabs_ ||
-        !modulePanel_ || !searchPanel_ || !bookmarkPanel_ || !tagPanel_ ||
+        !modulePanel_ || !searchPanel_ || !tagPanel_ ||
         !previewWidget_) {
         return;
     }
@@ -124,7 +118,6 @@ void LeftPane::resize(int X, int Y, int W, int H) {
     int contentW = std::max(20, W - 2 * padding);
     modulePanel_->resize(X + padding, contentY, contentW, contentH);
     searchPanel_->resize(X + padding, contentY, contentW, contentH);
-    bookmarkPanel_->resize(X + padding, contentY, contentW, contentH);
     tagPanel_->resize(X + padding, contentY, contentW, contentH);
 
     int previewY = tabY + tabH + padding;
@@ -157,13 +150,6 @@ void LeftPane::showModuleTab() {
     }
 }
 
-void LeftPane::showBookmarkTab() {
-    if (tabs_ && bookmarkPanel_) {
-        tabs_->value(bookmarkPanel_);
-        tabs_->redraw();
-    }
-}
-
 void LeftPane::showTagTab() {
     if (tabs_ && tagPanel_) {
         tabs_->value(tagPanel_);
@@ -190,7 +176,6 @@ void LeftPane::redrawChrome() {
 
 void LeftPane::refresh() {
     if (modulePanel_) modulePanel_->refresh();
-    if (bookmarkPanel_) bookmarkPanel_->refresh();
     if (tagPanel_) tagPanel_->refresh();
 }
 

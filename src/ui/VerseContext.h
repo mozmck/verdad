@@ -12,7 +12,6 @@ class VerdadApp;
 /// Right-click context menu for verse/word interactions.
 /// Provides options like:
 /// - Search for Strong's number
-/// - Add bookmark
 /// - Add/remove tag
 /// - Copy verse text
 class VerseContext {
@@ -41,7 +40,6 @@ private:
 
     // Menu action callbacks
     static void onSearchStrongs(Fl_Widget* w, void* data);
-    static void onAddBookmark(Fl_Widget* w, void* data);
     static void onAddTag(Fl_Widget* w, void* data);
     static void onCopyVerse(Fl_Widget* w, void* data);
     static void onCopyWord(Fl_Widget* w, void* data);
