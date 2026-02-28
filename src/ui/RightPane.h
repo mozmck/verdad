@@ -10,6 +10,8 @@
 #include <FL/Fl_Button.H>
 #include <string>
 #include <vector>
+#include <deque>
+#include <unordered_map>
 
 namespace verdad {
 
@@ -91,6 +93,12 @@ public:
     /// Current dictionary pane height in pixels.
     int dictionaryPaneHeight() const;
 
+    /// Current commentary scroll Y.
+    int commentaryScrollY() const;
+
+    /// Restore commentary scroll Y.
+    void setCommentaryScrollY(int y);
+
     /// Set dictionary pane height in pixels (clamped to valid splitter range).
     void setDictionaryPaneHeight(int height);
 
@@ -137,6 +145,11 @@ private:
     HtmlWidget* commentaryHtml_;
     std::string currentCommentary_;
     std::string currentCommentaryRef_;
+    std::string loadedCommentaryModule_;
+    std::string loadedCommentaryChapterKey_;
+    std::unordered_map<std::string, std::string> commentaryChapterCache_;
+    std::deque<std::string> commentaryChapterCacheOrder_;
+    static constexpr size_t kCommentaryChapterCacheLimit = 64;
 
     // Dictionary pane (bottom pane)
     Fl_Group* dictionaryPaneGroup_;
@@ -156,6 +169,14 @@ private:
 
     /// Populate commentary module choices
     void populateCommentaryModules();
+
+    /// Build normalized "Book Chapter" key from a verse reference.
+    std::string commentaryChapterKeyForReference(const std::string& reference,
+                                                 int* verseOut = nullptr) const;
+
+    /// Commentary chapter cache helpers.
+    bool lookupCommentaryCache(const std::string& cacheKey, std::string& htmlOut);
+    void storeCommentaryCache(const std::string& cacheKey, const std::string& html);
 
     /// Populate dictionary module choices
     void populateDictionaryModules();

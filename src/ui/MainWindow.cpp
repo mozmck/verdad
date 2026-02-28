@@ -495,11 +495,13 @@ void MainWindow::captureActiveTabState() {
         ctx.state.parallelMode = biblePane_->isParallel();
         ctx.state.parallelModules = biblePane_->parallelModules();
         ctx.state.biblePaneWidth = biblePane_->w();
+        ctx.state.bibleScrollY = biblePane_->scrollY();
     }
 
     if (rightPane_) {
         ctx.state.commentaryModule = rightPane_->currentCommentaryModule();
         ctx.state.commentaryReference = rightPane_->currentCommentaryReference();
+        ctx.state.commentaryScrollY = rightPane_->commentaryScrollY();
         ctx.state.dictionaryModule = rightPane_->currentDictionaryModule();
         ctx.state.dictionaryKey = rightPane_->currentDictionaryKey();
         ctx.state.generalBookModule = rightPane_->currentGeneralBookModule();
@@ -542,6 +544,12 @@ void MainWindow::applyTabState(int index) {
     }
     rightPane_->refresh();
     rightPane_->setDictionaryTabActive(ctx.state.dictionaryActive);
+    if (ctx.state.bibleScrollY >= 0) {
+        biblePane_->setScrollY(ctx.state.bibleScrollY);
+    }
+    if (ctx.state.commentaryScrollY >= 0) {
+        rightPane_->setCommentaryScrollY(ctx.state.commentaryScrollY);
+    }
     biblePane_->redrawChrome();
     rightPane_->redrawChrome();
     if (studyTabsWidget_) {

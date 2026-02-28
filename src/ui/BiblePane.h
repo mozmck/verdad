@@ -48,6 +48,12 @@ public:
     /// Get currently selected verse in the chapter
     int currentVerse() const;
 
+    /// Current vertical scroll position of the Bible HTML view.
+    int scrollY() const;
+
+    /// Set vertical scroll position of the Bible HTML view.
+    void setScrollY(int y);
+
     /// Toggle parallel Bible view
     void toggleParallel();
 

@@ -267,6 +267,16 @@ int BiblePane::currentVerse() const {
     return currentVerse_;
 }
 
+int BiblePane::scrollY() const {
+    return htmlWidget_ ? htmlWidget_->scrollY() : 0;
+}
+
+void BiblePane::setScrollY(int y) {
+    if (htmlWidget_) {
+        htmlWidget_->setScrollY(y);
+    }
+}
+
 void BiblePane::toggleParallel() {
     parallelMode_ = !parallelMode_;
 

@@ -1960,11 +1960,7 @@ std::string SwordManager::getCommentaryText(const std::string& moduleName,
     while (!mod->popError() && vk->getChapter() == chapter) {
         int verse = vk->getVerse();
         std::string verseText = std::string(mod->renderText().c_str());
-        std::string verseClass = "commentary-verse";
-        if (ref.verse > 0 && verse == ref.verse) {
-            verseClass += " commentary-verse-selected";
-        }
-        html << "<div class=\"" << verseClass << "\" id=\"v" << verse << "\">";
+        html << "<div class=\"commentary-verse\" id=\"v" << verse << "\">";
         html << "<a class=\"versenum-link\" href=\"verse:" << verse << "\">"
              << "<sup class=\"versenum\">" << verse << "</sup></a> ";
         if (!trimCopy(verseText).empty()) {

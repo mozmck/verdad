@@ -222,11 +222,7 @@ div.commentary {
 
 div.commentary-verse {
     display: block;
-    margin: 0 0 0.45em 0;
-}
-
-div.commentary-verse-selected {
-    background-color: #eef6ff;
+    margin: 0 0 0.5em 0;
 }
 
 span.commentary-empty {

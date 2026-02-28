@@ -293,8 +293,10 @@ void VerdadApp::loadPreferences() {
             tab.parallelMode = parseBoolOr(prefs[pfx + "parallel_mode"], false);
             tab.parallelModules = splitCsv(prefs[pfx + "parallel_modules"]);
             tab.biblePaneWidth = parseIntOr(prefs[pfx + "bible_pane_w"], 0);
+            tab.bibleScrollY = parseIntOr(prefs[pfx + "bible_scroll_y"], -1);
             tab.commentaryModule = prefs[pfx + "commentary_module"];
             tab.commentaryReference = prefs[pfx + "commentary_ref"];
+            tab.commentaryScrollY = parseIntOr(prefs[pfx + "commentary_scroll_y"], -1);
             tab.dictionaryModule = prefs[pfx + "dictionary_module"];
             tab.dictionaryKey = prefs[pfx + "dictionary_key"];
             tab.generalBookModule = prefs[pfx + "general_book_module"];
@@ -370,8 +372,10 @@ void VerdadApp::savePreferences() {
             file << pfx << "parallel_mode=" << (t.parallelMode ? 1 : 0) << "\n";
             file << pfx << "parallel_modules=" << joinCsv(t.parallelModules) << "\n";
             file << pfx << "bible_pane_w=" << t.biblePaneWidth << "\n";
+            file << pfx << "bible_scroll_y=" << t.bibleScrollY << "\n";
             file << pfx << "commentary_module=" << t.commentaryModule << "\n";
             file << pfx << "commentary_ref=" << t.commentaryReference << "\n";
+            file << pfx << "commentary_scroll_y=" << t.commentaryScrollY << "\n";
             file << pfx << "dictionary_module=" << t.dictionaryModule << "\n";
             file << pfx << "dictionary_key=" << t.dictionaryKey << "\n";
             file << pfx << "general_book_module=" << t.generalBookModule << "\n";

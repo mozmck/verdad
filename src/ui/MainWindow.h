@@ -30,9 +30,11 @@ public:
         bool parallelMode = false;
         std::vector<std::string> parallelModules;
         int biblePaneWidth = 0;
+        int bibleScrollY = -1;
 
         std::string commentaryModule;
         std::string commentaryReference;
+        int commentaryScrollY = -1;
         std::string dictionaryModule;
         std::string dictionaryKey;
         std::string generalBookModule;

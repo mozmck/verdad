@@ -311,18 +311,39 @@ void RightPane::showCommentary(const std::string& moduleName,
     currentCommentary_ = moduleName;
     currentCommentaryRef_ = reference;
 
-    std::string html = app_->swordManager().getCommentaryText(moduleName, reference);
-    if (commentaryHtml_) {
-        commentaryHtml_->setHtml(html);
-        SwordManager::VerseRef ref;
-        try {
-            ref = SwordManager::parseVerseRef(reference);
-            if (ref.verse > 0) {
-                commentaryHtml_->scrollToAnchor("v" + std::to_string(ref.verse));
-            } else {
-                commentaryHtml_->scrollToTop();
+    int verse = 0;
+    std::string chapterKey = commentaryChapterKeyForReference(reference, &verse);
+    bool haveChapterKey = !chapterKey.empty();
+
+    bool needReload = true;
+    if (commentaryHtml_ && haveChapterKey) {
+        needReload = (loadedCommentaryModule_ != moduleName ||
+                      loadedCommentaryChapterKey_ != chapterKey ||
+                      commentaryHtml_->currentHtml().empty());
+    }
+
+    if (commentaryHtml_ && needReload) {
+        std::string html;
+        if (haveChapterKey) {
+            std::string cacheKey = moduleName + "|" + chapterKey;
+            if (!lookupCommentaryCache(cacheKey, html)) {
+                html = app_->swordManager().getCommentaryText(moduleName, reference);
+                storeCommentaryCache(cacheKey, html);
             }
-        } catch (...) {
+            loadedCommentaryModule_ = moduleName;
+            loadedCommentaryChapterKey_ = chapterKey;
+        } else {
+            html = app_->swordManager().getCommentaryText(moduleName, reference);
+            loadedCommentaryModule_.clear();
+            loadedCommentaryChapterKey_.clear();
+        }
+        commentaryHtml_->setHtml(html);
+    }
+
+    if (commentaryHtml_) {
+        if (verse > 0) {
+            commentaryHtml_->scrollToAnchor("v" + std::to_string(verse));
+        } else {
             commentaryHtml_->scrollToTop();
         }
     }
@@ -404,6 +425,8 @@ void RightPane::showGeneralBookEntry(const std::string& moduleName,
 
 void RightPane::setCommentaryModule(const std::string& moduleName) {
     currentCommentary_ = moduleName;
+    loadedCommentaryModule_.clear();
+    loadedCommentaryChapterKey_.clear();
 
     if (!commentaryChoice_) return;
     for (int i = 0; i < commentaryChoice_->size(); i++) {
@@ -453,6 +476,16 @@ void RightPane::setDictionaryTabActive(bool dictionaryActive) {
 
 int RightPane::dictionaryPaneHeight() const {
     return dictionaryPaneGroup_ ? dictionaryPaneGroup_->h() : 0;
+}
+
+int RightPane::commentaryScrollY() const {
+    return commentaryHtml_ ? commentaryHtml_->scrollY() : 0;
+}
+
+void RightPane::setCommentaryScrollY(int y) {
+    if (commentaryHtml_) {
+        commentaryHtml_->setScrollY(y);
+    }
 }
 
 void RightPane::setDictionaryPaneHeight(int height) {
@@ -595,6 +628,59 @@ void RightPane::refresh() {
     }
 
     setDictionaryTabActive(keepGeneralBooksTab);
+}
+
+std::string RightPane::commentaryChapterKeyForReference(const std::string& reference,
+                                                        int* verseOut) const {
+    if (verseOut) *verseOut = 0;
+
+    SwordManager::VerseRef ref;
+    try {
+        ref = SwordManager::parseVerseRef(reference);
+    } catch (...) {
+        return "";
+    }
+
+    if (ref.book.empty() || ref.chapter <= 0) return "";
+    if (verseOut) {
+        *verseOut = ref.verse > 0 ? ref.verse : 0;
+    }
+    return ref.book + " " + std::to_string(ref.chapter);
+}
+
+bool RightPane::lookupCommentaryCache(const std::string& cacheKey,
+                                      std::string& htmlOut) {
+    auto it = commentaryChapterCache_.find(cacheKey);
+    if (it == commentaryChapterCache_.end()) return false;
+    htmlOut = it->second;
+
+    auto ordIt = std::find(commentaryChapterCacheOrder_.begin(),
+                           commentaryChapterCacheOrder_.end(),
+                           cacheKey);
+    if (ordIt != commentaryChapterCacheOrder_.end()) {
+        commentaryChapterCacheOrder_.erase(ordIt);
+    }
+    commentaryChapterCacheOrder_.push_back(cacheKey);
+    return true;
+}
+
+void RightPane::storeCommentaryCache(const std::string& cacheKey,
+                                     const std::string& html) {
+    commentaryChapterCache_[cacheKey] = html;
+
+    auto ordIt = std::find(commentaryChapterCacheOrder_.begin(),
+                           commentaryChapterCacheOrder_.end(),
+                           cacheKey);
+    if (ordIt != commentaryChapterCacheOrder_.end()) {
+        commentaryChapterCacheOrder_.erase(ordIt);
+    }
+    commentaryChapterCacheOrder_.push_back(cacheKey);
+
+    while (commentaryChapterCacheOrder_.size() > kCommentaryChapterCacheLimit) {
+        const std::string evict = commentaryChapterCacheOrder_.front();
+        commentaryChapterCacheOrder_.pop_front();
+        commentaryChapterCache_.erase(evict);
+    }
 }
 
 void RightPane::setHtmlStyleOverride(const std::string& css) {
