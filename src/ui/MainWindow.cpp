@@ -20,6 +20,7 @@
 #include <FL/Fl_Browser_.H>
 #include <FL/Fl_Input_.H>
 #include <FL/Fl_Menu_.H>
+#include <FL/Fl_Text_Display.H>
 
 #include <algorithm>
 #include <cctype>
@@ -82,6 +83,53 @@ std::string extractStrongsToken(const std::string& query) {
     }
     return tok;
 }
+
+const char* kSearchHelpText =
+    "Search Help\n"
+    "===========\n"
+    "\n"
+    "Search Module\n"
+    "- The module dropdown in the Search tab controls which Bible module is searched.\n"
+    "- If a search is started from a word right-click menu, that module is used automatically.\n"
+    "\n"
+    "Search Types\n"
+    "1) Multi-word\n"
+    "- Matches verses by terms (word-based search).\n"
+    "- Example: faith hope\n"
+    "\n"
+    "2) Exact phrase\n"
+    "- Words must appear together in order.\n"
+    "- Example: in the beginning\n"
+    "\n"
+    "3) Regex\n"
+    "- Uses ECMAScript regex syntax and is case-insensitive.\n"
+    "- Regex search runs on indexed plain verse text.\n"
+    "- If the module is not indexed yet, indexing is queued and regex returns no results until ready.\n"
+    "- Examples:\n"
+    "  ^In\\b\n"
+    "  \\b(king|kingdom)\\b\n"
+    "  grac(e|es)\n"
+    "  God.*spirit\n"
+    "\n"
+    "Strong's / Lemma Search\n"
+    "- Enter a Strong's key directly in the search box:\n"
+    "  G3588\n"
+    "  H7225\n"
+    "- You can also use prefixes:\n"
+    "  strongs:G3588\n"
+    "  lemma:H7225\n"
+    "- Right-click on a Bible word to use \"Search Strong's: ...\" menu items.\n"
+    "\n"
+    "Search Results\n"
+    "- Left click: select result and update verse preview.\n"
+    "- Left double-click: open verse in current study tab.\n"
+    "- Middle click: open verse in a new study tab.\n"
+    "- Results are sorted by book, chapter, and verse.\n"
+    "\n"
+    "Regex Tips\n"
+    "- Escape special characters when searching literal punctuation.\n"
+    "- Use \\b for word boundaries.\n"
+    "- Use .* to allow any characters between terms.\n";
 
 void appendEscapedTextLines(std::ostringstream& out,
                             const std::string& text,
@@ -299,6 +347,15 @@ MainWindow::~MainWindow() {
     if (statusPollScheduled_) {
         Fl::remove_timeout(onStatusPoll, this);
         statusPollScheduled_ = false;
+    }
+    if (searchHelpWindow_) {
+        searchHelpWindow_->hide();
+        delete searchHelpWindow_;
+        searchHelpWindow_ = nullptr;
+    }
+    if (searchHelpTextBuffer_) {
+        delete searchHelpTextBuffer_;
+        searchHelpTextBuffer_ = nullptr;
     }
 }
 
@@ -1462,6 +1519,7 @@ void MainWindow::buildMenu() {
     menuBar_->add("&View/&Parallel Bibles", FL_CTRL + 'p', onViewParallel, this);
     menuBar_->add("&View/&Settings...", 0, onViewSettings, this);
     menuBar_->add("&View/&New Study Tab", FL_CTRL + 't', onViewNewStudyTab, this);
+    menuBar_->add("&Help/&Search Help", FL_F + 1, onHelpSearch, this);
     menuBar_->add("&Help/&About Verdad", 0, onHelpAbout, this);
 }
 
@@ -1617,6 +1675,50 @@ void MainWindow::onViewCloseStudyTab(Fl_Widget* /*w*/, void* data) {
     auto* self = static_cast<MainWindow*>(data);
     if (!self) return;
     self->closeActiveStudyTab();
+}
+
+void MainWindow::onHelpSearch(Fl_Widget* /*w*/, void* data) {
+    auto* self = static_cast<MainWindow*>(data);
+    if (!self) return;
+    self->showSearchHelpWindow();
+}
+
+void MainWindow::showSearchHelpWindow() {
+    if (!searchHelpWindow_) {
+        searchHelpWindow_ = new Fl_Double_Window(780, 600, "Search Help");
+        searchHelpWindow_->begin();
+
+        auto* helpText = new Fl_Text_Display(10, 10, 760, 542);
+        helpText->box(FL_DOWN_BOX);
+        helpText->wrap_mode(Fl_Text_Display::WRAP_AT_BOUNDS, 0);
+        helpText->textfont(FL_HELVETICA);
+        helpText->textsize(14);
+
+        searchHelpTextBuffer_ = new Fl_Text_Buffer();
+        helpText->buffer(searchHelpTextBuffer_);
+
+        auto* closeBtn = new Fl_Return_Button(680, 560, 90, 28, "Close");
+        closeBtn->callback(
+            [](Fl_Widget* w, void* /*data*/) {
+                if (w && w->window()) w->window()->hide();
+            },
+            nullptr);
+
+        searchHelpWindow_->callback(
+            [](Fl_Widget* w, void* /*data*/) {
+                if (w) w->hide();
+            },
+            nullptr);
+        searchHelpWindow_->resizable(helpText);
+        searchHelpWindow_->end();
+    }
+
+    if (searchHelpTextBuffer_) {
+        searchHelpTextBuffer_->text(kSearchHelpText);
+    }
+
+    searchHelpWindow_->show();
+    searchHelpWindow_->take_focus();
 }
 
 void MainWindow::onHelpAbout(Fl_Widget* /*w*/, void* /*data*/) {

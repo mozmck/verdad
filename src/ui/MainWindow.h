@@ -13,6 +13,7 @@
 #include <chrono>
 
 class Fl_Box;
+class Fl_Text_Buffer;
 
 namespace verdad {
 
@@ -271,7 +272,14 @@ private:
     static void onViewSettings(Fl_Widget* w, void* data);
     static void onViewNewStudyTab(Fl_Widget* w, void* data);
     static void onViewCloseStudyTab(Fl_Widget* w, void* data);
+    static void onHelpSearch(Fl_Widget* w, void* data);
     static void onHelpAbout(Fl_Widget* w, void* data);
+
+    /// Open/search help window with search mode examples and regex tips.
+    void showSearchHelpWindow();
+
+    Fl_Double_Window* searchHelpWindow_ = nullptr;
+    Fl_Text_Buffer* searchHelpTextBuffer_ = nullptr;
 };
 
 } // namespace verdad
