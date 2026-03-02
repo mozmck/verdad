@@ -1,4 +1,5 @@
 #include "ui/HtmlWidget.h"
+#include "app/PerfTrace.h"
 
 #include <FL/Fl.H>
 #include <FL/fl_draw.H>
@@ -334,6 +335,7 @@ HtmlWidget::~HtmlWidget() {
 }
 
 void HtmlWidget::setHtml(const std::string& html, const std::string& baseUrl) {
+    perf::ScopeTimer timer("HtmlWidget::setHtml");
     if (reflowScheduled_) {
         Fl::remove_timeout(dispatchDeferredReflow, this);
         reflowScheduled_ = false;
@@ -350,12 +352,18 @@ void HtmlWidget::setHtml(const std::string& html, const std::string& baseUrl) {
         fullHtml = "<html><body>" + html + "</body></html>";
     }
 
+    perf::StepTimer step;
     // Create litehtml document
     doc_ = litehtml::document::createFromString(
         fullHtml, this, masterCSS_, styleOverrideCSS_);
+    perf::logf("HtmlWidget::setHtml createFromString: %.3f ms", step.elapsedMs());
+    step.reset();
 
     renderDocument();
+    perf::logf("HtmlWidget::setHtml renderDocument: %.3f ms", step.elapsedMs());
+    step.reset();
     updateScrollbar();
+    perf::logf("HtmlWidget::setHtml updateScrollbar: %.3f ms", step.elapsedMs());
     redraw();
 }
 
@@ -419,33 +427,209 @@ void HtmlWidget::setScrollY(int y) {
     redraw();
 }
 
+HtmlWidget::Snapshot HtmlWidget::captureSnapshot() const {
+    Snapshot snapshot;
+    snapshot.doc = std::static_pointer_cast<void>(doc_);
+    snapshot.html = currentHtml_;
+    snapshot.baseUrl = baseUrl_;
+    snapshot.scrollY = scrollY_;
+    snapshot.contentHeight = contentHeight_;
+    snapshot.renderWidth = lastRenderWidth_;
+    snapshot.scrollbarVisible = scrollbar_ && scrollbar_->visible();
+    snapshot.valid = (doc_ != nullptr || !currentHtml_.empty());
+    return snapshot;
+}
+
+HtmlWidget::Snapshot HtmlWidget::takeSnapshot() {
+    Snapshot snapshot;
+    snapshot.doc = std::static_pointer_cast<void>(doc_);
+    snapshot.html = std::move(currentHtml_);
+    snapshot.baseUrl = std::move(baseUrl_);
+    snapshot.scrollY = scrollY_;
+    snapshot.contentHeight = contentHeight_;
+    snapshot.renderWidth = lastRenderWidth_;
+    snapshot.scrollbarVisible = scrollbar_ && scrollbar_->visible();
+    snapshot.valid = (doc_ != nullptr || !snapshot.html.empty());
+
+    doc_.reset();
+    currentHtml_.clear();
+    baseUrl_.clear();
+    scrollY_ = 0;
+    contentHeight_ = 0;
+    lastRenderWidth_ = 0;
+    lastHoverWord_.clear();
+    lastHoverHref_.clear();
+    lastHoverStrong_.clear();
+    lastHoverMorph_.clear();
+    lastHoverModule_.clear();
+    updateScrollbar();
+
+    return snapshot;
+}
+
+void HtmlWidget::restoreSnapshot(const Snapshot& snapshot) {
+    perf::ScopeTimer timer("HtmlWidget::restoreSnapshot(copy)");
+    if (reflowScheduled_) {
+        Fl::remove_timeout(dispatchDeferredReflow, this);
+        reflowScheduled_ = false;
+    }
+
+    doc_ = std::static_pointer_cast<litehtml::document>(snapshot.doc);
+    currentHtml_ = snapshot.html;
+    baseUrl_ = snapshot.baseUrl;
+    scrollY_ = snapshot.scrollY;
+    contentHeight_ = snapshot.contentHeight;
+    lastRenderWidth_ = snapshot.renderWidth;
+    lastHoverWord_.clear();
+    lastHoverHref_.clear();
+    lastHoverStrong_.clear();
+    lastHoverMorph_.clear();
+    lastHoverModule_.clear();
+
+    bool reusedLayout = false;
+    if (doc_) {
+        const int sbW = 16;
+        const bool snapSbVisible = snapshot.scrollbarVisible;
+        const int expectedRenderWidth =
+            std::max(10, w() - (snapSbVisible ? sbW : 0));
+        const bool desiredVisible = (contentHeight_ > h());
+
+        // Fast path: geometry/scrollbar mode unchanged, so reuse cached layout.
+        if (snapshot.renderWidth > 0 &&
+            snapshot.renderWidth == expectedRenderWidth &&
+            desiredVisible == snapSbVisible) {
+            reusedLayout = true;
+            if (snapSbVisible) {
+                scrollbar_->show();
+                scrollbar_->resize(x() + w() - sbW, y(), sbW, h());
+                scrollbar_->linesize(20);
+            } else {
+                scrollbar_->hide();
+            }
+        }
+        perf::logf("HtmlWidget::restoreSnapshot(copy) fastPath=%d snapW=%d expectedW=%d snapSB=%d desiredSB=%d",
+                   reusedLayout ? 1 : 0,
+                   snapshot.renderWidth,
+                   expectedRenderWidth,
+                   snapSbVisible ? 1 : 0,
+                   desiredVisible ? 1 : 0);
+    }
+    if (!reusedLayout) {
+        if (doc_) {
+            renderDocument();
+        }
+        updateScrollbar();
+    }
+    setScrollY(scrollY_);
+}
+
+void HtmlWidget::restoreSnapshot(Snapshot&& snapshot) {
+    perf::ScopeTimer timer("HtmlWidget::restoreSnapshot(move)");
+    if (reflowScheduled_) {
+        Fl::remove_timeout(dispatchDeferredReflow, this);
+        reflowScheduled_ = false;
+    }
+
+    doc_ = std::static_pointer_cast<litehtml::document>(snapshot.doc);
+    currentHtml_ = std::move(snapshot.html);
+    baseUrl_ = std::move(snapshot.baseUrl);
+    scrollY_ = snapshot.scrollY;
+    contentHeight_ = snapshot.contentHeight;
+    lastRenderWidth_ = snapshot.renderWidth;
+    const bool snapSbVisible = snapshot.scrollbarVisible;
+    lastHoverWord_.clear();
+    lastHoverHref_.clear();
+    lastHoverStrong_.clear();
+    lastHoverMorph_.clear();
+    lastHoverModule_.clear();
+
+    snapshot.doc.reset();
+    snapshot.scrollY = 0;
+    snapshot.contentHeight = 0;
+    snapshot.renderWidth = 0;
+    snapshot.scrollbarVisible = false;
+    snapshot.valid = false;
+
+    bool reusedLayout = false;
+    if (doc_) {
+        const int sbW = 16;
+        const int expectedRenderWidth =
+            std::max(10, w() - (snapSbVisible ? sbW : 0));
+        const bool desiredVisible = (contentHeight_ > h());
+
+        // Fast path: geometry/scrollbar mode unchanged, so reuse cached layout.
+        if (lastRenderWidth_ > 0 &&
+            lastRenderWidth_ == expectedRenderWidth &&
+            desiredVisible == snapSbVisible) {
+            reusedLayout = true;
+            if (snapSbVisible) {
+                scrollbar_->show();
+                scrollbar_->resize(x() + w() - sbW, y(), sbW, h());
+                scrollbar_->linesize(20);
+            } else {
+                scrollbar_->hide();
+            }
+        }
+        perf::logf("HtmlWidget::restoreSnapshot(move) fastPath=%d snapW=%d expectedW=%d snapSB=%d desiredSB=%d",
+                   reusedLayout ? 1 : 0,
+                   lastRenderWidth_,
+                   expectedRenderWidth,
+                   snapSbVisible ? 1 : 0,
+                   desiredVisible ? 1 : 0);
+    }
+    if (!reusedLayout) {
+        if (doc_) {
+            renderDocument();
+        }
+        updateScrollbar();
+    }
+    setScrollY(scrollY_);
+}
+
 void HtmlWidget::renderDocument() {
+    perf::ScopeTimer timer("HtmlWidget::renderDocument");
     if (!doc_) return;
 
     int sbW = scrollbar_->visible() ? 16 : 0;
     int renderWidth = w() - sbW;
     if (renderWidth < 10) renderWidth = 10;
+    lastRenderWidth_ = renderWidth;
 
     doc_->render(renderWidth);
     contentHeight_ = doc_->height();
 }
 
 void HtmlWidget::updateScrollbar() {
+    perf::ScopeTimer timer("HtmlWidget::updateScrollbar");
     if (!doc_) {
         scrollbar_->hide();
         return;
     }
 
-    if (contentHeight_ > h()) {
+    const bool wasVisible = scrollbar_->visible();
+    const bool needVisible = (contentHeight_ > h());
+
+    if (needVisible) {
         scrollbar_->show();
         scrollbar_->resize(x() + w() - 16, y(), 16, h());
-        scrollbar_->value(scrollY_, h(), 0, contentHeight_);
         scrollbar_->linesize(20);
 
-        // Re-render with scrollbar width accounted for
-        renderDocument();
+        // Render once more only on visibility transition (hide -> show),
+        // where width changed from full pane to pane-minus-scrollbar.
+        if (!wasVisible) {
+            renderDocument();
+        }
+
+        scrollbar_->value(scrollY_, h(), 0, contentHeight_);
     } else {
-        scrollbar_->hide();
+        // Render once when transitioning show -> hide, so wrapping can use
+        // full width again.
+        if (wasVisible) {
+            scrollbar_->hide();
+            renderDocument();
+        } else {
+            scrollbar_->hide();
+        }
         scrollY_ = 0;
     }
 }

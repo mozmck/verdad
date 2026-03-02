@@ -9,6 +9,7 @@
 #include <FL/Fl.H>
 #include <FL/fl_ask.H>
 #include <FL/Fl_Hold_Browser.H>
+#include <FL/Fl_Tabs.H>
 
 
 #include <algorithm>
@@ -231,7 +232,10 @@ void sortSearchResultsCanonical(SwordManager& swordMgr,
 
 SearchPanel::SearchPanel(VerdadApp* app, int X, int Y, int W, int H)
     : Fl_Group(X, Y, W, H)
-    , app_(app) {
+    , app_(app)
+    , moduleChoice_(nullptr)
+    , searchType_(nullptr)
+    , resultBrowser_(nullptr) {
 
     begin();
 
@@ -255,19 +259,9 @@ SearchPanel::SearchPanel(VerdadApp* app, int X, int Y, int W, int H)
 
     cy += choiceH + padding;
 
-    // Progress bar
-    progressBar_ = new Fl_Progress(X + padding, cy, W - 2 * padding, 15);
-    progressBar_->minimum(0);
-    progressBar_->maximum(100.0);
-    progressBar_->value(0.0);
-    progressBar_->copy_label("");
-    progressBar_->hide();
-
-    cy += 17;
-
-    // Result list
+    // Result list (occupies full area below selectors).
     resultBrowser_ = new Fl_Hold_Browser(X + padding, cy,
-                                     W - 2 * padding, H - (cy - Y) - padding);
+                                         W - 2 * padding, H - (cy - Y) - padding);
     static int widths[] = { 100, 0 };  // widths for each column
     resultBrowser_->column_widths(widths); // assign array to widget
     //resultBrowser_->type(FL_HOLD_BROWSER);
@@ -297,6 +291,7 @@ void SearchPanel::search(const std::string& query,
                          const std::string& moduleOverride) {
     results_.clear();
     resultBrowser_->clear();
+    resultBrowser_->value(0);
 
     std::string trimmedQuery = trimCopy(query);
     if (trimmedQuery.empty()) return;
@@ -387,9 +382,7 @@ void SearchPanel::search(const std::string& query,
 
     if (runSwordFallback && !swordQuery.empty()) {
         swordSearchInProgress_ = true;
-        progressBar_->show();
-        progressBar_->value(0);
-        progressBar_->copy_label("Searching...");
+        setResultCountLabel("(searching...)");
         Fl::flush();
 
         if (isStrongs) {
@@ -398,7 +391,9 @@ void SearchPanel::search(const std::string& query,
             results_ = app_->swordManager().search(
                 moduleName, swordQuery, swordSearchType, "",
                 [this](float progress) {
-                    progressBar_->value(std::clamp(progress, 0.0f, 1.0f) * 100.0f);
+                    int pct = static_cast<int>(
+                        std::clamp(progress, 0.0f, 1.0f) * 100.0f);
+                    setResultCountLabel("(searching " + std::to_string(pct) + "%)");
                     Fl::flush();
                 });
         }
@@ -448,6 +443,7 @@ void SearchPanel::search(const std::string& query,
 void SearchPanel::clear() {
     results_.clear();
     resultBrowser_->clear();
+    resultBrowser_->value(0);
     stopIndexingIndicator();
     setResultCountLabel();
     updateIndexingIndicator();
@@ -487,9 +483,14 @@ void SearchPanel::setSelectedModule(const std::string& moduleName) {
 
 void SearchPanel::setResultCountLabel(const std::string& suffix) {
     if (!resultBrowser_) return;
-    std::string label = "Results: " + std::to_string(results_.size());
     if (!suffix.empty()) {
-        label += " " + suffix;
+        statusSuffix_ = suffix;
+    } else {
+        statusSuffix_.clear();
+    }
+    std::string label = "Results: " + std::to_string(results_.size());
+    if (!statusSuffix_.empty()) {
+        label += " " + statusSuffix_;
     }
     resultBrowser_->copy_label(label.c_str());
 }
@@ -511,12 +512,14 @@ void SearchPanel::updateIndexingIndicator() {
     if (!indexingIndicatorActive_) return;
     if (swordSearchInProgress_) return;
 
+    // Only update indexing status in the Search tab.
+    if (!isSearchTabActive()) {
+        return;
+    }
+
     SearchIndexer* indexer = app_ ? app_->searchIndexer() : nullptr;
     if (!indexer) {
-        if (progressBar_) {
-            progressBar_->copy_label("");
-            progressBar_->hide();
-        }
+        setResultCountLabel();
         return;
     }
 
@@ -545,21 +548,19 @@ void SearchPanel::updateIndexingIndicator() {
     }
 
     if (displayModule.empty() || progress < 0 || progress >= 100) {
-        if (progressBar_) {
-            progressBar_->copy_label("");
-            progressBar_->hide();
-        }
+        setResultCountLabel();
         return;
     }
 
-    if (progressBar_) {
-        progressBar_->show();
-        progressBar_->value(progress);
-        std::string label = "Indexing " + displayModule + ": " +
-                            std::to_string(progress) + "%";
-        progressBar_->copy_label(label.c_str());
-        progressBar_->redraw();
-    }
+    setResultCountLabel("(indexing " + displayModule + ": " +
+                        std::to_string(progress) + "%)");
+}
+
+bool SearchPanel::isSearchTabActive() const {
+    if (!visible_r()) return false;
+    auto* tabs = dynamic_cast<Fl_Tabs*>(parent());
+    if (!tabs) return true;
+    return tabs->value() == this;
 }
 
 void SearchPanel::onIndexingPoll(void* data) {

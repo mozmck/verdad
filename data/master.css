@@ -222,7 +222,11 @@ div.commentary {
 
 div.commentary-verse {
     display: block;
-    margin: 0 0 0.5em 0;
+    margin: 0;
+}
+
+div.commentary-verse + div.commentary-verse {
+    padding-top: 0.5em;
 }
 
 span.commentary-empty {

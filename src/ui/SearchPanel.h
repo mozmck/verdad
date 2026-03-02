@@ -5,7 +5,6 @@
 #include <FL/Fl_Browser.H>
 #include <FL/Fl_Choice.H>
 #include <FL/Fl_Check_Button.H>
-#include <FL/Fl_Progress.H>
 #include <string>
 #include <vector>
 #include "sword/SwordManager.h"
@@ -48,9 +47,6 @@ private:
     // Result list
     Fl_Browser* resultBrowser_;
 
-    // Progress bar for search operations
-    Fl_Progress* progressBar_;
-
     // Stored results
     std::vector<SearchResult> results_;
 
@@ -58,6 +54,7 @@ private:
     bool indexingIndicatorActive_ = false;
     std::string indexingModule_;
     bool swordSearchInProgress_ = false;
+    std::string statusSuffix_;
 
     /// Populate module choices
     void populateModules();
@@ -65,6 +62,7 @@ private:
     void startIndexingIndicator(const std::string& moduleName);
     void stopIndexingIndicator();
     void updateIndexingIndicator();
+    bool isSearchTabActive() const;
 
     // Callbacks
     static void onResultSelect(Fl_Widget* w, void* data);

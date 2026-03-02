@@ -1,4 +1,5 @@
 #include "sword/SwordManager.h"
+#include "app/PerfTrace.h"
 
 #include <swmgr.h>
 #include <swmodule.h>
@@ -9,6 +10,7 @@
 #include <swbuf.h>
 
 #include <algorithm>
+#include <chrono>
 #include <regex>
 #include <sstream>
 #include <cstring>
@@ -1788,11 +1790,9 @@ std::string SwordManager::getParallelText(
             if (vk) {
                 std::string ref = book + " " + std::to_string(chapter) + ":1";
                 vk->setText(ref.c_str());
-                // Count verses by iterating
-                int ch = vk->getChapter();
-                while (!mod->popError() && vk->getChapter() == ch) {
-                    verseCount++;
-                    (*mod)++;
+                if (!mod->popError()) {
+                    // O(1) count; avoids per-verse cursor walk every render.
+                    verseCount = vk->getVerseMax();
                 }
             }
             break;
@@ -2471,11 +2471,24 @@ void SwordManager::configureFilters(sword::SWModule* mod) {
 }
 
 std::string SwordManager::postProcessHtml(const std::string& html) const {
+    auto ppStart = std::chrono::steady_clock::now();
+    bool cacheHit = false;
+    bool bypassed = false;
+
     auto cacheIt = postProcessCache_.find(html);
     if (cacheIt != postProcessCache_.end()) {
+        cacheHit = true;
         postProcessLru_.splice(postProcessLru_.begin(),
                                postProcessLru_,
                                cacheIt->second.lruIt);
+        if (perf::enabled()) {
+            double ms = std::chrono::duration<double, std::milli>(
+                std::chrono::steady_clock::now() - ppStart).count();
+            if (ms > 1.0) {
+                perf::logf("SwordManager::postProcessHtml hit len=%zu: %.3f ms",
+                           html.size(), ms);
+            }
+        }
         return cacheIt->second.value;
     }
 
@@ -2502,7 +2515,16 @@ std::string SwordManager::postProcessHtml(const std::string& html) const {
     };
 
     if (!mayContainMorphOrStrongsMarkup(html)) {
+        bypassed = true;
         cacheStore(html, html);
+        if (perf::enabled()) {
+            double ms = std::chrono::duration<double, std::milli>(
+                std::chrono::steady_clock::now() - ppStart).count();
+            if (ms > 1.0) {
+                perf::logf("SwordManager::postProcessHtml bypass len=%zu: %.3f ms",
+                           html.size(), ms);
+            }
+        }
         return html;
     }
 
@@ -2651,6 +2673,14 @@ std::string SwordManager::postProcessHtml(const std::string& html) const {
 
     std::string result = collapseSpacesOutsideTags(out);
     cacheStore(html, result);
+    if (perf::enabled()) {
+        double ms = std::chrono::duration<double, std::milli>(
+            std::chrono::steady_clock::now() - ppStart).count();
+        if (ms > 1.0) {
+            perf::logf("SwordManager::postProcessHtml miss len=%zu out=%zu cacheHit=%d bypass=%d: %.3f ms",
+                       html.size(), result.size(), cacheHit ? 1 : 0, bypassed ? 1 : 0, ms);
+        }
+    }
     return result;
 }
 

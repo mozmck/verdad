@@ -91,9 +91,13 @@ private:
     // Preview area at bottom
     HtmlWidget* previewWidget_;
 
+    /// Show only the active tab panel to avoid cross-tab redraw artifacts.
+    void syncTabPanelVisibility();
+
     // Callbacks
     static void onSearch(Fl_Widget* w, void* data);
     static void onSearchInput(Fl_Widget* w, void* data);
+    static void onTabChanged(Fl_Widget* w, void* data);
 };
 
 } // namespace verdad

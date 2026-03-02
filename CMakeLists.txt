@@ -62,6 +62,7 @@ set(SOURCES
 
 set(HEADERS
     src/app/VerdadApp.h
+    src/app/PerfTrace.h
     src/sword/SwordManager.h
     src/search/SearchIndexer.h
     src/tags/TagManager.h

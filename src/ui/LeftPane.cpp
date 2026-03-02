@@ -46,6 +46,8 @@ LeftPane::LeftPane(VerdadApp* app, int X, int Y, int W, int H)
 
     searchInput_ = new Fl_Input(X + padding, Y + padding,
                                  W - 2 * padding - buttonW - 2, searchH);
+    searchInput_->box(FL_DOWN_BOX);
+    searchInput_->color(FL_WHITE);
     searchInput_->when(FL_WHEN_ENTER_KEY);
     searchInput_->callback(onSearchInput, this);
     searchInput_->tooltip("Enter search text and press Enter");
@@ -93,6 +95,8 @@ LeftPane::LeftPane(VerdadApp* app, int X, int Y, int W, int H)
     tabs_->end();
     tabs_->resizable(modulePanel_);
     tabs_->value(modulePanel_); // Default to modules tab
+    tabs_->callback(onTabChanged, this);
+    syncTabPanelVisibility();
 
     // Preview area at bottom
     int previewY = contentY + tabsInitH;
@@ -183,6 +187,7 @@ void LeftPane::setSearchModule(const std::string& moduleName) {
 void LeftPane::showSearchTab() {
     if (tabs_ && searchPanel_) {
         tabs_->value(searchPanel_);
+        syncTabPanelVisibility();
         tabs_->redraw();
     }
 }
@@ -190,6 +195,7 @@ void LeftPane::showSearchTab() {
 void LeftPane::showModuleTab() {
     if (tabs_ && modulePanel_) {
         tabs_->value(modulePanel_);
+        syncTabPanelVisibility();
         tabs_->redraw();
     }
 }
@@ -197,7 +203,31 @@ void LeftPane::showModuleTab() {
 void LeftPane::showTagTab() {
     if (tabs_ && tagPanel_) {
         tabs_->value(tagPanel_);
+        syncTabPanelVisibility();
         tabs_->redraw();
+    }
+}
+
+void LeftPane::syncTabPanelVisibility() {
+    if (!tabs_ || !modulePanel_ || !searchPanel_ || !tagPanel_) return;
+
+    Fl_Widget* active = tabs_->value();
+    if (active == modulePanel_) {
+        modulePanel_->show();
+        searchPanel_->hide();
+        tagPanel_->hide();
+    } else if (active == searchPanel_) {
+        modulePanel_->hide();
+        searchPanel_->show();
+        tagPanel_->hide();
+    } else if (active == tagPanel_) {
+        modulePanel_->hide();
+        searchPanel_->hide();
+        tagPanel_->show();
+    } else {
+        modulePanel_->show();
+        searchPanel_->hide();
+        tagPanel_->hide();
     }
 }
 
@@ -283,6 +313,13 @@ void LeftPane::onSearchInput(Fl_Widget* /*w*/, void* data) {
     if (text && text[0]) {
         self->doSearch(text);
     }
+}
+
+void LeftPane::onTabChanged(Fl_Widget* /*w*/, void* data) {
+    auto* self = static_cast<LeftPane*>(data);
+    if (!self) return;
+    self->syncTabPanelVisibility();
+    self->redraw();
 }
 
 } // namespace verdad

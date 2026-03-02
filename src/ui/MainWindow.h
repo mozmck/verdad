@@ -10,6 +10,7 @@
 #include <memory>
 #include <string>
 #include <vector>
+#include <chrono>
 
 namespace verdad {
 
@@ -114,6 +115,23 @@ protected:
     int handle(int event) override;
 
 private:
+    struct HtmlDocBuffer {
+        std::shared_ptr<void> doc;
+        std::string html;
+        std::string baseUrl;
+        int scrollY = 0;
+        int contentHeight = 0;
+        int renderWidth = 0;
+        bool scrollbarVisible = false;
+        bool valid = false;
+    };
+
+    struct RightDocBuffers {
+        HtmlDocBuffer commentary;
+        HtmlDocBuffer dictionary;
+        HtmlDocBuffer generalBook;
+    };
+
     struct PendingWordInfo {
         std::string word;
         std::string href;
@@ -125,6 +143,10 @@ private:
     struct StudyContext {
         Fl_Group* tabGroup = nullptr;
         StudyTabState state;
+        HtmlDocBuffer bibleBuffer;
+        RightDocBuffers rightBuffer;
+        bool hasBibleBuffer = false;
+        bool hasRightBuffer = false;
     };
 
     VerdadApp* app_;
@@ -149,10 +171,20 @@ private:
     std::vector<StudyContext> studyTabs_;
     int activeStudyTab_ = -1;
     bool applyingTabState_ = false;
+    bool appearanceApplied_ = false;
+    Fl_Font lastAppliedAppFont_ = FL_HELVETICA;
+    int lastAppliedAppFontSize_ = 12;
+    std::string lastAppliedTextCss_;
 
     // Delayed hover state for MAG updates
     PendingWordInfo pendingWordInfo_;
     bool hoverDelayScheduled_ = false;
+
+    // Deferred startup prewarm state.
+    bool prewarmScheduled_ = false;
+    int prewarmCursor_ = 0;
+    int prewarmAnchorTab_ = -1;
+    std::chrono::steady_clock::time_point lastUserInteraction_;
 
     /// Add a new Bible/Commentary workspace tab.
     void addStudyTab(const std::string& module,
@@ -178,8 +210,26 @@ private:
     /// Capture current shared pane state into the active tab context.
     void captureActiveTabState();
 
+    /// Move rendered pane buffers out of the active tab for fast tab restore.
+    void captureActiveTabDisplayBuffers();
+
     /// Apply a tab context into the shared Bible/Right panes.
     void applyTabState(int index);
+
+    /// Pre-render inactive tabs once (used during startup restore to avoid cold switch spikes).
+    void prewarmInactiveTabs();
+
+    /// Schedule non-blocking incremental prewarm while keeping the active tab visible.
+    void scheduleBackgroundPrewarm(double delaySec = 0.05);
+
+    /// Run a single background prewarm step. Returns true when more work remains.
+    bool runOneBackgroundPrewarmStep();
+
+    /// FLTK timeout callback for deferred incremental prewarm.
+    static void onDeferredPrewarm(void* data);
+
+    /// Mark user interaction to throttle background prewarm while UI is active.
+    void noteUserInteraction();
 
     /// Apply the currently queued word info to the MAG viewer.
     void applyPendingWordInfo();

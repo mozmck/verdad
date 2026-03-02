@@ -8,6 +8,7 @@
 #include <FL/Fl_Choice.H>
 #include <FL/Fl_Input.H>
 #include <FL/Fl_Button.H>
+#include <memory>
 #include <string>
 #include <vector>
 #include <deque>
@@ -22,16 +23,21 @@ class HtmlWidget;
 /// Commentary/General Books are top tabs; dictionary is a resizable bottom pane.
 class RightPane : public Fl_Group {
 public:
+    struct HtmlState {
+        std::shared_ptr<void> doc;
+        std::string html;
+        std::string baseUrl;
+        int scrollY = 0;
+        int contentHeight = 0;
+        int renderWidth = 0;
+        bool scrollbarVisible = false;
+        bool valid = false;
+    };
+
     struct DisplayBuffer {
-        std::string commentaryHtml;
-        int commentaryScrollY = 0;
-        bool hasCommentary = false;
-        std::string dictionaryHtml;
-        int dictionaryScrollY = 0;
-        bool hasDictionary = false;
-        std::string generalBookHtml;
-        int generalBookScrollY = 0;
-        bool hasGeneralBook = false;
+        HtmlState commentary;
+        HtmlState dictionary;
+        HtmlState generalBook;
     };
 
     RightPane(VerdadApp* app, int X, int Y, int W, int H);
@@ -114,8 +120,14 @@ public:
     /// Capture currently rendered text/scroll for fast restore.
     DisplayBuffer captureDisplayBuffer() const;
 
+    /// Move currently rendered text/scroll out of widgets for zero-copy tab switching.
+    DisplayBuffer takeDisplayBuffer();
+
     /// Restore previously captured rendered text/scroll.
     void restoreDisplayBuffer(const DisplayBuffer& buffer, bool dictionaryActive);
+
+    /// Restore previously captured rendered text/scroll (move).
+    void restoreDisplayBuffer(DisplayBuffer&& buffer, bool dictionaryActive);
 
     /// Redraw tabs/chrome during live layout changes.
     void redrawChrome();
@@ -187,6 +199,7 @@ private:
     // Callbacks
     static void onCommentaryModuleChange(Fl_Widget* w, void* data);
     static void onDictionaryModuleChange(Fl_Widget* w, void* data);
+    static void onTopTabChange(Fl_Widget* w, void* data);
     static void onGeneralBookModuleChange(Fl_Widget* w, void* data);
     static void onGeneralBookGo(Fl_Widget* w, void* data);
     static void onGeneralBookKeyInput(Fl_Widget* w, void* data);

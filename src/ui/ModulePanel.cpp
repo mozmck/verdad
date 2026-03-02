@@ -35,6 +35,7 @@ void ModulePanel::refresh() {
 
 void ModulePanel::populateTree() {
     tree_->clear();
+    tree_->deselect_all();
 
     // Add modules organized by type
     auto addModuleGroup = [this](const std::string& groupName,

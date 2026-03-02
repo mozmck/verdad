@@ -6,6 +6,7 @@
 #include "ui/ModuleManagerDialog.h"
 #include "ui/StyledTabs.h"
 #include "sword/SwordManager.h"
+#include "app/PerfTrace.h"
 
 #include <FL/Fl.H>
 #include <FL/fl_ask.H>
@@ -21,6 +22,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <chrono>
 #include <regex>
 #include <sstream>
 #include <unordered_set>
@@ -247,12 +249,18 @@ MainWindow::MainWindow(VerdadApp* app, int W, int H, const char* title)
 
     addStudyTab("", "Genesis", 1, 1);
     layoutStudyTabHeader();
+
+    lastUserInteraction_ = std::chrono::steady_clock::now();
 }
 
 MainWindow::~MainWindow() {
     if (hoverDelayScheduled_) {
         Fl::remove_timeout(onHoverDelayTimeout, this);
         hoverDelayScheduled_ = false;
+    }
+    if (prewarmScheduled_) {
+        Fl::remove_timeout(onDeferredPrewarm, this);
+        prewarmScheduled_ = false;
     }
 }
 
@@ -322,10 +330,15 @@ void MainWindow::duplicateActiveStudyTab() {
     }
 
     captureActiveTabState();
+    captureActiveTabDisplayBuffers();
     const StudyContext& src = studyTabs_[activeStudyTab_];
 
     StudyContext dst;
     dst.state = src.state;
+    dst.bibleBuffer = src.bibleBuffer;
+    dst.rightBuffer = src.rightBuffer;
+    dst.hasBibleBuffer = src.hasBibleBuffer;
+    dst.hasRightBuffer = src.hasRightBuffer;
 
     studyTabsWidget_->begin();
     dst.tabGroup = new Fl_Group(studyTabsWidget_->x(),
@@ -354,11 +367,11 @@ void MainWindow::closeActiveStudyTab() {
 
     captureActiveTabState();
     int closeIndex = activeStudyTab_;
-    StudyContext ctx = studyTabs_[closeIndex];
+    Fl_Group* doomedTabGroup = studyTabs_[closeIndex].tabGroup;
 
-    if (ctx.tabGroup) {
-        studyTabsWidget_->remove(ctx.tabGroup);
-        delete ctx.tabGroup;
+    if (doomedTabGroup) {
+        studyTabsWidget_->remove(doomedTabGroup);
+        delete doomedTabGroup;
     }
     studyTabs_.erase(studyTabs_.begin() + closeIndex);
 
@@ -393,18 +406,41 @@ void MainWindow::clearStudyTabs() {
 }
 
 void MainWindow::activateStudyTab(int index) {
+    perf::ScopeTimer timer("MainWindow::activateStudyTab");
     if (index < 0 || index >= static_cast<int>(studyTabs_.size())) return;
     if (activeStudyTab_ == index) {
         updateActiveStudyTabLabel();
         return;
     }
 
+    perf::StepTimer step;
+    int from = activeStudyTab_;
     captureActiveTabState();
+    perf::logf("activateStudyTab from=%d to=%d captureActiveTabState: %.3f ms",
+               from, index, step.elapsedMs());
+    step.reset();
+    captureActiveTabDisplayBuffers();
+    perf::logf("activateStudyTab from=%d to=%d captureActiveTabDisplayBuffers: %.3f ms",
+               from, index, step.elapsedMs());
+    step.reset();
     hideWordInfo();
+    perf::logf("activateStudyTab from=%d to=%d hideWordInfo: %.3f ms",
+               from, index, step.elapsedMs());
+    step.reset();
     activeStudyTab_ = index;
     applyTabState(index);
+    perf::logf("activateStudyTab from=%d to=%d applyTabState: %.3f ms",
+               from, index, step.elapsedMs());
+    step.reset();
     updateActiveStudyTabLabel();
+    perf::logf("activateStudyTab from=%d to=%d updateActiveStudyTabLabel: %.3f ms",
+               from, index, step.elapsedMs());
+    step.reset();
     layoutStudyTabHeader();
+    perf::logf("activateStudyTab from=%d to=%d layoutStudyTabHeader: %.3f ms",
+               from, index, step.elapsedMs());
+
+    scheduleBackgroundPrewarm(0.2);
 }
 
 void MainWindow::layoutStudyTabHeader() {
@@ -511,12 +547,78 @@ void MainWindow::captureActiveTabState() {
     }
 }
 
+void MainWindow::captureActiveTabDisplayBuffers() {
+    perf::ScopeTimer timer("MainWindow::captureActiveTabDisplayBuffers");
+    if (applyingTabState_) return;
+    if (activeStudyTab_ < 0 || activeStudyTab_ >= static_cast<int>(studyTabs_.size())) return;
+
+    StudyContext& ctx = studyTabs_[activeStudyTab_];
+    perf::StepTimer step;
+    if (biblePane_) {
+        BiblePane::DisplayBuffer b = biblePane_->takeDisplayBuffer();
+        ctx.bibleBuffer.doc = std::move(b.doc);
+        ctx.bibleBuffer.html = std::move(b.html);
+        ctx.bibleBuffer.baseUrl = std::move(b.baseUrl);
+        ctx.bibleBuffer.scrollY = b.scrollY;
+        ctx.bibleBuffer.contentHeight = b.contentHeight;
+        ctx.bibleBuffer.renderWidth = b.renderWidth;
+        ctx.bibleBuffer.scrollbarVisible = b.scrollbarVisible;
+        ctx.bibleBuffer.valid = b.valid;
+        ctx.hasBibleBuffer = b.valid;
+        perf::logf("captureActiveTabDisplayBuffers tab=%d biblePane_->takeDisplayBuffer: %.3f ms (valid=%d)",
+                   activeStudyTab_, step.elapsedMs(), b.valid ? 1 : 0);
+        step.reset();
+    }
+    if (rightPane_) {
+        RightPane::DisplayBuffer r = rightPane_->takeDisplayBuffer();
+
+        ctx.rightBuffer.commentary.doc = std::move(r.commentary.doc);
+        ctx.rightBuffer.commentary.html = std::move(r.commentary.html);
+        ctx.rightBuffer.commentary.baseUrl = std::move(r.commentary.baseUrl);
+        ctx.rightBuffer.commentary.scrollY = r.commentary.scrollY;
+        ctx.rightBuffer.commentary.contentHeight = r.commentary.contentHeight;
+        ctx.rightBuffer.commentary.renderWidth = r.commentary.renderWidth;
+        ctx.rightBuffer.commentary.scrollbarVisible = r.commentary.scrollbarVisible;
+        ctx.rightBuffer.commentary.valid = r.commentary.valid;
+
+        ctx.rightBuffer.dictionary.doc = std::move(r.dictionary.doc);
+        ctx.rightBuffer.dictionary.html = std::move(r.dictionary.html);
+        ctx.rightBuffer.dictionary.baseUrl = std::move(r.dictionary.baseUrl);
+        ctx.rightBuffer.dictionary.scrollY = r.dictionary.scrollY;
+        ctx.rightBuffer.dictionary.contentHeight = r.dictionary.contentHeight;
+        ctx.rightBuffer.dictionary.renderWidth = r.dictionary.renderWidth;
+        ctx.rightBuffer.dictionary.scrollbarVisible = r.dictionary.scrollbarVisible;
+        ctx.rightBuffer.dictionary.valid = r.dictionary.valid;
+
+        ctx.rightBuffer.generalBook.doc = std::move(r.generalBook.doc);
+        ctx.rightBuffer.generalBook.html = std::move(r.generalBook.html);
+        ctx.rightBuffer.generalBook.baseUrl = std::move(r.generalBook.baseUrl);
+        ctx.rightBuffer.generalBook.scrollY = r.generalBook.scrollY;
+        ctx.rightBuffer.generalBook.contentHeight = r.generalBook.contentHeight;
+        ctx.rightBuffer.generalBook.renderWidth = r.generalBook.renderWidth;
+        ctx.rightBuffer.generalBook.scrollbarVisible = r.generalBook.scrollbarVisible;
+        ctx.rightBuffer.generalBook.valid = r.generalBook.valid;
+
+        ctx.hasRightBuffer = ctx.rightBuffer.commentary.valid ||
+                             ctx.rightBuffer.dictionary.valid ||
+                             ctx.rightBuffer.generalBook.valid;
+        perf::logf("captureActiveTabDisplayBuffers tab=%d rightPane_->takeDisplayBuffer: %.3f ms (c=%d d=%d g=%d)",
+                   activeStudyTab_,
+                   step.elapsedMs(),
+                   ctx.rightBuffer.commentary.valid ? 1 : 0,
+                   ctx.rightBuffer.dictionary.valid ? 1 : 0,
+                   ctx.rightBuffer.generalBook.valid ? 1 : 0);
+    }
+}
+
 void MainWindow::applyTabState(int index) {
+    perf::ScopeTimer timer("MainWindow::applyTabState");
     if (index < 0 || index >= static_cast<int>(studyTabs_.size())) return;
     if (!biblePane_ || !rightPane_) return;
 
     StudyContext& ctx = studyTabs_[index];
     applyingTabState_ = true;
+    perf::StepTimer step;
 
     biblePane_->setStudyState(
         ctx.state.module,
@@ -526,9 +628,36 @@ void MainWindow::applyTabState(int index) {
         ctx.state.paragraphMode,
         ctx.state.parallelMode,
         ctx.state.parallelModules);
-    biblePane_->refresh();
+    perf::logf("applyTabState tab=%d biblePane_->setStudyState: %.3f ms",
+               index, step.elapsedMs());
+    step.reset();
+    if (ctx.hasBibleBuffer) {
+        BiblePane::DisplayBuffer b;
+        b.doc = std::move(ctx.bibleBuffer.doc);
+        b.html = std::move(ctx.bibleBuffer.html);
+        b.baseUrl = std::move(ctx.bibleBuffer.baseUrl);
+        b.scrollY = ctx.bibleBuffer.scrollY;
+        b.contentHeight = ctx.bibleBuffer.contentHeight;
+        b.renderWidth = ctx.bibleBuffer.renderWidth;
+        b.scrollbarVisible = ctx.bibleBuffer.scrollbarVisible;
+        b.valid = ctx.bibleBuffer.valid;
+        biblePane_->restoreDisplayBuffer(std::move(b));
+        ctx.bibleBuffer = HtmlDocBuffer{};
+        ctx.hasBibleBuffer = false;
+        perf::logf("applyTabState tab=%d biblePane_->restoreDisplayBuffer: %.3f ms",
+                   index, step.elapsedMs());
+        step.reset();
+    } else {
+        biblePane_->refresh();
+        perf::logf("applyTabState tab=%d biblePane_->refresh: %.3f ms",
+                   index, step.elapsedMs());
+        step.reset();
+    }
     if (leftPane_ && biblePane_) {
         leftPane_->setSearchModule(biblePane_->currentModule());
+        perf::logf("applyTabState tab=%d leftPane_->setSearchModule: %.3f ms",
+                   index, step.elapsedMs());
+        step.reset();
     }
 
     rightPane_->setStudyState(
@@ -539,25 +668,239 @@ void MainWindow::applyTabState(int index) {
         ctx.state.generalBookModule,
         ctx.state.generalBookKey,
         ctx.state.dictionaryActive);
+    perf::logf("applyTabState tab=%d rightPane_->setStudyState: %.3f ms",
+               index, step.elapsedMs());
+    step.reset();
     if (ctx.state.dictionaryPaneHeight > 0) {
         rightPane_->setDictionaryPaneHeight(ctx.state.dictionaryPaneHeight);
+        perf::logf("applyTabState tab=%d rightPane_->setDictionaryPaneHeight: %.3f ms",
+                   index, step.elapsedMs());
+        step.reset();
     }
-    rightPane_->refresh();
-    rightPane_->setDictionaryTabActive(ctx.state.dictionaryActive);
+    bool restoredRight = ctx.hasRightBuffer;
+    if (restoredRight) {
+        RightPane::DisplayBuffer r;
+        r.commentary.doc = std::move(ctx.rightBuffer.commentary.doc);
+        r.commentary.html = std::move(ctx.rightBuffer.commentary.html);
+        r.commentary.baseUrl = std::move(ctx.rightBuffer.commentary.baseUrl);
+        r.commentary.scrollY = ctx.rightBuffer.commentary.scrollY;
+        r.commentary.contentHeight = ctx.rightBuffer.commentary.contentHeight;
+        r.commentary.renderWidth = ctx.rightBuffer.commentary.renderWidth;
+        r.commentary.scrollbarVisible = ctx.rightBuffer.commentary.scrollbarVisible;
+        r.commentary.valid = ctx.rightBuffer.commentary.valid;
+
+        r.dictionary.doc = std::move(ctx.rightBuffer.dictionary.doc);
+        r.dictionary.html = std::move(ctx.rightBuffer.dictionary.html);
+        r.dictionary.baseUrl = std::move(ctx.rightBuffer.dictionary.baseUrl);
+        r.dictionary.scrollY = ctx.rightBuffer.dictionary.scrollY;
+        r.dictionary.contentHeight = ctx.rightBuffer.dictionary.contentHeight;
+        r.dictionary.renderWidth = ctx.rightBuffer.dictionary.renderWidth;
+        r.dictionary.scrollbarVisible = ctx.rightBuffer.dictionary.scrollbarVisible;
+        r.dictionary.valid = ctx.rightBuffer.dictionary.valid;
+
+        r.generalBook.doc = std::move(ctx.rightBuffer.generalBook.doc);
+        r.generalBook.html = std::move(ctx.rightBuffer.generalBook.html);
+        r.generalBook.baseUrl = std::move(ctx.rightBuffer.generalBook.baseUrl);
+        r.generalBook.scrollY = ctx.rightBuffer.generalBook.scrollY;
+        r.generalBook.contentHeight = ctx.rightBuffer.generalBook.contentHeight;
+        r.generalBook.renderWidth = ctx.rightBuffer.generalBook.renderWidth;
+        r.generalBook.scrollbarVisible = ctx.rightBuffer.generalBook.scrollbarVisible;
+        r.generalBook.valid = ctx.rightBuffer.generalBook.valid;
+
+        rightPane_->restoreDisplayBuffer(std::move(r), ctx.state.dictionaryActive);
+        ctx.rightBuffer = RightDocBuffers{};
+        ctx.hasRightBuffer = false;
+        perf::logf("applyTabState tab=%d rightPane_->restoreDisplayBuffer: %.3f ms",
+                   index, step.elapsedMs());
+        step.reset();
+    } else {
+        rightPane_->refresh();
+        rightPane_->setDictionaryTabActive(ctx.state.dictionaryActive);
+        perf::logf("applyTabState tab=%d rightPane_->refresh+setDictionaryTabActive: %.3f ms",
+                   index, step.elapsedMs());
+        step.reset();
+    }
     if (ctx.state.bibleScrollY >= 0) {
         biblePane_->setScrollY(ctx.state.bibleScrollY);
+        perf::logf("applyTabState tab=%d biblePane_->setScrollY: %.3f ms",
+                   index, step.elapsedMs());
+        step.reset();
     }
     if (ctx.state.commentaryScrollY >= 0) {
         rightPane_->setCommentaryScrollY(ctx.state.commentaryScrollY);
+        perf::logf("applyTabState tab=%d rightPane_->setCommentaryScrollY: %.3f ms",
+                   index, step.elapsedMs());
+        step.reset();
     }
     biblePane_->redrawChrome();
     rightPane_->redrawChrome();
+    perf::logf("applyTabState tab=%d redrawChrome panes: %.3f ms",
+               index, step.elapsedMs());
+    step.reset();
     if (studyTabsWidget_) {
         studyTabsWidget_->damage(FL_DAMAGE_ALL);
         studyTabsWidget_->redraw();
+        perf::logf("applyTabState tab=%d studyTabsWidget redraw: %.3f ms",
+                   index, step.elapsedMs());
+        step.reset();
     }
 
     applyingTabState_ = false;
+}
+
+void MainWindow::prewarmInactiveTabs() {
+    if (!biblePane_ || !rightPane_) return;
+    if (studyTabs_.size() <= 1) return;
+    if (activeStudyTab_ < 0 || activeStudyTab_ >= static_cast<int>(studyTabs_.size())) {
+        return;
+    }
+
+    perf::ScopeTimer timer("MainWindow::prewarmInactiveTabs");
+
+    const int original = activeStudyTab_;
+    captureActiveTabState();
+    captureActiveTabDisplayBuffers();
+
+    for (int i = 0; i < static_cast<int>(studyTabs_.size()); ++i) {
+        if (i == original) continue;
+        StudyContext& ctx = studyTabs_[i];
+        if (ctx.hasBibleBuffer && ctx.hasRightBuffer) continue;
+
+        perf::logf("prewarmInactiveTabs warm tab=%d (hasBible=%d hasRight=%d)",
+                   i, ctx.hasBibleBuffer ? 1 : 0, ctx.hasRightBuffer ? 1 : 0);
+
+        activeStudyTab_ = i;
+        applyTabState(i);
+        captureActiveTabState();
+        captureActiveTabDisplayBuffers();
+    }
+
+    activeStudyTab_ = original;
+    applyTabState(original);
+    if (studyTabsWidget_ &&
+        original >= 0 &&
+        original < static_cast<int>(studyTabs_.size()) &&
+        studyTabs_[original].tabGroup) {
+        studyTabsWidget_->value(studyTabs_[original].tabGroup);
+    }
+    updateActiveStudyTabLabel();
+    layoutStudyTabHeader();
+}
+
+void MainWindow::scheduleBackgroundPrewarm(double delaySec) {
+    if (studyTabs_.size() <= 1) return;
+    if (activeStudyTab_ < 0 || activeStudyTab_ >= static_cast<int>(studyTabs_.size())) {
+        return;
+    }
+
+    prewarmAnchorTab_ = activeStudyTab_;
+    prewarmCursor_ = 0;
+
+    if (prewarmScheduled_) {
+        Fl::remove_timeout(onDeferredPrewarm, this);
+        prewarmScheduled_ = false;
+    }
+
+    Fl::add_timeout(std::max(0.0, delaySec), onDeferredPrewarm, this);
+    prewarmScheduled_ = true;
+}
+
+bool MainWindow::runOneBackgroundPrewarmStep() {
+    if (!biblePane_ || !rightPane_) return false;
+    if (studyTabs_.size() <= 1) return false;
+    if (activeStudyTab_ < 0 || activeStudyTab_ >= static_cast<int>(studyTabs_.size())) {
+        return false;
+    }
+
+    const int original = activeStudyTab_;
+    const int tabCount = static_cast<int>(studyTabs_.size());
+
+    int target = -1;
+    for (int n = 0; n < tabCount; ++n) {
+        const int idx = (prewarmCursor_ + n) % tabCount;
+        if (idx == original) continue;
+
+        const StudyContext& ctx = studyTabs_[idx];
+        if (ctx.hasBibleBuffer && ctx.hasRightBuffer) continue;
+
+        target = idx;
+        prewarmCursor_ = (idx + 1) % tabCount;
+        break;
+    }
+
+    if (target < 0) return false;
+
+    perf::logf("backgroundPrewarm warm tab=%d (hasBible=%d hasRight=%d)",
+               target,
+               studyTabs_[target].hasBibleBuffer ? 1 : 0,
+               studyTabs_[target].hasRightBuffer ? 1 : 0);
+
+    captureActiveTabState();
+    captureActiveTabDisplayBuffers();
+
+    activeStudyTab_ = target;
+    applyTabState(target);
+    captureActiveTabState();
+    captureActiveTabDisplayBuffers();
+
+    activeStudyTab_ = original;
+    applyTabState(original);
+    if (studyTabsWidget_ &&
+        original >= 0 &&
+        original < static_cast<int>(studyTabs_.size()) &&
+        studyTabs_[original].tabGroup) {
+        studyTabsWidget_->value(studyTabs_[original].tabGroup);
+    }
+    updateActiveStudyTabLabel();
+    layoutStudyTabHeader();
+
+    for (int i = 0; i < tabCount; ++i) {
+        if (i == original) continue;
+        if (!(studyTabs_[i].hasBibleBuffer && studyTabs_[i].hasRightBuffer)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+void MainWindow::onDeferredPrewarm(void* data) {
+    auto* self = static_cast<MainWindow*>(data);
+    if (!self) return;
+    self->prewarmScheduled_ = false;
+
+    if (!self->shown()) {
+        self->scheduleBackgroundPrewarm(0.15);
+        return;
+    }
+    if (self->applyingTabState_) {
+        self->scheduleBackgroundPrewarm(0.08);
+        return;
+    }
+    if (self->studyTabs_.size() <= 1) return;
+    if (self->activeStudyTab_ < 0 ||
+        self->activeStudyTab_ >= static_cast<int>(self->studyTabs_.size())) {
+        return;
+    }
+
+    const auto now = std::chrono::steady_clock::now();
+    const auto sinceInput = now - self->lastUserInteraction_;
+    if (sinceInput < std::chrono::milliseconds(350)) {
+        self->scheduleBackgroundPrewarm(0.2);
+        return;
+    }
+
+    if (self->activeStudyTab_ != self->prewarmAnchorTab_) {
+        self->prewarmAnchorTab_ = self->activeStudyTab_;
+        self->prewarmCursor_ = 0;
+    }
+
+    if (self->runOneBackgroundPrewarmStep()) {
+        self->scheduleBackgroundPrewarm(0.03);
+    }
+}
+
+void MainWindow::noteUserInteraction() {
+    lastUserInteraction_ = std::chrono::steady_clock::now();
 }
 
 void MainWindow::navigateTo(const std::string& reference) {
@@ -732,12 +1075,41 @@ void MainWindow::refresh() {
 void MainWindow::applyAppearanceSettings(Fl_Font appFont,
                                          int appFontSize,
                                          const std::string& textCssOverride) {
-    int clampedSize = std::clamp(appFontSize, 8, 36);
-    applyUiFontRecursively(this, appFont, clampedSize);
+    const int clampedSize = std::clamp(appFontSize, 8, 36);
+    const bool cssChanged =
+        appearanceApplied_ && (textCssOverride != lastAppliedTextCss_);
+    const bool uiFontChanged =
+        appearanceApplied_ &&
+        (appFont != lastAppliedAppFont_ ||
+         clampedSize != lastAppliedAppFontSize_);
 
-    if (leftPane_) leftPane_->setHtmlStyleOverride(textCssOverride);
-    if (biblePane_) biblePane_->setHtmlStyleOverride(textCssOverride);
-    if (rightPane_) rightPane_->setHtmlStyleOverride(textCssOverride);
+    // Re-apply widget fonts only when needed.
+    if (!appearanceApplied_ || uiFontChanged) {
+        applyUiFontRecursively(this, appFont, clampedSize);
+    }
+
+    // Re-apply HTML CSS only when needed.
+    if (!appearanceApplied_ || cssChanged) {
+        if (leftPane_) leftPane_->setHtmlStyleOverride(textCssOverride);
+        if (biblePane_) biblePane_->setHtmlStyleOverride(textCssOverride);
+        if (rightPane_) rightPane_->setHtmlStyleOverride(textCssOverride);
+    }
+
+    // Only drop inactive tab buffers when text rendering style actually changed.
+    if (cssChanged) {
+        for (size_t i = 0; i < studyTabs_.size(); ++i) {
+            if (static_cast<int>(i) == activeStudyTab_) continue;
+            studyTabs_[i].bibleBuffer = HtmlDocBuffer{};
+            studyTabs_[i].rightBuffer = RightDocBuffers{};
+            studyTabs_[i].hasBibleBuffer = false;
+            studyTabs_[i].hasRightBuffer = false;
+        }
+    }
+
+    lastAppliedAppFont_ = appFont;
+    lastAppliedAppFontSize_ = clampedSize;
+    lastAppliedTextCss_ = textCssOverride;
+    appearanceApplied_ = true;
 
     redraw();
 }
@@ -862,9 +1234,24 @@ void MainWindow::restoreSessionState(const SessionState& state) {
     }
 
     redraw();
+    scheduleBackgroundPrewarm(0.1);
 }
 
 int MainWindow::handle(int event) {
+    switch (event) {
+    case FL_PUSH:
+    case FL_RELEASE:
+    case FL_DRAG:
+    case FL_MOUSEWHEEL:
+    case FL_SHORTCUT:
+    case FL_KEYDOWN:
+    case FL_KEYUP:
+        noteUserInteraction();
+        break;
+    default:
+        break;
+    }
+
     if (event == FL_DRAG || event == FL_RELEASE) {
         if (newStudyTabButton_) newStudyTabButton_->redraw();
         if (closeStudyTabButton_) closeStudyTabButton_->redraw();
@@ -897,6 +1284,7 @@ int MainWindow::handle(int event) {
 }
 
 void MainWindow::onStudyTabChange(Fl_Widget* /*w*/, void* data) {
+    perf::ScopeTimer timer("MainWindow::onStudyTabChange");
     auto* self = static_cast<MainWindow*>(data);
     if (!self || !self->studyTabsWidget_) return;
 
@@ -905,6 +1293,7 @@ void MainWindow::onStudyTabChange(Fl_Widget* /*w*/, void* data) {
 
     for (size_t i = 0; i < self->studyTabs_.size(); ++i) {
         if (self->studyTabs_[i].tabGroup == active) {
+            perf::logf("onStudyTabChange target index=%zu", i);
             self->activateStudyTab(static_cast<int>(i));
             break;
         }

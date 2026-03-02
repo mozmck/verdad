@@ -4,6 +4,7 @@
 #include "ui/MainWindow.h"
 #include "ui/VerseContext.h"
 #include "sword/SwordManager.h"
+#include "app/PerfTrace.h"
 
 #include <FL/Fl.H>
 
@@ -354,6 +355,7 @@ void BiblePane::prevChapter() {
 }
 
 void BiblePane::refresh() {
+    perf::ScopeTimer timer("BiblePane::refresh");
     updateDisplay();
 }
 
@@ -412,6 +414,7 @@ void BiblePane::setStudyState(const std::string& module,
                               bool paragraphMode,
                               bool parallelMode,
                               const std::vector<std::string>& parallelModules) {
+    perf::ScopeTimer timer("BiblePane::setStudyState");
     if (!module.empty()) {
         moduleName_ = module;
     } else if (moduleName_.empty()) {
@@ -469,22 +472,90 @@ void BiblePane::setStudyState(const std::string& module,
                           ":" + std::to_string(currentVerse_);
         refInput_->value(ref.c_str());
     }
+
+    // Ensure parallel header visibility/layout matches restored state even when
+    // caller restores a pre-rendered HTML snapshot instead of calling updateDisplay().
+    int contentY = y() + kNavH + kContentPadding;
+    int headerH = (parallelMode_ ? kParallelHeaderH : 0);
+    if (parallelHeader_) {
+        if (parallelMode_) {
+            syncParallelHeader();
+            parallelHeader_->show();
+        } else {
+            parallelHeader_->hide();
+        }
+        parallelHeader_->resize(x(), contentY, w(), headerH);
+        parallelHeader_->damage(FL_DAMAGE_ALL);
+        layoutParallelHeader();
+    }
+    if (htmlWidget_) {
+        int textY = contentY + headerH;
+        int textH = std::max(20, h() - kNavH - kContentPadding - headerH);
+        htmlWidget_->resize(x(), textY, w(), textH);
+    }
 }
 
 BiblePane::DisplayBuffer BiblePane::captureDisplayBuffer() const {
     DisplayBuffer buf;
     if (!htmlWidget_) return buf;
 
-    buf.html = htmlWidget_->currentHtml();
-    buf.scrollY = htmlWidget_->scrollY();
-    buf.valid = !buf.html.empty();
+    HtmlWidget::Snapshot snap = htmlWidget_->captureSnapshot();
+    buf.doc = snap.doc;
+    buf.html = std::move(snap.html);
+    buf.baseUrl = std::move(snap.baseUrl);
+    buf.scrollY = snap.scrollY;
+    buf.contentHeight = snap.contentHeight;
+    buf.renderWidth = snap.renderWidth;
+    buf.scrollbarVisible = snap.scrollbarVisible;
+    buf.valid = snap.valid;
+    return buf;
+}
+
+BiblePane::DisplayBuffer BiblePane::takeDisplayBuffer() {
+    DisplayBuffer buf;
+    if (!htmlWidget_) return buf;
+
+    HtmlWidget::Snapshot snap = htmlWidget_->takeSnapshot();
+    buf.doc = std::move(snap.doc);
+    buf.html = std::move(snap.html);
+    buf.baseUrl = std::move(snap.baseUrl);
+    buf.scrollY = snap.scrollY;
+    buf.contentHeight = snap.contentHeight;
+    buf.renderWidth = snap.renderWidth;
+    buf.scrollbarVisible = snap.scrollbarVisible;
+    buf.valid = snap.valid;
     return buf;
 }
 
 void BiblePane::restoreDisplayBuffer(const DisplayBuffer& buffer) {
+    perf::ScopeTimer timer("BiblePane::restoreDisplayBuffer(copy)");
     if (!htmlWidget_ || !buffer.valid) return;
-    htmlWidget_->setHtml(buffer.html);
-    htmlWidget_->setScrollY(buffer.scrollY);
+    HtmlWidget::Snapshot snap;
+    snap.doc = buffer.doc;
+    snap.html = buffer.html;
+    snap.baseUrl = buffer.baseUrl;
+    snap.scrollY = buffer.scrollY;
+    snap.contentHeight = buffer.contentHeight;
+    snap.renderWidth = buffer.renderWidth;
+    snap.scrollbarVisible = buffer.scrollbarVisible;
+    snap.valid = buffer.valid;
+    htmlWidget_->restoreSnapshot(snap);
+}
+
+void BiblePane::restoreDisplayBuffer(DisplayBuffer&& buffer) {
+    perf::ScopeTimer timer("BiblePane::restoreDisplayBuffer(move)");
+    if (!htmlWidget_ || !buffer.valid) return;
+    HtmlWidget::Snapshot snap;
+    snap.doc = std::move(buffer.doc);
+    snap.html = std::move(buffer.html);
+    snap.baseUrl = std::move(buffer.baseUrl);
+    snap.scrollY = buffer.scrollY;
+    snap.contentHeight = buffer.contentHeight;
+    snap.renderWidth = buffer.renderWidth;
+    snap.scrollbarVisible = buffer.scrollbarVisible;
+    snap.valid = buffer.valid;
+    buffer.valid = false;
+    htmlWidget_->restoreSnapshot(std::move(snap));
 }
 
 void BiblePane::buildNavBar() {
@@ -560,6 +631,7 @@ void BiblePane::buildNavBar() {
 }
 
 void BiblePane::updateDisplay() {
+    perf::ScopeTimer timer("BiblePane::updateDisplay");
     if (!htmlWidget_ || !parallelHeader_) return;
     htmlWidget_->show();
 
@@ -599,6 +671,7 @@ void BiblePane::updateDisplay() {
     }
 
     std::string html;
+    perf::StepTimer step;
 
     if (parallelMode_) {
         normalizeParallelModules();
@@ -627,6 +700,9 @@ void BiblePane::updateDisplay() {
         html = app_->swordManager().getParallelText(
             parallelModules_, currentBook_, currentChapter_, paragraphMode_,
             currentVerse_);
+        perf::logf("BiblePane::updateDisplay getParallelText (%zu cols): %.3f ms",
+                   parallelModules_.size(), step.elapsedMs());
+        step.reset();
     } else {
         parallelHeader_->hide();
         if (parallelAddButton_) {
@@ -635,6 +711,10 @@ void BiblePane::updateDisplay() {
         html = app_->swordManager().getChapterText(
             moduleName_, currentBook_, currentChapter_, paragraphMode_,
             currentVerse_);
+        perf::logf("BiblePane::updateDisplay getChapterText %s %s %d: %.3f ms",
+                   moduleName_.c_str(), currentBook_.c_str(), currentChapter_,
+                   step.elapsedMs());
+        step.reset();
     }
 
     if (html.empty()) {
@@ -651,6 +731,8 @@ void BiblePane::updateDisplay() {
     htmlWidget_->resize(x(), textY, w(), textH);
 
     htmlWidget_->setHtml(html);
+    perf::logf("BiblePane::updateDisplay htmlWidget_->setHtml: %.3f ms", step.elapsedMs());
+    step.reset();
     if (currentVerse_ > 0) {
         htmlWidget_->scrollToAnchor("v" + std::to_string(currentVerse_));
     } else {
@@ -658,6 +740,7 @@ void BiblePane::updateDisplay() {
     }
     htmlWidget_->redraw();
     redrawChrome();
+    perf::logf("BiblePane::updateDisplay scroll+redraw: %.3f ms", step.elapsedMs());
 }
 
 void BiblePane::normalizeParallelModules() {

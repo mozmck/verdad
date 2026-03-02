@@ -36,6 +36,17 @@ namespace verdad {
 /// Implements litehtml::document_container for drawing with FLTK.
 class HtmlWidget : public Fl_Widget, public litehtml::document_container {
 public:
+    struct Snapshot {
+        std::shared_ptr<void> doc;
+        std::string html;
+        std::string baseUrl;
+        int scrollY = 0;
+        int contentHeight = 0;
+        int renderWidth = 0;
+        bool scrollbarVisible = false;
+        bool valid = false;
+    };
+
     HtmlWidget(int X, int Y, int W, int H, const char* label = nullptr);
     ~HtmlWidget() override;
 
@@ -62,6 +73,18 @@ public:
 
     /// Get currently loaded HTML fragment.
     const std::string& currentHtml() const { return currentHtml_; }
+
+    /// Capture current rendered state (copy).
+    Snapshot captureSnapshot() const;
+
+    /// Move current rendered state out of the widget.
+    Snapshot takeSnapshot();
+
+    /// Restore rendered state snapshot.
+    void restoreSnapshot(const Snapshot& snapshot);
+
+    /// Restore rendered state snapshot (move).
+    void restoreSnapshot(Snapshot&& snapshot);
 
     /// Handle widget geometry updates and rerender on resize.
     void resize(int X, int Y, int W, int H) override;
@@ -160,6 +183,7 @@ private:
     std::string baseUrl_;
     int scrollY_ = 0;
     int contentHeight_ = 0;
+    int lastRenderWidth_ = 0;
 
     // Font cache
     struct FontInfo {

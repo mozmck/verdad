@@ -6,6 +6,7 @@
 #include <FL/Fl_Input.H>
 #include <FL/Fl_Button.H>
 #include <FL/Fl_Box.H>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -19,8 +20,13 @@ class HtmlWidget;
 class BiblePane : public Fl_Group {
 public:
     struct DisplayBuffer {
+        std::shared_ptr<void> doc;
         std::string html;
+        std::string baseUrl;
         int scrollY = 0;
+        int contentHeight = 0;
+        int renderWidth = 0;
+        bool scrollbarVisible = false;
         bool valid = false;
     };
 
@@ -99,8 +105,14 @@ public:
     /// Capture current rendered text/scroll for fast restore.
     DisplayBuffer captureDisplayBuffer() const;
 
+    /// Move current rendered text/scroll out of the widget for zero-copy tab switching.
+    DisplayBuffer takeDisplayBuffer();
+
     /// Restore previously captured rendered text/scroll.
     void restoreDisplayBuffer(const DisplayBuffer& buffer);
+
+    /// Restore previously captured rendered text/scroll (move).
+    void restoreDisplayBuffer(DisplayBuffer&& buffer);
 
     /// Redraw toolbar chrome during live layout changes.
     void redrawChrome();

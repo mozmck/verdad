@@ -102,6 +102,7 @@ void TagPanel::showAddTagDialog(const std::string& verseKey) {
 
 void TagPanel::populateTags() {
     tagBrowser_->clear();
+    tagBrowser_->value(0);
 
     auto tags = app_->tagManager().getAllTags();
     for (const auto& tag : tags) {
@@ -113,6 +114,7 @@ void TagPanel::populateTags() {
 
 void TagPanel::populateVerses(const std::string& tagName) {
     verseBrowser_->clear();
+    verseBrowser_->value(0);
 
     auto verses = app_->tagManager().getVersesWithTag(tagName);
     for (const auto& verse : verses) {

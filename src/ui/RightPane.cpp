@@ -3,6 +3,7 @@
 #include "ui/HtmlWidget.h"
 #include "ui/StyledTabs.h"
 #include "sword/SwordManager.h"
+#include "app/PerfTrace.h"
 
 #include <FL/Fl.H>
 
@@ -189,6 +190,7 @@ RightPane::RightPane(VerdadApp* app, int X, int Y, int W, int H)
 
     tabs_->end();
     tabs_->value(commentaryGroup_);
+    tabs_->callback(onTopTabChange, this);
 
     dictionaryPaneGroup_ = new Fl_Group(tileX,
                                         tileY + tabsInitH,
@@ -308,6 +310,7 @@ void RightPane::showCommentary(const std::string& reference) {
 
 void RightPane::showCommentary(const std::string& moduleName,
                                const std::string& reference) {
+    perf::ScopeTimer timer("RightPane::showCommentary");
     currentCommentary_ = moduleName;
     currentCommentaryRef_ = reference;
 
@@ -323,12 +326,20 @@ void RightPane::showCommentary(const std::string& moduleName,
     }
 
     if (commentaryHtml_ && needReload) {
+        perf::StepTimer step;
         std::string html;
         if (haveChapterKey) {
             std::string cacheKey = moduleName + "|" + chapterKey;
             if (!lookupCommentaryCache(cacheKey, html)) {
                 html = app_->swordManager().getCommentaryText(moduleName, reference);
                 storeCommentaryCache(cacheKey, html);
+                perf::logf("RightPane::showCommentary getCommentaryText miss %s %s: %.3f ms",
+                           moduleName.c_str(), reference.c_str(), step.elapsedMs());
+                step.reset();
+            } else {
+                perf::logf("RightPane::showCommentary cache hit %s %s: %.3f ms",
+                           moduleName.c_str(), reference.c_str(), step.elapsedMs());
+                step.reset();
             }
             loadedCommentaryModule_ = moduleName;
             loadedCommentaryChapterKey_ = chapterKey;
@@ -336,8 +347,13 @@ void RightPane::showCommentary(const std::string& moduleName,
             html = app_->swordManager().getCommentaryText(moduleName, reference);
             loadedCommentaryModule_.clear();
             loadedCommentaryChapterKey_.clear();
+            perf::logf("RightPane::showCommentary getCommentaryText direct %s %s: %.3f ms",
+                       moduleName.c_str(), reference.c_str(), step.elapsedMs());
+            step.reset();
         }
         commentaryHtml_->setHtml(html);
+        perf::logf("RightPane::showCommentary commentaryHtml_->setHtml: %.3f ms",
+                   step.elapsedMs());
     }
 
     if (commentaryHtml_) {
@@ -544,6 +560,7 @@ void RightPane::setStudyState(const std::string& commentaryModule,
                               const std::string& generalBookModule,
                               const std::string& generalBookKey,
                               bool dictionaryActive) {
+    perf::ScopeTimer timer("RightPane::setStudyState");
     if (!commentaryModule.empty()) {
         setCommentaryModule(commentaryModule);
     }
@@ -567,35 +584,160 @@ void RightPane::setStudyState(const std::string& commentaryModule,
 RightPane::DisplayBuffer RightPane::captureDisplayBuffer() const {
     DisplayBuffer buf;
     if (commentaryHtml_) {
-        buf.commentaryHtml = commentaryHtml_->currentHtml();
-        buf.commentaryScrollY = commentaryHtml_->scrollY();
-        buf.hasCommentary = !buf.commentaryHtml.empty();
+        HtmlWidget::Snapshot snap = commentaryHtml_->captureSnapshot();
+        buf.commentary.doc = snap.doc;
+        buf.commentary.html = std::move(snap.html);
+        buf.commentary.baseUrl = std::move(snap.baseUrl);
+        buf.commentary.scrollY = snap.scrollY;
+        buf.commentary.contentHeight = snap.contentHeight;
+        buf.commentary.renderWidth = snap.renderWidth;
+        buf.commentary.scrollbarVisible = snap.scrollbarVisible;
+        buf.commentary.valid = snap.valid;
     }
     if (dictionaryHtml_) {
-        buf.dictionaryHtml = dictionaryHtml_->currentHtml();
-        buf.dictionaryScrollY = dictionaryHtml_->scrollY();
-        buf.hasDictionary = !buf.dictionaryHtml.empty();
+        HtmlWidget::Snapshot snap = dictionaryHtml_->captureSnapshot();
+        buf.dictionary.doc = snap.doc;
+        buf.dictionary.html = std::move(snap.html);
+        buf.dictionary.baseUrl = std::move(snap.baseUrl);
+        buf.dictionary.scrollY = snap.scrollY;
+        buf.dictionary.contentHeight = snap.contentHeight;
+        buf.dictionary.renderWidth = snap.renderWidth;
+        buf.dictionary.scrollbarVisible = snap.scrollbarVisible;
+        buf.dictionary.valid = snap.valid;
     }
     if (generalBookHtml_) {
-        buf.generalBookHtml = generalBookHtml_->currentHtml();
-        buf.generalBookScrollY = generalBookHtml_->scrollY();
-        buf.hasGeneralBook = !buf.generalBookHtml.empty();
+        HtmlWidget::Snapshot snap = generalBookHtml_->captureSnapshot();
+        buf.generalBook.doc = snap.doc;
+        buf.generalBook.html = std::move(snap.html);
+        buf.generalBook.baseUrl = std::move(snap.baseUrl);
+        buf.generalBook.scrollY = snap.scrollY;
+        buf.generalBook.contentHeight = snap.contentHeight;
+        buf.generalBook.renderWidth = snap.renderWidth;
+        buf.generalBook.scrollbarVisible = snap.scrollbarVisible;
+        buf.generalBook.valid = snap.valid;
+    }
+    return buf;
+}
+
+RightPane::DisplayBuffer RightPane::takeDisplayBuffer() {
+    DisplayBuffer buf;
+    if (commentaryHtml_) {
+        HtmlWidget::Snapshot snap = commentaryHtml_->takeSnapshot();
+        buf.commentary.doc = std::move(snap.doc);
+        buf.commentary.html = std::move(snap.html);
+        buf.commentary.baseUrl = std::move(snap.baseUrl);
+        buf.commentary.scrollY = snap.scrollY;
+        buf.commentary.contentHeight = snap.contentHeight;
+        buf.commentary.renderWidth = snap.renderWidth;
+        buf.commentary.scrollbarVisible = snap.scrollbarVisible;
+        buf.commentary.valid = snap.valid;
+    }
+    if (dictionaryHtml_) {
+        HtmlWidget::Snapshot snap = dictionaryHtml_->takeSnapshot();
+        buf.dictionary.doc = std::move(snap.doc);
+        buf.dictionary.html = std::move(snap.html);
+        buf.dictionary.baseUrl = std::move(snap.baseUrl);
+        buf.dictionary.scrollY = snap.scrollY;
+        buf.dictionary.contentHeight = snap.contentHeight;
+        buf.dictionary.renderWidth = snap.renderWidth;
+        buf.dictionary.scrollbarVisible = snap.scrollbarVisible;
+        buf.dictionary.valid = snap.valid;
+    }
+    if (generalBookHtml_) {
+        HtmlWidget::Snapshot snap = generalBookHtml_->takeSnapshot();
+        buf.generalBook.doc = std::move(snap.doc);
+        buf.generalBook.html = std::move(snap.html);
+        buf.generalBook.baseUrl = std::move(snap.baseUrl);
+        buf.generalBook.scrollY = snap.scrollY;
+        buf.generalBook.contentHeight = snap.contentHeight;
+        buf.generalBook.renderWidth = snap.renderWidth;
+        buf.generalBook.scrollbarVisible = snap.scrollbarVisible;
+        buf.generalBook.valid = snap.valid;
     }
     return buf;
 }
 
 void RightPane::restoreDisplayBuffer(const DisplayBuffer& buffer, bool dictionaryActive) {
-    if (commentaryHtml_ && buffer.hasCommentary) {
-        commentaryHtml_->setHtml(buffer.commentaryHtml);
-        commentaryHtml_->setScrollY(buffer.commentaryScrollY);
+    perf::ScopeTimer timer("RightPane::restoreDisplayBuffer(copy)");
+    if (commentaryHtml_ && buffer.commentary.valid) {
+        HtmlWidget::Snapshot snap;
+        snap.doc = buffer.commentary.doc;
+        snap.html = buffer.commentary.html;
+        snap.baseUrl = buffer.commentary.baseUrl;
+        snap.scrollY = buffer.commentary.scrollY;
+        snap.contentHeight = buffer.commentary.contentHeight;
+        snap.renderWidth = buffer.commentary.renderWidth;
+        snap.scrollbarVisible = buffer.commentary.scrollbarVisible;
+        snap.valid = buffer.commentary.valid;
+        commentaryHtml_->restoreSnapshot(snap);
     }
-    if (dictionaryHtml_ && buffer.hasDictionary) {
-        dictionaryHtml_->setHtml(buffer.dictionaryHtml);
-        dictionaryHtml_->setScrollY(buffer.dictionaryScrollY);
+    if (dictionaryHtml_ && buffer.dictionary.valid) {
+        HtmlWidget::Snapshot snap;
+        snap.doc = buffer.dictionary.doc;
+        snap.html = buffer.dictionary.html;
+        snap.baseUrl = buffer.dictionary.baseUrl;
+        snap.scrollY = buffer.dictionary.scrollY;
+        snap.contentHeight = buffer.dictionary.contentHeight;
+        snap.renderWidth = buffer.dictionary.renderWidth;
+        snap.scrollbarVisible = buffer.dictionary.scrollbarVisible;
+        snap.valid = buffer.dictionary.valid;
+        dictionaryHtml_->restoreSnapshot(snap);
     }
-    if (generalBookHtml_ && buffer.hasGeneralBook) {
-        generalBookHtml_->setHtml(buffer.generalBookHtml);
-        generalBookHtml_->setScrollY(buffer.generalBookScrollY);
+    if (generalBookHtml_ && buffer.generalBook.valid) {
+        HtmlWidget::Snapshot snap;
+        snap.doc = buffer.generalBook.doc;
+        snap.html = buffer.generalBook.html;
+        snap.baseUrl = buffer.generalBook.baseUrl;
+        snap.scrollY = buffer.generalBook.scrollY;
+        snap.contentHeight = buffer.generalBook.contentHeight;
+        snap.renderWidth = buffer.generalBook.renderWidth;
+        snap.scrollbarVisible = buffer.generalBook.scrollbarVisible;
+        snap.valid = buffer.generalBook.valid;
+        generalBookHtml_->restoreSnapshot(snap);
+    }
+    setDictionaryTabActive(dictionaryActive);
+}
+
+void RightPane::restoreDisplayBuffer(DisplayBuffer&& buffer, bool dictionaryActive) {
+    perf::ScopeTimer timer("RightPane::restoreDisplayBuffer(move)");
+    if (commentaryHtml_ && buffer.commentary.valid) {
+        HtmlWidget::Snapshot snap;
+        snap.doc = std::move(buffer.commentary.doc);
+        snap.html = std::move(buffer.commentary.html);
+        snap.baseUrl = std::move(buffer.commentary.baseUrl);
+        snap.scrollY = buffer.commentary.scrollY;
+        snap.contentHeight = buffer.commentary.contentHeight;
+        snap.renderWidth = buffer.commentary.renderWidth;
+        snap.scrollbarVisible = buffer.commentary.scrollbarVisible;
+        snap.valid = buffer.commentary.valid;
+        buffer.commentary.valid = false;
+        commentaryHtml_->restoreSnapshot(std::move(snap));
+    }
+    if (dictionaryHtml_ && buffer.dictionary.valid) {
+        HtmlWidget::Snapshot snap;
+        snap.doc = std::move(buffer.dictionary.doc);
+        snap.html = std::move(buffer.dictionary.html);
+        snap.baseUrl = std::move(buffer.dictionary.baseUrl);
+        snap.scrollY = buffer.dictionary.scrollY;
+        snap.contentHeight = buffer.dictionary.contentHeight;
+        snap.renderWidth = buffer.dictionary.renderWidth;
+        snap.scrollbarVisible = buffer.dictionary.scrollbarVisible;
+        snap.valid = buffer.dictionary.valid;
+        buffer.dictionary.valid = false;
+        dictionaryHtml_->restoreSnapshot(std::move(snap));
+    }
+    if (generalBookHtml_ && buffer.generalBook.valid) {
+        HtmlWidget::Snapshot snap;
+        snap.doc = std::move(buffer.generalBook.doc);
+        snap.html = std::move(buffer.generalBook.html);
+        snap.baseUrl = std::move(buffer.generalBook.baseUrl);
+        snap.scrollY = buffer.generalBook.scrollY;
+        snap.contentHeight = buffer.generalBook.contentHeight;
+        snap.renderWidth = buffer.generalBook.renderWidth;
+        snap.scrollbarVisible = buffer.generalBook.scrollbarVisible;
+        snap.valid = buffer.generalBook.valid;
+        buffer.generalBook.valid = false;
+        generalBookHtml_->restoreSnapshot(std::move(snap));
     }
     setDictionaryTabActive(dictionaryActive);
 }
@@ -615,6 +757,7 @@ void RightPane::redrawChrome() {
 }
 
 void RightPane::refresh() {
+    perf::ScopeTimer timer("RightPane::refresh");
     bool keepGeneralBooksTab = isDictionaryTabActive();
 
     if (!currentCommentary_.empty() && !currentCommentaryRef_.empty()) {
@@ -623,7 +766,10 @@ void RightPane::refresh() {
     if (!currentDictionary_.empty() && !currentDictKey_.empty()) {
         showDictionaryEntry(currentDictionary_, currentDictKey_);
     }
-    if (!currentGeneralBook_.empty()) {
+    // Lazy-load general books to avoid paying parse/render cost on every cold
+    // tab activation when user is reading commentary.
+    if (!currentGeneralBook_.empty() &&
+        (keepGeneralBooksTab || !currentGeneralBookKey_.empty())) {
         showGeneralBookEntry(currentGeneralBook_, currentGeneralBookKey_);
     }
 
@@ -776,6 +922,28 @@ void RightPane::onDictionaryModuleChange(Fl_Widget* /*w*/, void* data) {
         if (!self->currentDictKey_.empty()) {
             self->showDictionaryEntry(self->currentDictionary_,
                                       self->currentDictKey_);
+        }
+    }
+}
+
+void RightPane::onTopTabChange(Fl_Widget* /*w*/, void* data) {
+    auto* self = static_cast<RightPane*>(data);
+    if (!self || !self->tabs_) return;
+
+    if (self->tabs_->value() == self->generalBooksGroup_) {
+        if (self->generalBookHtml_ &&
+            self->generalBookHtml_->currentHtml().empty() &&
+            !self->currentGeneralBook_.empty()) {
+            self->showGeneralBookEntry(self->currentGeneralBook_,
+                                       self->currentGeneralBookKey_);
+        }
+    } else if (self->tabs_->value() == self->commentaryGroup_) {
+        if (self->commentaryHtml_ &&
+            self->commentaryHtml_->currentHtml().empty() &&
+            !self->currentCommentary_.empty() &&
+            !self->currentCommentaryRef_.empty()) {
+            self->showCommentary(self->currentCommentary_,
+                                 self->currentCommentaryRef_);
         }
     }
 }
