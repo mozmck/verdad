@@ -6,6 +6,7 @@
 #include "ui/ModuleManagerDialog.h"
 #include "ui/StyledTabs.h"
 #include "sword/SwordManager.h"
+#include "search/SearchIndexer.h"
 #include "app/PerfTrace.h"
 
 #include <FL/Fl.H>
@@ -58,6 +59,28 @@ std::string htmlEscape(const std::string& text) {
         }
     }
     return out;
+}
+
+std::string buildModuleRefLabel(VerdadApp* app,
+                                const std::string& module,
+                                const std::string& reference) {
+    if (!app) return module + ":" + reference;
+    std::string shortRef = app->swordManager().getShortReference(module, reference);
+    if (shortRef.empty()) shortRef = reference;
+    return module + ":" + shortRef;
+}
+
+std::string extractStrongsToken(const std::string& query) {
+    static const std::regex strongRe(R"(([HhGg]\d+[A-Za-z]?))");
+    std::smatch m;
+    if (!std::regex_search(query, m, strongRe)) return "";
+    std::string tok = m[1].str();
+    for (char& c : tok) {
+        if (std::isalpha(static_cast<unsigned char>(c))) {
+            c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+        }
+    }
+    return tok;
 }
 
 void appendEscapedTextLines(std::ostringstream& out,
@@ -171,6 +194,7 @@ MainWindow::MainWindow(VerdadApp* app, int W, int H, const char* title)
     : Fl_Double_Window(W, H, title)
     , app_(app)
     , menuBar_(nullptr)
+    , statusBar_(nullptr)
     , mainTile_(nullptr)
     , leftPane_(nullptr)
     , studyArea_(nullptr)
@@ -183,16 +207,17 @@ MainWindow::MainWindow(VerdadApp* app, int W, int H, const char* title)
 
     size_range(800, 600);
 
-    int menuH = 25;
+    const int menuH = 25;
+    const int statusH = 22;
 
     menuBar_ = new Fl_Menu_Bar(0, 0, W, menuH);
     buildMenu();
 
-    mainTile_ = new Fl_Tile(0, menuH, W, H - menuH);
+    mainTile_ = new Fl_Tile(0, menuH, W, std::max(20, H - menuH - statusH));
     mainTile_->begin();
 
     int leftW = W * 25 / 100;
-    leftPane_ = new LeftPane(app_, 0, menuH, leftW, H - menuH);
+    leftPane_ = new LeftPane(app_, 0, menuH, leftW, mainTile_->h());
 
     int studyX = leftW;
     int studyW = W - leftW;
@@ -200,7 +225,7 @@ MainWindow::MainWindow(VerdadApp* app, int W, int H, const char* title)
     const int closeTabButtonW = 24;
     const int tabButtonPad = 2;
     const int tabsHeaderH = 25;
-    studyArea_ = new Fl_Group(studyX, menuH, studyW, H - menuH);
+    studyArea_ = new Fl_Group(studyX, menuH, studyW, mainTile_->h());
     studyArea_->box(FL_FLAT_BOX);
     studyArea_->begin();
 
@@ -230,7 +255,7 @@ MainWindow::MainWindow(VerdadApp* app, int W, int H, const char* title)
     studyArea_->begin();
 
     int contentY = menuH + tabsHeaderH;
-    int contentH = std::max(20, H - contentY);
+    int contentH = std::max(20, mainTile_->h() - tabsHeaderH);
     contentTile_ = new Fl_Tile(studyX, contentY, studyW, contentH);
     contentTile_->begin();
 
@@ -244,6 +269,12 @@ MainWindow::MainWindow(VerdadApp* app, int W, int H, const char* title)
     studyArea_->resizable(contentTile_);
 
     mainTile_->end();
+
+    statusBar_ = new Fl_Box(0, H - statusH, W, statusH);
+    statusBar_->box(FL_THIN_UP_BOX);
+    statusBar_->align(FL_ALIGN_LEFT | FL_ALIGN_INSIDE);
+    statusBar_->copy_label("Ready");
+
     resizable(mainTile_);
     end();
 
@@ -251,6 +282,9 @@ MainWindow::MainWindow(VerdadApp* app, int W, int H, const char* title)
     layoutStudyTabHeader();
 
     lastUserInteraction_ = std::chrono::steady_clock::now();
+    updateStatusBar();
+    Fl::add_timeout(0.25, onStatusPoll, this);
+    statusPollScheduled_ = true;
 }
 
 MainWindow::~MainWindow() {
@@ -261,6 +295,10 @@ MainWindow::~MainWindow() {
     if (prewarmScheduled_) {
         Fl::remove_timeout(onDeferredPrewarm, this);
         prewarmScheduled_ = false;
+    }
+    if (statusPollScheduled_) {
+        Fl::remove_timeout(onStatusPoll, this);
+        statusPollScheduled_ = false;
     }
 }
 
@@ -410,6 +448,7 @@ void MainWindow::activateStudyTab(int index) {
     if (index < 0 || index >= static_cast<int>(studyTabs_.size())) return;
     if (activeStudyTab_ == index) {
         updateActiveStudyTabLabel();
+        updateStatusBar();
         return;
     }
 
@@ -439,6 +478,7 @@ void MainWindow::activateStudyTab(int index) {
     layoutStudyTabHeader();
     perf::logf("activateStudyTab from=%d to=%d layoutStudyTabHeader: %.3f ms",
                from, index, step.elapsedMs());
+    updateStatusBar();
 
     scheduleBackgroundPrewarm(0.2);
 }
@@ -906,6 +946,11 @@ void MainWindow::noteUserInteraction() {
 void MainWindow::navigateTo(const std::string& reference) {
     if (biblePane_) {
         biblePane_->navigateToReference(reference);
+        std::string module = trimCopy(biblePane_->currentModule());
+        std::string ref = trimCopy(reference);
+        if (!module.empty() && !ref.empty()) {
+            showTransientStatus("Opened " + buildModuleRefLabel(app_, module, ref), 2.2);
+        }
     }
 }
 
@@ -913,6 +958,11 @@ void MainWindow::navigateTo(const std::string& module, const std::string& refere
     if (biblePane_) {
         biblePane_->setModule(module);
         biblePane_->navigateToReference(reference);
+        std::string mod = trimCopy(module);
+        std::string ref = trimCopy(reference);
+        if (!mod.empty() && !ref.empty()) {
+            showTransientStatus("Opened " + buildModuleRefLabel(app_, mod, ref), 2.2);
+        }
     }
 }
 
@@ -1060,9 +1110,30 @@ void MainWindow::applyPendingWordInfo() {
 void MainWindow::showSearchResults(const std::string& query,
                                    const std::string& moduleOverride) {
     if (leftPane_) {
+        std::string strongTok = extractStrongsToken(query);
+        if (!strongTok.empty()) {
+            showTransientStatus("Strong's lookup: " + strongTok, 2.8);
+        } else {
+            std::string q = trimCopy(query);
+            if (!q.empty()) {
+                if (q.size() > 40) q = q.substr(0, 40) + "...";
+                showTransientStatus("Search: " + q, 2.0);
+            }
+        }
         leftPane_->doSearch(query, moduleOverride);
         leftPane_->showSearchTab();
     }
+}
+
+void MainWindow::showTransientStatus(const std::string& text, double seconds) {
+    std::string msg = trimCopy(text);
+    if (msg.empty()) return;
+
+    transientStatusText_ = msg;
+    transientStatusUntil_ = std::chrono::steady_clock::now() +
+                            std::chrono::milliseconds(
+                                static_cast<int>(std::clamp(seconds, 0.4, 10.0) * 1000.0));
+    updateStatusBar();
 }
 
 void MainWindow::refresh() {
@@ -1151,8 +1222,9 @@ void MainWindow::restoreSessionState(const SessionState& state) {
     // Restore top-level splitter width.
     if (mainTile_ && leftPane_ && studyArea_) {
         int menuH = menuBar_ ? menuBar_->h() : 25;
+        int statusH = statusBar_ ? statusBar_->h() : 22;
         int totalW = w();
-        int totalH = h() - menuH;
+        int totalH = std::max(20, h() - menuH - statusH);
         int minLeft = 180;
         int maxLeft = std::max(minLeft, totalW - 220);
         int leftW = std::clamp(state.leftPaneWidth, minLeft, maxLeft);
@@ -1235,6 +1307,85 @@ void MainWindow::restoreSessionState(const SessionState& state) {
 
     redraw();
     scheduleBackgroundPrewarm(0.1);
+    updateStatusBar();
+}
+
+void MainWindow::resize(int X, int Y, int W, int H) {
+    Fl_Double_Window::resize(X, Y, W, H);
+
+    const int menuH = menuBar_ ? menuBar_->h() : 25;
+    const int statusH = statusBar_ ? statusBar_->h() : 22;
+    const int bodyH = std::max(20, H - menuH - statusH);
+
+    if (menuBar_) {
+        menuBar_->resize(0, 0, W, menuH);
+    }
+    if (mainTile_) {
+        mainTile_->resize(0, menuH, W, bodyH);
+    }
+    if (statusBar_) {
+        statusBar_->resize(0, menuH + bodyH, W, statusH);
+    }
+}
+
+void MainWindow::updateStatusBar() {
+    if (!statusBar_) return;
+
+    std::string text;
+    auto now = std::chrono::steady_clock::now();
+
+    if (!transientStatusText_.empty() && now < transientStatusUntil_) {
+        text = transientStatusText_;
+    } else if (!transientStatusText_.empty()) {
+        transientStatusText_.clear();
+    }
+
+    if (text.empty() && app_ && app_->searchIndexer()) {
+        std::string module;
+        int pct = 0;
+        if (app_->searchIndexer()->activeIndexingTask(module, pct)) {
+            text = "Indexing " + module + ": " + std::to_string(pct) + "%";
+        } else if (app_->searchIndexer()->isIndexing()) {
+            text = "Indexing modules...";
+        }
+    }
+
+    if (text.empty()) {
+        std::string module;
+        std::string reference;
+        if (biblePane_) {
+            module = trimCopy(biblePane_->currentModule());
+            std::string book = trimCopy(biblePane_->currentBook());
+            int chapter = std::max(1, biblePane_->currentChapter());
+            int verse = std::max(1, biblePane_->currentVerse());
+            if (!book.empty()) {
+                reference = book + " " + std::to_string(chapter) + ":" +
+                            std::to_string(verse);
+            }
+        }
+
+        if (!module.empty() && !reference.empty() && app_) {
+            text = "Ready | " + buildModuleRefLabel(app_, module, reference);
+        } else {
+            text = "Ready";
+        }
+    }
+
+    if (text != lastStatusBarText_) {
+        lastStatusBarText_ = text;
+        statusBar_->copy_label(lastStatusBarText_.c_str());
+        statusBar_->redraw();
+    }
+}
+
+void MainWindow::onStatusPoll(void* data) {
+    auto* self = static_cast<MainWindow*>(data);
+    if (!self) return;
+    if (!self->shown()) return;
+
+    self->updateStatusBar();
+    Fl::repeat_timeout(0.25, onStatusPoll, self);
+    self->statusPollScheduled_ = true;
 }
 
 int MainWindow::handle(int event) {
@@ -1272,6 +1423,10 @@ int MainWindow::handle(int event) {
         }
         damage(FL_DAMAGE_ALL);
         redraw();
+    }
+
+    if (event == FL_PUSH || event == FL_RELEASE || event == FL_MOUSEWHEEL) {
+        updateStatusBar();
     }
 
     if (event == FL_SHORTCUT) {

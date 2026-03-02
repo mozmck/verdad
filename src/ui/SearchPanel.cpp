@@ -437,6 +437,14 @@ void SearchPanel::search(const std::string& query,
         stopIndexingIndicator();
     }
 
+    if (app_ && app_->mainWindow()) {
+        std::string mod = trimCopy(moduleName);
+        if (mod.empty()) mod = "module";
+        app_->mainWindow()->showTransientStatus(
+            "Search (" + mod + "): " + std::to_string(results_.size()) + " result(s)",
+            2.6);
+    }
+
     redraw();
 }
 

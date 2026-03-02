@@ -12,6 +12,8 @@
 #include <vector>
 #include <chrono>
 
+class Fl_Box;
+
 namespace verdad {
 
 class VerdadApp;
@@ -85,6 +87,9 @@ public:
     void showSearchResults(const std::string& query,
                            const std::string& moduleOverride = "");
 
+    /// Show a short-lived status message in the bottom status bar.
+    void showTransientStatus(const std::string& text, double seconds = 2.5);
+
     /// Called by BiblePane when module/book/chapter context changes.
     void updateActiveStudyTabLabel();
 
@@ -112,6 +117,7 @@ public:
     void restoreSessionState(const SessionState& state);
 
 protected:
+    void resize(int X, int Y, int W, int H) override;
     int handle(int event) override;
 
 private:
@@ -153,6 +159,7 @@ private:
 
     // Menu bar
     Fl_Menu_Bar* menuBar_;
+    Fl_Box* statusBar_;
 
     // Top-level layout
     Fl_Tile* mainTile_;
@@ -185,6 +192,10 @@ private:
     int prewarmCursor_ = 0;
     int prewarmAnchorTab_ = -1;
     std::chrono::steady_clock::time_point lastUserInteraction_;
+    bool statusPollScheduled_ = false;
+    std::string lastStatusBarText_;
+    std::string transientStatusText_;
+    std::chrono::steady_clock::time_point transientStatusUntil_{};
 
     /// Add a new Bible/Commentary workspace tab.
     void addStudyTab(const std::string& module,
@@ -230,6 +241,12 @@ private:
 
     /// Mark user interaction to throttle background prewarm while UI is active.
     void noteUserInteraction();
+
+    /// Update bottom status bar text.
+    void updateStatusBar();
+
+    /// Periodic status poll callback.
+    static void onStatusPoll(void* data);
 
     /// Apply the currently queued word info to the MAG viewer.
     void applyPendingWordInfo();
