@@ -18,7 +18,7 @@ class MainWindow;
 class VerdadApp {
 public:
     struct AppearanceSettings {
-        std::string appFontName = "Helvetica";
+        std::string appFontName = "Sans";
         int appFontSize = 14;
         std::string textFontFamily = "DejaVu Serif";
         int textFontSize = 14;

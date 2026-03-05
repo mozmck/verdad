@@ -86,9 +86,11 @@ std::string joinCsv(const std::vector<std::string>& items) {
 
 std::string normalizeAppFontName(const std::string& name) {
     std::string n = trimCopy(name);
-    if (n == "Times") return "Times";
-    if (n == "Courier") return "Courier";
-    return "Helvetica";
+    // Migrate legacy FLTK alias names to actual system font names
+    if (n.empty() || n == "Helvetica") return "Sans";
+    if (n == "Times") return "Serif";
+    if (n == "Courier") return "Monospace";
+    return n;
 }
 
 int clampFontSize(int size) {
@@ -477,6 +479,12 @@ Fl_Font VerdadApp::fltkFontFromFamily(const std::string& family) const {
     std::string lower = family;
     std::transform(lower.begin(), lower.end(), lower.begin(),
                    [](unsigned char c) { return std::tolower(c); });
+
+    // Handle common aliases
+    if (lower == "helvetica" || lower == "arial") lower = "sans";
+    else if (lower == "times" || lower == "times new roman") lower = "serif";
+    else if (lower == "courier" || lower == "courier new") lower = "monospace";
+
     auto it = fontFamilyMap_.find(lower);
     if (it != fontFamilyMap_.end()) return it->second;
 
