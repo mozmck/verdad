@@ -71,6 +71,51 @@ std::vector<std::string> splitWordCandidates(const std::string& text) {
     return words;
 }
 
+/// Extract the single word at an approximate cursor position within a
+/// multi-word text fragment.  Uses the element's rendered placement to
+/// estimate which character the cursor is over, then finds word boundaries.
+std::string extractWordAtCursor(const std::string& text,
+                                int cursorDocX,
+                                const std::shared_ptr<litehtml::element>& el) {
+    std::string trimmed = trimCopy(text);
+    if (trimmed.empty()) return {};
+
+    // Single-word text: return as-is after stripping punctuation
+    if (!containsWhitespace(trimmed))
+        return stripWordEdgePunct(trimmed);
+
+    // Try to use the element's rendered position to estimate char index
+    litehtml::position placement = el->get_placement();
+    int elWidth = placement.width;
+    if (elWidth > 0 && !trimmed.empty()) {
+        int relX = cursorDocX - placement.x;
+        relX = std::max(0, std::min(relX, elWidth));
+        // Proportional character index estimate
+        size_t charIdx = static_cast<size_t>(
+            static_cast<long long>(relX) *
+            static_cast<long long>(trimmed.size()) / elWidth);
+        if (charIdx >= trimmed.size()) charIdx = trimmed.size() - 1;
+
+        // Expand to word boundaries around the estimated position
+        auto isWC = [](unsigned char c) {
+            return std::isalnum(c) || c == '\'' || c == '-' || c >= 0x80;
+        };
+        size_t start = charIdx;
+        size_t end   = charIdx;
+        while (start > 0 && isWC(static_cast<unsigned char>(trimmed[start - 1])))
+            --start;
+        while (end < trimmed.size() &&
+               isWC(static_cast<unsigned char>(trimmed[end])))
+            ++end;
+        if (end > start)
+            return trimmed.substr(start, end - start);
+    }
+
+    // Fallback: return the first word
+    auto words = splitWordCandidates(trimmed);
+    return words.empty() ? std::string{} : words.front();
+}
+
 bool isNumericToken(const std::string& token) {
     if (token.empty()) return false;
     bool sawDigit = false;
@@ -802,7 +847,29 @@ int HtmlWidget::handle(int event) {
                     // Get text content of the element under the cursor
                     litehtml::string elText;
                     el->get_text(elText);
-                    word = elText;
+
+                    // Check if element (or a close ancestor) is a span.w
+                    // word wrapper — if so, use text directly.  Otherwise
+                    // extract the single word at the cursor position.
+                    bool isWordSpan = false;
+                    {
+                        auto probe = el;
+                        for (int d = 0; probe && d < 3; ++d) {
+                            auto cls = probe->get_attr("class");
+                            if (cls && std::string(cls).find("w") !=
+                                           std::string::npos) {
+                                isWordSpan = true;
+                                break;
+                            }
+                            probe = probe->parent();
+                        }
+                    }
+                    if (isWordSpan) {
+                        word = elText;
+                    } else {
+                        int cursorDocX = Fl::event_x() - x();
+                        word = extractWordAtCursor(elText, cursorDocX, el);
+                    }
 
                     // Walk up parent chain (max 5 levels) to find data-strong,
                     // data-morph, and href attributes

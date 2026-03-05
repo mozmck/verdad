@@ -154,6 +154,7 @@ private:
         RightDocBuffers rightBuffer;
         bool hasBibleBuffer = false;
         bool hasRightBuffer = false;
+        uint64_t lastUsed = 0;  ///< Monotonic counter for LRU eviction
     };
 
     VerdadApp* app_;
@@ -178,6 +179,8 @@ private:
     // All workspace tabs
     std::vector<StudyContext> studyTabs_;
     int activeStudyTab_ = -1;
+    uint64_t tabUseCounter_ = 0;
+    static constexpr int kMaxCachedTabDocs = 4;
     bool applyingTabState_ = false;
     bool appearanceApplied_ = false;
     Fl_Font lastAppliedAppFont_ = FL_HELVETICA;
@@ -224,6 +227,9 @@ private:
 
     /// Move rendered pane buffers out of the active tab for fast tab restore.
     void captureActiveTabDisplayBuffers();
+
+    /// Evict litehtml doc from least-recently-used tabs to limit memory.
+    void evictOldTabSnapshots();
 
     /// Apply a tab context into the shared Bible/Right panes.
     void applyTabState(int index);

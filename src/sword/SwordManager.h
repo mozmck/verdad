@@ -206,10 +206,10 @@ private:
     mutable std::mutex mutex_;
     mutable std::unordered_map<std::string, PostProcessCacheEntry> postProcessCache_;
     mutable std::list<std::string> postProcessLru_;
-    static constexpr size_t kPostProcessCacheLimit = 4096;
+    static constexpr size_t kPostProcessCacheLimit = 1024;
     mutable std::unordered_map<std::string, VerseHtmlCacheEntry> verseHtmlCache_;
     mutable std::list<std::string> verseHtmlLru_;
-    static constexpr size_t kVerseHtmlCacheLimit = 16384;
+    static constexpr size_t kVerseHtmlCacheLimit = 2048;
 
     /// Get a SWORD module by name (returns nullptr if not found)
     sword::SWModule* getModule(const std::string& name) const;

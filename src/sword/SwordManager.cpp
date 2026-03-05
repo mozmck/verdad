@@ -1415,99 +1415,6 @@ std::string sanitizeParallelVerseHtml(const std::string& html) {
     return collapseSpacesOutsideTags(out);
 }
 
-std::string wrapParallelPlainWords(const std::string& html) {
-    if (html.empty()) return html;
-
-    std::string out;
-    out.reserve(html.size() + html.size() / 3);
-
-    std::vector<bool> spanWordStack;
-    int wordSpanDepth = 0;
-
-    size_t pos = 0;
-    while (pos < html.size()) {
-        if (html[pos] == '<') {
-            size_t tagEnd = findTagEnd(html, pos);
-            if (tagEnd == std::string::npos) {
-                out.append(html.substr(pos));
-                break;
-            }
-
-            std::string rawTag = html.substr(pos, tagEnd - pos + 1);
-            size_t parsedEnd = std::string::npos;
-            std::string tagName;
-            bool isClosing = false;
-            bool isSelfClosing = false;
-            if (parseTag(html, pos, parsedEnd, tagName, isClosing, isSelfClosing)) {
-                if (tagName == "span") {
-                    if (isClosing) {
-                        if (!spanWordStack.empty()) {
-                            bool wasWord = spanWordStack.back();
-                            spanWordStack.pop_back();
-                            if (wasWord && wordSpanDepth > 0) --wordSpanDepth;
-                        }
-                    } else {
-                        bool isWordSpan = false;
-                        std::string classValue;
-                        if (extractAttributeValue(rawTag, "class", classValue)) {
-                            std::string cls = trimCopy(decodeHtmlEntities(classValue));
-                            std::istringstream css(cls);
-                            std::string tok;
-                            while (css >> tok) {
-                                if (tok == "w") {
-                                    isWordSpan = true;
-                                    break;
-                                }
-                            }
-                        }
-                        if (isWordSpan) ++wordSpanDepth;
-                        if (!isSelfClosing) {
-                            spanWordStack.push_back(isWordSpan);
-                        } else if (isWordSpan && wordSpanDepth > 0) {
-                            --wordSpanDepth;
-                        }
-                    }
-                }
-            }
-
-            out += rawTag;
-            pos = tagEnd + 1;
-            continue;
-        }
-
-        size_t textEnd = html.find('<', pos);
-        if (textEnd == std::string::npos) textEnd = html.size();
-        std::string text = html.substr(pos, textEnd - pos);
-
-        if (wordSpanDepth > 0) {
-            out += text;
-            pos = textEnd;
-            continue;
-        }
-
-        size_t i = 0;
-        while (i < text.size()) {
-            if (isWordByte(static_cast<unsigned char>(text[i]))) {
-                size_t start = i;
-                while (i < text.size() &&
-                       isWordByte(static_cast<unsigned char>(text[i]))) {
-                    ++i;
-                }
-                out += "<span class=\"w\">";
-                out.append(text.substr(start, i - start));
-                out += "</span>";
-            } else {
-                out.push_back(text[i]);
-                ++i;
-            }
-        }
-
-        pos = textEnd;
-    }
-
-    return out;
-}
-
 } // namespace
 
 SwordManager::SwordManager() = default;
@@ -1635,9 +1542,6 @@ std::string SwordManager::getVerseText(const std::string& moduleName,
     }
 
     text = postProcessHtml(text);
-    // Mixed-tagged verses can still contain unwrapped words; wrap them so
-    // context-hit behavior matches parallel mode.
-    text = wrapParallelPlainWords(text);
 
     VerseRef ref;
     try {
@@ -1738,9 +1642,6 @@ std::string SwordManager::getChapterText(const std::string& moduleName,
             verseText = std::string(mod->renderText().c_str());
             if (!verseText.empty()) {
                 verseText = postProcessHtml(verseText);
-                // Mixed-tagged verses can still contain unwrapped words; wrap
-                // remaining plain words for accurate word-level context actions.
-                verseText = wrapParallelPlainWords(verseText);
                 storeVerseHtmlCache(cacheKey, verseText);
             }
         }
@@ -1876,11 +1777,6 @@ std::string SwordManager::getParallelText(
                         }
                     }
                     verseText = sanitizeParallelVerseHtml(verseText);
-                    // Ensure every visible word is hit-testable in parallel view.
-                    // Some modules (e.g. KJV) have mixed markup where only a subset
-                    // of words carry Strong's wrappers; unwrapped words still need
-                    // a plain <span class="w"> wrapper for accurate context actions.
-                    verseText = wrapParallelPlainWords(verseText);
                     html << "<a class=\"versenum-link\" href=\"verse:" << v << "\">"
                          << "<sup class=\"versenum\">" << v << "</sup></a> ";
                     html << verseText;

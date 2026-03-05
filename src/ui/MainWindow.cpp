@@ -516,6 +516,7 @@ void MainWindow::activateStudyTab(int index) {
                from, index, step.elapsedMs());
     step.reset();
     captureActiveTabDisplayBuffers();
+    evictOldTabSnapshots();
     perf::logf("activateStudyTab from=%d to=%d captureActiveTabDisplayBuffers: %.3f ms",
                from, index, step.elapsedMs());
     step.reset();
@@ -524,6 +525,7 @@ void MainWindow::activateStudyTab(int index) {
                from, index, step.elapsedMs());
     step.reset();
     activeStudyTab_ = index;
+    studyTabs_[index].lastUsed = ++tabUseCounter_;
     applyTabState(index);
     perf::logf("activateStudyTab from=%d to=%d applyTabState: %.3f ms",
                from, index, step.elapsedMs());
@@ -705,6 +707,51 @@ void MainWindow::captureActiveTabDisplayBuffers() {
                    ctx.rightBuffer.commentary.valid ? 1 : 0,
                    ctx.rightBuffer.dictionary.valid ? 1 : 0,
                    ctx.rightBuffer.generalBook.valid ? 1 : 0);
+    }
+}
+
+void MainWindow::evictOldTabSnapshots() {
+    // Count tabs that hold a cached litehtml doc (bible or right pane).
+    int cached = 0;
+    for (const auto& t : studyTabs_) {
+        if (t.hasBibleBuffer || t.hasRightBuffer) ++cached;
+    }
+    if (cached <= kMaxCachedTabDocs) return;
+
+    // Build list of candidate tabs sorted by lastUsed (oldest first).
+    std::vector<int> candidates;
+    for (int i = 0; i < static_cast<int>(studyTabs_.size()); ++i) {
+        if (i == activeStudyTab_) continue;
+        auto& t = studyTabs_[i];
+        if (t.hasBibleBuffer || t.hasRightBuffer)
+            candidates.push_back(i);
+    }
+    std::sort(candidates.begin(), candidates.end(),
+              [this](int a, int b) {
+                  return studyTabs_[a].lastUsed < studyTabs_[b].lastUsed;
+              });
+
+    // Evict docs from oldest tabs until we're within budget.
+    // Keep HTML + scroll position so re-render on switch is possible.
+    for (int idx : candidates) {
+        if (cached <= kMaxCachedTabDocs) break;
+        auto& t = studyTabs_[idx];
+        auto clearDoc = [](HtmlDocBuffer& buf) {
+            buf.doc.reset();
+        };
+        if (t.hasBibleBuffer) {
+            clearDoc(t.bibleBuffer);
+            t.hasBibleBuffer = false;
+        }
+        if (t.hasRightBuffer) {
+            clearDoc(t.rightBuffer.commentary);
+            clearDoc(t.rightBuffer.dictionary);
+            clearDoc(t.rightBuffer.generalBook);
+            t.hasRightBuffer = false;
+        }
+        --cached;
+        perf::logf("evictOldTabSnapshots: evicted tab %d (lastUsed=%llu)",
+                   idx, static_cast<unsigned long long>(t.lastUsed));
     }
 }
 
