@@ -225,10 +225,17 @@ div.commentary-verse {
     margin: 0;
 }
 
-/* Horizontal rule separating commentary verse blocks */
-hr.commentary-sep {
+/* Generic hr — litehtml has no built-in user-agent styles for <hr> */
+hr {
+    display: block;
+    height: 0;
     border: none;
     border-top: 1px solid #ccc;
+    margin: 0.5em 0;
+}
+
+/* Horizontal rule separating commentary verse blocks */
+hr.commentary-sep {
     margin: 0.8em 0;
 }
 
