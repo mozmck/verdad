@@ -3,6 +3,8 @@
 
 #include <memory>
 #include <string>
+#include <unordered_map>
+#include <vector>
 #include <FL/Enumerations.H>
 
 namespace verdad {
@@ -67,6 +69,12 @@ public:
     /// Build runtime CSS overrides for HTML-rendered text panes.
     std::string textStyleOverrideCss() const;
 
+    /// Get sorted list of available system font family names.
+    const std::vector<std::string>& systemFontFamilies() const { return systemFontFamilies_; }
+
+    /// Look up an FLTK font index by family name.  Returns FL_HELVETICA if not found.
+    Fl_Font fltkFontFromFamily(const std::string& family) const;
+
 private:
     static VerdadApp* instance_;
 
@@ -75,9 +83,15 @@ private:
     std::unique_ptr<TagManager> tagMgr_;
     std::unique_ptr<MainWindow> mainWindow_;
     AppearanceSettings appearanceSettings_;
+    std::vector<std::string> systemFontFamilies_;
+    /// Map from family name (lowercase) to FLTK font index
+    std::unordered_map<std::string, Fl_Font> fontFamilyMap_;
 
     /// Ensure config directory exists
     void ensureConfigDir();
+
+    /// Enumerate all system fonts (called once during init)
+    void enumerateSystemFonts();
 
     /// Load user preferences
     void loadPreferences();

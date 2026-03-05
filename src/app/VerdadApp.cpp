@@ -14,6 +14,7 @@
 #include <fstream>
 #include <algorithm>
 #include <cctype>
+#include <set>
 #include <sstream>
 #include <unordered_map>
 #include <vector>
@@ -150,6 +151,9 @@ bool VerdadApp::initialize(int argc, char* argv[]) {
     // Set up FLTK
     Fl::scheme("gtk+");
     Fl_File_Icon::load_system_icons();
+
+    // Enumerate system fonts
+    enumerateSystemFonts();
 
     // Create main window
     mainWindow_ = std::make_unique<MainWindow>(this, 1200, 800, "Verdad Bible Study");
@@ -415,9 +419,7 @@ void VerdadApp::setAppearanceSettings(const AppearanceSettings& settings) {
 }
 
 Fl_Font VerdadApp::appFont() const {
-    if (appearanceSettings_.appFontName == "Times") return FL_TIMES;
-    if (appearanceSettings_.appFontName == "Courier") return FL_COURIER;
-    return FL_HELVETICA;
+    return fltkFontFromFamily(appearanceSettings_.appFontName);
 }
 
 std::string VerdadApp::textStyleOverrideCss() const {
@@ -439,6 +441,53 @@ std::string VerdadApp::textStyleOverrideCss() const {
         << "}\n";
 
     return css.str();
+}
+
+void VerdadApp::enumerateSystemFonts() {
+    Fl_Font count = Fl::set_fonts("-*");
+
+    // Collect unique family names. FLTK groups bold/italic variants after
+    // the regular face — we only want the base family name (attributes==0).
+    std::set<std::string> families;
+    for (Fl_Font f = 0; f < count; ++f) {
+        int attrs = 0;
+        const char* name = Fl::get_font_name(f, &attrs);
+        if (!name || !name[0]) continue;
+
+        // Skip bold/italic variants — they share the family prefix
+        if (attrs != 0) continue;
+
+        std::string familyName(name);
+        // FLTK may prefix with space for bold (' ') or 'B'/'I'/'P' — skip those
+        if (familyName[0] == ' ') continue;
+
+        std::string lower = familyName;
+        std::transform(lower.begin(), lower.end(), lower.begin(),
+                       [](unsigned char c) { return std::tolower(c); });
+        if (fontFamilyMap_.find(lower) == fontFamilyMap_.end()) {
+            fontFamilyMap_[lower] = f;
+        }
+        families.insert(familyName);
+    }
+
+    systemFontFamilies_.assign(families.begin(), families.end());
+}
+
+Fl_Font VerdadApp::fltkFontFromFamily(const std::string& family) const {
+    std::string lower = family;
+    std::transform(lower.begin(), lower.end(), lower.begin(),
+                   [](unsigned char c) { return std::tolower(c); });
+    auto it = fontFamilyMap_.find(lower);
+    if (it != fontFamilyMap_.end()) return it->second;
+
+    // Fallback: try partial match
+    for (const auto& kv : fontFamilyMap_) {
+        if (kv.first.find(lower) != std::string::npos ||
+            lower.find(kv.first) != std::string::npos) {
+            return kv.second;
+        }
+    }
+    return FL_HELVETICA;
 }
 
 } // namespace verdad

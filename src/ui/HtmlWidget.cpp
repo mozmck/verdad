@@ -1,5 +1,6 @@
 #include "ui/HtmlWidget.h"
 #include "app/PerfTrace.h"
+#include "app/VerdadApp.h"
 
 #include <FL/Fl.H>
 #include <FL/fl_draw.H>
@@ -1305,10 +1306,32 @@ Fl_Font HtmlWidget::mapFont(const char* faceName, int weight, bool italic) {
     if (!faceName) return FL_HELVETICA;
 
     std::string face(faceName);
-
-    // Map common font family names to FLTK fonts
     Fl_Font base = FL_HELVETICA;
 
+    // Try resolving via VerdadApp's system font lookup first.
+    // The faceName may be a comma-separated CSS font-family list.
+    auto* app = VerdadApp::instance();
+    if (app) {
+        // Try each font in the CSS font-family list
+        std::istringstream ss(face);
+        std::string token;
+        while (std::getline(ss, token, ',')) {
+            // Trim whitespace and quotes
+            auto start = token.find_first_not_of(" \t\"'");
+            auto end = token.find_last_not_of(" \t\"'");
+            if (start == std::string::npos) continue;
+            token = token.substr(start, end - start + 1);
+            if (token.empty()) continue;
+
+            Fl_Font found = app->fltkFontFromFamily(token);
+            if (found != FL_HELVETICA || token == "Helvetica") {
+                base = found;
+                goto apply_modifiers;
+            }
+        }
+    }
+
+    // Fallback: map generic family names
     if (face.find("serif") != std::string::npos &&
         face.find("sans") == std::string::npos) {
         base = FL_TIMES;
@@ -1318,16 +1341,9 @@ Fl_Font HtmlWidget::mapFont(const char* faceName, int weight, bool italic) {
                face.find("courier") != std::string::npos ||
                face.find("Courier") != std::string::npos) {
         base = FL_COURIER;
-    } else if (face.find("Times") != std::string::npos ||
-               face.find("Georgia") != std::string::npos) {
-        base = FL_TIMES;
-    } else if (face.find("Arial") != std::string::npos ||
-               face.find("Helvetica") != std::string::npos ||
-               face.find("DejaVu Sans") != std::string::npos) {
-        base = FL_HELVETICA;
     }
 
-    // Apply bold/italic modifiers
+apply_modifiers:
     if (weight >= 700 && italic) {
         return base + FL_BOLD_ITALIC;
     } else if (weight >= 700) {
@@ -1335,7 +1351,6 @@ Fl_Font HtmlWidget::mapFont(const char* faceName, int weight, bool italic) {
     } else if (italic) {
         return base + FL_ITALIC;
     }
-
     return base;
 }
 

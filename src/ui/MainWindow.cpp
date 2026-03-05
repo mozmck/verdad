@@ -185,29 +185,6 @@ std::vector<std::string> extractStrongsTokens(const std::string& strongs) {
     return numeric;
 }
 
-Fl_Font appFontFromName(const std::string& name) {
-    if (name == "Times") return FL_TIMES;
-    if (name == "Courier") return FL_COURIER;
-    return FL_HELVETICA;
-}
-
-const char* appFontName(Fl_Font font) {
-    switch (font) {
-    case FL_TIMES:
-    case FL_TIMES_BOLD:
-    case FL_TIMES_ITALIC:
-    case FL_TIMES_BOLD_ITALIC:
-        return "Times";
-    case FL_COURIER:
-    case FL_COURIER_BOLD:
-    case FL_COURIER_ITALIC:
-    case FL_COURIER_BOLD_ITALIC:
-        return "Courier";
-    default:
-        return "Helvetica";
-    }
-}
-
 void applyUiFontRecursively(Fl_Widget* w, Fl_Font font, int size) {
     if (!w) return;
     int clampedSize = std::clamp(size, 8, 36);
@@ -1615,9 +1592,17 @@ void MainWindow::onViewSettings(Fl_Widget* /*w*/, void* data) {
     Fl_Box* appFontLabel = new Fl_Box(20, 20, 140, 24, "Application font:");
     appFontLabel->align(FL_ALIGN_LEFT | FL_ALIGN_INSIDE);
     Fl_Choice* appFontChoice = new Fl_Choice(170, 20, 220, 24);
-    appFontChoice->add("Helvetica");
-    appFontChoice->add("Times");
-    appFontChoice->add("Courier");
+    const auto& fonts = self->app_->systemFontFamilies();
+    for (const auto& f : fonts) {
+        // Fl_Choice treats '/' as submenu separator — escape it
+        std::string escaped = f;
+        size_t pos = 0;
+        while ((pos = escaped.find('/', pos)) != std::string::npos) {
+            escaped.replace(pos, 1, "\\/");
+            pos += 2;
+        }
+        appFontChoice->add(escaped.c_str());
+    }
     int appFontIdx = appFontChoice->find_index(current.appFontName.c_str());
     appFontChoice->value(appFontIdx >= 0 ? appFontIdx : 0);
 
@@ -1632,12 +1617,15 @@ void MainWindow::onViewSettings(Fl_Widget* /*w*/, void* data) {
     Fl_Box* textFontLabel = new Fl_Box(20, 96, 140, 24, "Text font:");
     textFontLabel->align(FL_ALIGN_LEFT | FL_ALIGN_INSIDE);
     Fl_Choice* textFontChoice = new Fl_Choice(170, 96, 220, 24);
-    textFontChoice->add("DejaVu Serif");
-    textFontChoice->add("DejaVu Sans");
-    textFontChoice->add("Liberation Serif");
-    textFontChoice->add("Liberation Sans");
-    textFontChoice->add("Times New Roman");
-    textFontChoice->add("Arial");
+    for (const auto& f : fonts) {
+        std::string escaped = f;
+        size_t pos = 0;
+        while ((pos = escaped.find('/', pos)) != std::string::npos) {
+            escaped.replace(pos, 1, "\\/");
+            pos += 2;
+        }
+        textFontChoice->add(escaped.c_str());
+    }
     int textFontIdx = textFontChoice->find_index(current.textFontFamily.c_str());
     textFontChoice->value(textFontIdx >= 0 ? textFontIdx : 0);
 
@@ -1693,9 +1681,8 @@ void MainWindow::onViewSettings(Fl_Widget* /*w*/, void* data) {
         const Fl_Menu_Item* appFontItem = appFontChoice->mvalue();
         if (appFontItem && appFontItem->label()) {
             updated.appFontName = appFontItem->label();
-        } else {
-            updated.appFontName = appFontName(appFontFromName(current.appFontName));
         }
+        // Keep current name if nothing selected
         updated.appFontSize = static_cast<int>(appSizeSpinner->value());
 
         const Fl_Menu_Item* textFontItem = textFontChoice->mvalue();
