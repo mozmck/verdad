@@ -1,9 +1,23 @@
-1. Implement a module manager similar to ../xiphos and ../bibletime.  It should have a list of sites, a way to add others, and an option to install from a local source directory.  It should list all modules from all available sites, have a way to show which modules are already installed and if they are update to date.  User should be able to download/install/update modules.  If a module is installed or updated the relevant index should be rebuilt if required.  Include a warning like Xihpos and Bibletime about downloading in persecuted countries.
+Need abibilty to set default dictionaries.  I want StrongRealGreek and StrongsRealHebrew as the defaults for greek and hebrew in the preview widget with a fallback to StrongsGreek and StrongsHebrew.  These should be user settable.  The Dictionary window will stay where the user puts it for each Study Tab.
 
-2. Add a way to change settings such as font and font size - both for the text and for the application itself, and anything else someone might want to change.
+General Books needs work:
+    - Need a way to view TOC
+    - Location bar may not be needed - maybe a dropdown TOC there?
+    - Continuous scrolling desired.  May have to load and free buffers as we scroll or something???
 
-3. Make the font bold in the currently selected tab, for all tabs in the application.
+More links should work.
+    - Links to bible verses should show in search results/previewer
+    - Footnote links should should footnote in previewer
+    - Cross-refs should show verses in search results/previewer
 
-4. Make commentaries show the text for the whole chapter instead of only the current verse.  When a verse is selected the commentary should be scrolled so the text for that verse is at the top of the window.
+Dictionary lookup does not work
 
-5. When a verse is selected either by clicking the verse, or loading a verse key into a tab, scroll the bible pane to that verse.
+Module tree needs to do something.
+
+Module manager needs work.
+
+Help needs to be improved and expanded.
+
+Add buttons for options such as Strongs, Morph, Footnotes, 
+
+

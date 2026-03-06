@@ -179,6 +179,7 @@ private:
     // All workspace tabs
     std::vector<StudyContext> studyTabs_;
     int activeStudyTab_ = -1;
+    Fl_Widget* appliedStudyTabGroup_ = nullptr;
     uint64_t tabUseCounter_ = 0;
     static constexpr int kMaxCachedTabDocs = 4;
     bool applyingTabState_ = false;
@@ -263,6 +264,9 @@ private:
 
     /// FLTK timeout callback used for delayed MAG updates.
     static void onHoverDelayTimeout(void* data);
+
+    /// Ensure the shared pane state matches the tab widget's selected child.
+    void syncStudyTabSelection();
 
     /// Callback when study tabs selection changes.
     static void onStudyTabChange(Fl_Widget* w, void* data);

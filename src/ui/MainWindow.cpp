@@ -270,7 +270,9 @@ MainWindow::MainWindow(VerdadApp* app, int W, int H, const char* title)
         tabsHeaderH);
     //studyTabsWidget_->box(FL_FLAT_BOX);
     studyTabsWidget_->selection_color(studyTabsWidget_->color());
-    studyTabsWidget_->callback(onStudyTabChange, this);
+    studyTabsWidget_->setSelectionCallback([this](Fl_Widget* /*w*/) {
+        syncStudyTabSelection();
+    });
     studyTabsWidget_->setCloseCallback([this](Fl_Widget* w) {
         closeStudyTab(w);
     });
@@ -440,6 +442,9 @@ void MainWindow::closeActiveStudyTab() {
     captureActiveTabState();
     int closeIndex = activeStudyTab_;
     Fl_Group* doomedTabGroup = studyTabs_[closeIndex].tabGroup;
+    if (appliedStudyTabGroup_ == doomedTabGroup) {
+        appliedStudyTabGroup_ = nullptr;
+    }
 
     if (doomedTabGroup) {
         studyTabsWidget_->remove(doomedTabGroup);
@@ -463,6 +468,10 @@ void MainWindow::closeActiveStudyTab() {
 
 void MainWindow::closeStudyTab(Fl_Widget* tabGroup) {
     if (!studyTabsWidget_ || studyTabs_.size() <= 1 || !tabGroup) return;
+
+    if (appliedStudyTabGroup_ == tabGroup) {
+        appliedStudyTabGroup_ = nullptr;
+    }
 
     // Find the index of the tab to close.
     int closeIndex = -1;
@@ -516,6 +525,7 @@ void MainWindow::clearStudyTabs() {
 
     studyTabs_.clear();
     activeStudyTab_ = -1;
+    appliedStudyTabGroup_ = nullptr;
     studyTabsWidget_->redraw();
     layoutStudyTabHeader();
 }
@@ -523,7 +533,8 @@ void MainWindow::clearStudyTabs() {
 void MainWindow::activateStudyTab(int index) {
     perf::ScopeTimer timer("MainWindow::activateStudyTab");
     if (index < 0 || index >= static_cast<int>(studyTabs_.size())) return;
-    if (activeStudyTab_ == index) {
+    Fl_Widget* targetGroup = studyTabs_[index].tabGroup;
+    if (activeStudyTab_ == index && appliedStudyTabGroup_ == targetGroup) {
         updateActiveStudyTabLabel();
         updateStatusBar();
         return;
@@ -897,6 +908,7 @@ void MainWindow::applyTabState(int index) {
         step.reset();
     }
 
+    appliedStudyTabGroup_ = ctx.tabGroup;
     applyingTabState_ = false;
 }
 
@@ -1547,24 +1559,39 @@ int MainWindow::handle(int event) {
             return 1;
         }
     }
-    return Fl_Double_Window::handle(event);
+
+    int handled = Fl_Double_Window::handle(event);
+
+    if ((event == FL_RELEASE || event == FL_KEYDOWN || event == FL_SHORTCUT) &&
+        !applyingTabState_) {
+        syncStudyTabSelection();
+    }
+
+    return handled;
+}
+
+void MainWindow::syncStudyTabSelection() {
+    if (!studyTabsWidget_) return;
+
+    Fl_Widget* active = studyTabsWidget_->value();
+    if (!active) return;
+
+    for (size_t i = 0; i < studyTabs_.size(); ++i) {
+        if (studyTabs_[i].tabGroup != active) continue;
+        if (static_cast<int>(i) != activeStudyTab_ ||
+            appliedStudyTabGroup_ != active) {
+            perf::logf("syncStudyTabSelection target index=%zu", i);
+            activateStudyTab(static_cast<int>(i));
+        }
+        return;
+    }
 }
 
 void MainWindow::onStudyTabChange(Fl_Widget* /*w*/, void* data) {
     perf::ScopeTimer timer("MainWindow::onStudyTabChange");
     auto* self = static_cast<MainWindow*>(data);
-    if (!self || !self->studyTabsWidget_) return;
-
-    Fl_Widget* active = self->studyTabsWidget_->value();
-    if (!active) return;
-
-    for (size_t i = 0; i < self->studyTabs_.size(); ++i) {
-        if (self->studyTabs_[i].tabGroup == active) {
-            perf::logf("onStudyTabChange target index=%zu", i);
-            self->activateStudyTab(static_cast<int>(i));
-            break;
-        }
-    }
+    if (!self) return;
+    self->syncStudyTabSelection();
 }
 
 void MainWindow::buildMenu() {
