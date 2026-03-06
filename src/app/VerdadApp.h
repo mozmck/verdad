@@ -25,6 +25,12 @@ public:
         int hoverDelayMs = 1000;
     };
 
+    struct PreviewDictionarySettings {
+        std::string greekModule = "StrongsRealGreek";
+        std::string hebrewModule = "StrongsRealHebrew";
+        std::unordered_map<std::string, std::string> languageModules;
+    };
+
     VerdadApp();
     ~VerdadApp();
 
@@ -63,6 +69,27 @@ public:
     /// Update appearance settings and apply them immediately.
     void setAppearanceSettings(const AppearanceSettings& settings);
 
+    /// Current Strong's preview dictionary preferences.
+    const PreviewDictionarySettings& previewDictionarySettings() const {
+        return previewDictionarySettings_;
+    }
+
+    /// Update default Greek/Hebrew Strong's preview dictionaries.
+    void setPreviewDictionarySettings(const PreviewDictionarySettings& settings);
+
+    /// Return the effective preview dictionary for a Strong's language prefix.
+    std::string preferredPreviewDictionary(char strongPrefix) const;
+
+    /// List installed Strong's-capable lexicons for a Greek/Hebrew prefix.
+    std::vector<std::string> strongsDictionaryModules(char strongPrefix) const;
+
+    /// List installed word dictionaries for the given source language code.
+    std::vector<std::string> wordDictionaryModules(
+        const std::string& languageCode) const;
+
+    /// Return the effective default dictionary for plain-word lookups.
+    std::string preferredWordDictionary(const std::string& languageCode) const;
+
     /// Resolve configured UI font to FLTK font enum.
     Fl_Font appFont() const;
 
@@ -86,6 +113,7 @@ private:
     std::unique_ptr<TagManager> tagMgr_;
     std::unique_ptr<MainWindow> mainWindow_;
     AppearanceSettings appearanceSettings_;
+    PreviewDictionarySettings previewDictionarySettings_;
     std::vector<std::string> systemFontFamilies_;
     /// Map from family name (lowercase) to FLTK font index
     std::unordered_map<std::string, Fl_Font> fontFamilyMap_;

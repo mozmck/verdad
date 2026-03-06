@@ -200,6 +200,27 @@ std::vector<std::string> strongLexiconsForPrefix(char prefix) {
             "StrongsGreek", "Thayer", "StrongsRealGreek"};
 }
 
+void appendUniqueLexicon(std::vector<std::string>& out,
+                         const std::string& lexicon) {
+    if (lexicon.empty()) return;
+    if (std::find(out.begin(), out.end(), lexicon) != out.end()) return;
+    out.push_back(lexicon);
+}
+
+std::vector<std::string> strongLexiconsForPrefix(
+        char prefix,
+        const std::vector<std::string>& preferredLexicons) {
+    std::vector<std::string> lexicons;
+    for (const auto& name : preferredLexicons) {
+        appendUniqueLexicon(lexicons, name);
+    }
+
+    for (const auto& name : strongLexiconsForPrefix(prefix)) {
+        appendUniqueLexicon(lexicons, name);
+    }
+    return lexicons;
+}
+
 std::vector<std::string> strongLookupKeys(const std::string& key, char prefix) {
     std::vector<std::string> keys;
     keys.push_back(key);
@@ -241,6 +262,40 @@ std::string toLowerAscii(const std::string& s) {
     std::string out = s;
     for (char& c : out) c = toLowerAsciiChar(c);
     return out;
+}
+
+bool lexiconEntryMatchesRequest(const std::string& requestedKey,
+                                const std::string& resolvedKey) {
+    std::string strongKey = normalizeStrongsKey(requestedKey);
+    if (!strongKey.empty()) {
+        return keyMatchesRequest(strongKey, resolvedKey);
+    }
+
+    std::string requested = toLowerAscii(trimCopy(requestedKey));
+    std::string resolved = toLowerAscii(trimCopy(resolvedKey));
+    if (requested.empty() || resolved.empty()) return false;
+    return requested == resolved;
+}
+
+std::string renderLexiconEntryHtml(sword::SWModule* lex,
+                                   const std::string& requestedKey,
+                                   const std::string& lookupKey,
+                                   std::string* resolvedKeyOut = nullptr) {
+    if (!lex || lookupKey.empty()) return "";
+
+    lex->setKey(lookupKey.c_str());
+    if (lex->popError()) return "";
+
+    std::string html = std::string(lex->renderText().c_str());
+    if (lex->popError()) return "";
+
+    const char* resolvedKey = lex->getKeyText();
+    if (!resolvedKey || !lexiconEntryMatchesRequest(requestedKey, resolvedKey)) {
+        return "";
+    }
+
+    if (resolvedKeyOut) *resolvedKeyOut = resolvedKey;
+    return html;
 }
 
 bool containsNoCase(const std::string& haystack, const std::string& needle) {
@@ -1906,16 +1961,41 @@ std::string SwordManager::getDictionaryEntry(const std::string& moduleName,
     sword::SWModule* mod = getModule(moduleName);
     if (!mod) return "<p><i>Dictionary module not found: " + moduleName + "</i></p>";
 
-    mod->setKey(key.c_str());
-    std::string text = std::string(mod->renderText().c_str());
+    std::string requestedKey = trimCopy(key);
+    std::string displayKey = requestedKey;
+    std::string text;
+
+    std::string normalizedStrong = normalizeStrongsKey(requestedKey);
+    std::vector<std::string> lookupKeys;
+    if (!normalizedStrong.empty()) {
+        displayKey = normalizedStrong;
+        char prefix = strongPrefixFromKey(normalizedStrong);
+        lookupKeys = strongLookupKeys(normalizedStrong, prefix);
+    } else if (!requestedKey.empty()) {
+        lookupKeys.push_back(requestedKey);
+    }
+
+    std::string resolvedKey;
+    for (const auto& lookupKey : lookupKeys) {
+        text = renderLexiconEntryHtml(mod, requestedKey, lookupKey, &resolvedKey);
+        if (!text.empty()) break;
+    }
+
+    if (text.empty() && !requestedKey.empty() && lookupKeys.empty()) {
+        text = renderLexiconEntryHtml(mod, requestedKey, requestedKey, &resolvedKey);
+    }
+
+    if (text.empty() && !resolvedKey.empty()) {
+        displayKey = resolvedKey;
+    }
 
     if (text.empty()) {
-        return "<p><i>No entry found for: " + key + "</i></p>";
+        return "<p><i>No entry found for: " + htmlEscapeAttr(requestedKey) + "</i></p>";
     }
 
     std::ostringstream html;
     html << "<div class=\"dictionary\">\n";
-    html << "<div class=\"entry-key\">" << key << "</div>\n";
+    html << "<div class=\"entry-key\">" << htmlEscapeAttr(displayKey) << "</div>\n";
     html << text;
     html << "</div>\n";
     return html.str();
@@ -2093,7 +2173,9 @@ WordInfo SwordManager::getWordInfo(const std::string& moduleName,
     return info;
 }
 
-std::string SwordManager::getStrongsDefinition(const std::string& strongsNumber) {
+std::string SwordManager::getStrongsDefinition(
+        const std::string& strongsNumber,
+        const std::vector<std::string>& preferredLexicons) {
     std::lock_guard<std::mutex> lock(mutex_);
     if (!mgr_) return "";
 
@@ -2101,7 +2183,8 @@ std::string SwordManager::getStrongsDefinition(const std::string& strongsNumber)
     if (key.empty()) return "";
 
     char prefix = strongPrefixFromKey(key);
-    std::vector<std::string> lexicons = strongLexiconsForPrefix(prefix);
+    std::vector<std::string> lexicons =
+        strongLexiconsForPrefix(prefix, preferredLexicons);
     std::vector<std::string> lookupKeys = strongLookupKeys(key, prefix);
 
     std::string fallbackWithoutCjk;
@@ -2122,7 +2205,9 @@ std::string SwordManager::getStrongsDefinition(const std::string& strongsNumber)
     return fallbackWithoutCjk;
 }
 
-std::string SwordManager::getStrongsLemma(const std::string& strongsNumber) {
+std::string SwordManager::getStrongsLemma(
+        const std::string& strongsNumber,
+        const std::vector<std::string>& preferredLexicons) {
     std::lock_guard<std::mutex> lock(mutex_);
     if (!mgr_) return "";
 
@@ -2130,7 +2215,8 @@ std::string SwordManager::getStrongsLemma(const std::string& strongsNumber) {
     if (key.empty()) return "";
 
     char prefix = strongPrefixFromKey(key);
-    std::vector<std::string> lexicons = strongLexiconsForPrefix(prefix);
+    std::vector<std::string> lexicons =
+        strongLexiconsForPrefix(prefix, preferredLexicons);
     std::vector<std::string> lookupKeys = strongLookupKeys(key, prefix);
 
     for (const auto& lexName : lexicons) {

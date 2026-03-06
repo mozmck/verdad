@@ -26,6 +26,7 @@
 #include <cctype>
 #include <chrono>
 #include <regex>
+#include <set>
 #include <sstream>
 #include <unordered_set>
 #include <vector>
@@ -183,6 +184,187 @@ std::vector<std::string> extractStrongsTokens(const std::string& strongs) {
         return prefixed;
     }
     return numeric;
+}
+
+char strongPrefixFromToken(const std::string& token) {
+    if (token.empty()) return 0;
+    if (!std::isalpha(static_cast<unsigned char>(token[0]))) return 0;
+    return static_cast<char>(
+        std::toupper(static_cast<unsigned char>(token[0])));
+}
+
+std::string escapeChoiceLabel(const std::string& label) {
+    std::string escaped = label;
+    size_t pos = 0;
+    while ((pos = escaped.find('/', pos)) != std::string::npos) {
+        escaped.replace(pos, 1, "\\/");
+        pos += 2;
+    }
+    return escaped;
+}
+
+std::string normalizeLanguageCode(const std::string& languageCode) {
+    std::string code = trimCopy(languageCode);
+    std::transform(code.begin(), code.end(), code.begin(),
+                   [](unsigned char c) {
+                       return static_cast<char>(std::tolower(c));
+                   });
+
+    size_t sep = code.find_first_of("-_");
+    if (sep != std::string::npos) code = code.substr(0, sep);
+
+    if (code == "eng") return "en";
+    if (code == "spa") return "es";
+    if (code == "fra" || code == "fre") return "fr";
+    if (code == "deu" || code == "ger") return "de";
+    if (code == "por") return "pt";
+    if (code == "ita") return "it";
+    if (code == "rus") return "ru";
+    if (code == "nld" || code == "dut") return "nl";
+    if (code == "ell" || code == "gre") return "el";
+    if (code == "heb" || code == "hbo") return "he";
+    if (code == "ara") return "ar";
+    if (code == "zho" || code == "chi") return "zh";
+    if (code == "lat") return "la";
+
+    return code;
+}
+
+std::string languageDisplayName(const std::string& languageCode) {
+    std::string code = normalizeLanguageCode(languageCode);
+    if (code == "en") return "English";
+    if (code == "es") return "Spanish";
+    if (code == "fr") return "French";
+    if (code == "de") return "German";
+    if (code == "pt") return "Portuguese";
+    if (code == "it") return "Italian";
+    if (code == "ru") return "Russian";
+    if (code == "nl") return "Dutch";
+    if (code == "el" || code == "grc") return "Greek";
+    if (code == "he") return "Hebrew";
+    if (code == "la") return "Latin";
+    if (code == "ar") return "Arabic";
+    if (code == "zh") return "Chinese";
+
+    if (code.empty()) return "Default";
+
+    std::string label = code;
+    std::transform(label.begin(), label.end(), label.begin(),
+                   [](unsigned char c) {
+                       return static_cast<char>(std::toupper(c));
+                   });
+    return label;
+}
+
+std::vector<std::string> dictionaryLanguageCodes(
+    VerdadApp* app,
+    const VerdadApp::PreviewDictionarySettings& settings) {
+    std::set<std::string> codes;
+
+    if (app) {
+        for (const auto& mod : app->swordManager().getBibleModules()) {
+            std::string code = normalizeLanguageCode(mod.language);
+            if (!code.empty()) codes.insert(code);
+        }
+        if (!app->wordDictionaryModules("en").empty()) codes.insert("en");
+    }
+
+    for (const auto& kv : settings.languageModules) {
+        std::string code = normalizeLanguageCode(kv.first);
+        if (!code.empty()) codes.insert(code);
+    }
+
+    std::vector<std::string> ordered(codes.begin(), codes.end());
+    std::sort(ordered.begin(), ordered.end(),
+              [](const std::string& a, const std::string& b) {
+                  return languageDisplayName(a) < languageDisplayName(b);
+              });
+    return ordered;
+}
+
+std::string unescapeChoiceLabel(const char* label) {
+    if (!label) return "";
+
+    std::string unescaped;
+    for (size_t i = 0; label[i] != '\0'; ++i) {
+        if (label[i] == '\\' && label[i + 1] == '/') {
+            unescaped.push_back('/');
+            ++i;
+            continue;
+        }
+        unescaped.push_back(label[i]);
+    }
+    return unescaped;
+}
+
+int findChoiceIndexByLabel(Fl_Choice* choice, const std::string& label) {
+    if (!choice || label.empty()) return -1;
+
+    for (int i = 0; i < choice->size(); ++i) {
+        const Fl_Menu_Item* item = choice->menu() ? &choice->menu()[i] : nullptr;
+        if (!item || !item->label()) continue;
+
+        if (label == item->label() ||
+            label == unescapeChoiceLabel(item->label())) {
+            return i;
+        }
+    }
+
+    return -1;
+}
+
+bool populateChoiceWithItems(Fl_Choice* choice,
+                             const std::vector<std::string>& items,
+                             const std::string& selected,
+                             const std::string& emptyLabel) {
+    if (!choice) return false;
+    choice->clear();
+
+    if (items.empty()) {
+        if (!emptyLabel.empty()) {
+            choice->add(emptyLabel.c_str());
+            choice->value(0);
+        }
+        choice->deactivate();
+        return false;
+    }
+
+    choice->activate();
+    for (const auto& item : items) {
+        choice->add(escapeChoiceLabel(item).c_str());
+    }
+
+    int selectedIndex = selected.empty() ? -1 : findChoiceIndexByLabel(choice, selected);
+
+    if (selectedIndex >= 0) {
+        choice->value(selectedIndex);
+    } else if (choice->size() > 0) {
+        choice->value(0);
+    }
+
+    return true;
+}
+
+std::vector<std::string> preferredPreviewLexicons(VerdadApp* app,
+                                                  const std::string& strongToken) {
+    std::vector<std::string> preferred;
+    if (!app) return preferred;
+
+    char prefix = strongPrefixFromToken(strongToken);
+    if (prefix == 'H' || prefix == 'G') {
+        std::string module = app->preferredPreviewDictionary(prefix);
+        if (!module.empty()) preferred.push_back(module);
+        return preferred;
+    }
+
+    std::string hebrewModule = app->preferredPreviewDictionary('H');
+    if (!hebrewModule.empty()) preferred.push_back(hebrewModule);
+    std::string greekModule = app->preferredPreviewDictionary('G');
+    if (!greekModule.empty() &&
+        std::find(preferred.begin(), preferred.end(), greekModule) == preferred.end()) {
+        preferred.push_back(greekModule);
+    }
+    return preferred;
 }
 
 void applyUiFontRecursively(Fl_Widget* w, Fl_Font font, Fl_Font boldFont, int size) {
@@ -1131,6 +1313,14 @@ void MainWindow::showDictionary(const std::string& key) {
     }
 }
 
+void MainWindow::showDictionary(const std::string& key,
+                                const std::string& contextModule) {
+    if (rightPane_) {
+        rightPane_->showDictionaryLookup(key, contextModule);
+        if (!applyingTabState_) captureActiveTabState();
+    }
+}
+
 void MainWindow::showWordInfo(const std::string& word, const std::string& href,
                                const std::string& strong, const std::string& morph,
                                int /*screenX*/, int /*screenY*/) {
@@ -1205,7 +1395,8 @@ void MainWindow::applyPendingWordInfo() {
     for (const auto& tok : strongTokens) {
         html << "<span class=\"mag-line mag-label\">Strong's "
              << htmlEscape(tok) << "</span>";
-        std::string def = app_->swordManager().getStrongsDefinition(tok);
+        std::string def = app_->swordManager().getStrongsDefinition(
+            tok, preferredPreviewLexicons(app_, tok));
         if (!def.empty()) {
             hasDefinition = true;
             appendEscapedTextLines(html, def, "mag-defline");
@@ -1642,14 +1833,27 @@ void MainWindow::onViewSettings(Fl_Widget* /*w*/, void* data) {
     if (!self || !self->app_) return;
 
     auto current = self->app_->appearanceSettings();
+    auto currentPreview = self->app_->previewDictionarySettings();
+    std::vector<std::string> greekDictionaryModules =
+        self->app_->strongsDictionaryModules('G');
+    std::vector<std::string> hebrewDictionaryModules =
+        self->app_->strongsDictionaryModules('H');
+    std::vector<std::string> languageCodes =
+        dictionaryLanguageCodes(self->app_, currentPreview);
 
-    Fl_Double_Window* dlg = new Fl_Double_Window(420, 285, "Settings");
+    constexpr int dialogW = 470;
+    constexpr int rowStep = 34;
+    int dictionaryRowCount = 2 + static_cast<int>(languageCodes.size());
+    int buttonsY = 198 + (dictionaryRowCount * rowStep) + 5;
+    int dialogH = buttonsY + 50;
+
+    Fl_Double_Window* dlg = new Fl_Double_Window(dialogW, dialogH, "Settings");
     dlg->set_modal();
     dlg->begin();
 
     Fl_Box* appFontLabel = new Fl_Box(20, 20, 140, 24, "Application font:");
     appFontLabel->align(FL_ALIGN_LEFT | FL_ALIGN_INSIDE);
-    Fl_Choice* appFontChoice = new Fl_Choice(170, 20, 220, 24);
+    Fl_Choice* appFontChoice = new Fl_Choice(180, 20, 250, 24);
     const auto& fonts = self->app_->systemFontFamilies();
     for (const auto& f : fonts) {
         // Fl_Choice treats '/' as submenu separator — escape it
@@ -1661,12 +1865,12 @@ void MainWindow::onViewSettings(Fl_Widget* /*w*/, void* data) {
         }
         appFontChoice->add(escaped.c_str());
     }
-    int appFontIdx = appFontChoice->find_index(current.appFontName.c_str());
+    int appFontIdx = findChoiceIndexByLabel(appFontChoice, current.appFontName);
     appFontChoice->value(appFontIdx >= 0 ? appFontIdx : 0);
 
     Fl_Box* appSizeLabel = new Fl_Box(20, 54, 140, 24, "Application size:");
     appSizeLabel->align(FL_ALIGN_LEFT | FL_ALIGN_INSIDE);
-    Fl_Spinner* appSizeSpinner = new Fl_Spinner(170, 54, 80, 24);
+    Fl_Spinner* appSizeSpinner = new Fl_Spinner(180, 54, 80, 24);
     appSizeSpinner->minimum(8);
     appSizeSpinner->maximum(36);
     appSizeSpinner->step(1);
@@ -1674,7 +1878,7 @@ void MainWindow::onViewSettings(Fl_Widget* /*w*/, void* data) {
 
     Fl_Box* textFontLabel = new Fl_Box(20, 96, 140, 24, "Text font:");
     textFontLabel->align(FL_ALIGN_LEFT | FL_ALIGN_INSIDE);
-    Fl_Choice* textFontChoice = new Fl_Choice(170, 96, 220, 24);
+    Fl_Choice* textFontChoice = new Fl_Choice(180, 96, 250, 24);
     for (const auto& f : fonts) {
         std::string escaped = f;
         size_t pos = 0;
@@ -1684,12 +1888,12 @@ void MainWindow::onViewSettings(Fl_Widget* /*w*/, void* data) {
         }
         textFontChoice->add(escaped.c_str());
     }
-    int textFontIdx = textFontChoice->find_index(current.textFontFamily.c_str());
+    int textFontIdx = findChoiceIndexByLabel(textFontChoice, current.textFontFamily);
     textFontChoice->value(textFontIdx >= 0 ? textFontIdx : 0);
 
     Fl_Box* textSizeLabel = new Fl_Box(20, 130, 140, 24, "Text size:");
     textSizeLabel->align(FL_ALIGN_LEFT | FL_ALIGN_INSIDE);
-    Fl_Spinner* textSizeSpinner = new Fl_Spinner(170, 130, 80, 24);
+    Fl_Spinner* textSizeSpinner = new Fl_Spinner(180, 130, 80, 24);
     textSizeSpinner->minimum(8);
     textSizeSpinner->maximum(36);
     textSizeSpinner->step(1);
@@ -1697,14 +1901,65 @@ void MainWindow::onViewSettings(Fl_Widget* /*w*/, void* data) {
 
     Fl_Box* hoverLabel = new Fl_Box(20, 164, 140, 24, "Hover delay (ms):");
     hoverLabel->align(FL_ALIGN_LEFT | FL_ALIGN_INSIDE);
-    Fl_Spinner* hoverDelaySpinner = new Fl_Spinner(170, 164, 90, 24);
+    Fl_Spinner* hoverDelaySpinner = new Fl_Spinner(180, 164, 90, 24);
     hoverDelaySpinner->minimum(100);
     hoverDelaySpinner->maximum(5000);
     hoverDelaySpinner->step(100);
     hoverDelaySpinner->value(current.hoverDelayMs);
 
-    Fl_Button* cancelBtn = new Fl_Button(220, 235, 80, 28, "Cancel");
-    Fl_Return_Button* applyBtn = new Fl_Return_Button(310, 235, 80, 28, "Apply");
+    int rowY = 198;
+
+    Fl_Box* greekDictLabel = new Fl_Box(20, rowY, 150, 24, "Greek Strong's dict:");
+    greekDictLabel->align(FL_ALIGN_LEFT | FL_ALIGN_INSIDE);
+    Fl_Choice* greekDictChoice = new Fl_Choice(180, rowY, 250, 24);
+    bool hasGreekPreviewDictionaries = populateChoiceWithItems(
+        greekDictChoice,
+        greekDictionaryModules,
+        self->app_->preferredPreviewDictionary('G'),
+        "No Greek dictionaries installed");
+    rowY += rowStep;
+
+    Fl_Box* hebrewDictLabel = new Fl_Box(20, rowY, 150, 24, "Hebrew Strong's dict:");
+    hebrewDictLabel->align(FL_ALIGN_LEFT | FL_ALIGN_INSIDE);
+    Fl_Choice* hebrewDictChoice = new Fl_Choice(180, rowY, 250, 24);
+    bool hasHebrewPreviewDictionaries = populateChoiceWithItems(
+        hebrewDictChoice,
+        hebrewDictionaryModules,
+        self->app_->preferredPreviewDictionary('H'),
+        "No Hebrew dictionaries installed");
+    rowY += rowStep;
+
+    struct LanguageRow {
+        std::string languageCode;
+        Fl_Choice* choice = nullptr;
+        bool hasChoices = false;
+    };
+    std::vector<LanguageRow> languageRows;
+    languageRows.reserve(languageCodes.size());
+
+    for (const auto& code : languageCodes) {
+        std::string labelText = languageDisplayName(code) + " dictionary:";
+        auto* label = new Fl_Box(20, rowY, 150, 24);
+        label->align(FL_ALIGN_LEFT | FL_ALIGN_INSIDE);
+        label->copy_label(labelText.c_str());
+
+        auto* choice = new Fl_Choice(180, rowY, 250, 24);
+        std::vector<std::string> modules = self->app_->wordDictionaryModules(code);
+        std::string emptyLabel = "No " + languageDisplayName(code) +
+                                 " dictionaries installed";
+        bool hasChoices = populateChoiceWithItems(
+            choice,
+            modules,
+            self->app_->preferredWordDictionary(code),
+            emptyLabel.c_str());
+
+        languageRows.push_back(LanguageRow{code, choice, hasChoices});
+        rowY += rowStep;
+    }
+
+    Fl_Button* cancelBtn = new Fl_Button(dialogW - 170, buttonsY, 80, 28, "Cancel");
+    Fl_Return_Button* applyBtn =
+        new Fl_Return_Button(dialogW - 80, buttonsY, 60, 28, "Apply");
 
     struct DialogState {
         bool accepted = false;
@@ -1735,6 +1990,7 @@ void MainWindow::onViewSettings(Fl_Widget* /*w*/, void* data) {
 
     if (state->accepted) {
         VerdadApp::AppearanceSettings updated = current;
+        VerdadApp::PreviewDictionarySettings updatedPreview = currentPreview;
 
         const Fl_Menu_Item* appFontItem = appFontChoice->mvalue();
         if (appFontItem && appFontItem->label()) {
@@ -1750,6 +2006,26 @@ void MainWindow::onViewSettings(Fl_Widget* /*w*/, void* data) {
         updated.textFontSize = static_cast<int>(textSizeSpinner->value());
         updated.hoverDelayMs = static_cast<int>(hoverDelaySpinner->value());
 
+        const Fl_Menu_Item* greekDictItem = greekDictChoice->mvalue();
+        if (hasGreekPreviewDictionaries && greekDictItem && greekDictItem->label()) {
+            updatedPreview.greekModule = greekDictItem->label();
+        }
+
+        const Fl_Menu_Item* hebrewDictItem = hebrewDictChoice->mvalue();
+        if (hasHebrewPreviewDictionaries && hebrewDictItem && hebrewDictItem->label()) {
+            updatedPreview.hebrewModule = hebrewDictItem->label();
+        }
+
+        for (const auto& row : languageRows) {
+            if (!row.hasChoices || !row.choice) continue;
+
+            const Fl_Menu_Item* item = row.choice->mvalue();
+            if (item && item->label()) {
+                updatedPreview.languageModules[row.languageCode] = item->label();
+            }
+        }
+
+        self->app_->setPreviewDictionarySettings(updatedPreview);
         self->app_->setAppearanceSettings(updated);
     }
 

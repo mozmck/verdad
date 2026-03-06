@@ -123,17 +123,7 @@ void VerseContext::show(const std::string& word, const std::string& href,
     }
     currentVerseKey_ = verseKey;
     strongActions_.clear();
-
-    Fl_Menu_Button menu(screenX, screenY, 0, 0);
-
-    // Always available options
-    menu.add("Copy Verse Reference", 0, onCopyVerse, this);
-
-    if (!currentWord_.empty()) {
-        menu.add("Copy Word", 0, onCopyWord, this);
-        std::string searchLabel = "Search for word: " + currentWord_;
-        menu.add(searchLabel.c_str(), 0, onSearchWord, this);
-    }
+    currentDictionaryLookupKey_.clear();
 
     std::vector<std::string> strongsNums = extractStrongsNumbers(href, strong);
     bool isParallel = false;
@@ -149,6 +139,29 @@ void VerseContext::show(const std::string& word, const std::string& href,
                 strongsNums = extractStrongsNumbers("", info.strongsNumber);
             }
         }
+    }
+
+    if (!currentWord_.empty()) {
+        currentDictionaryLookupKey_ = currentWord_;
+    }
+
+    Fl_Menu_Button menu(screenX, screenY, 0, 0);
+
+    // Always available options
+    menu.add("Copy Verse Reference", 0, onCopyVerse, this);
+
+    if (!currentWord_.empty()) {
+        menu.add("Copy Word", 0, onCopyWord, this);
+        std::string searchLabel = "Search for word: " + currentWord_;
+        menu.add(searchLabel.c_str(), 0, onSearchWord, this);
+        if (!currentDictionaryLookupKey_.empty()) {
+            std::string dictLabel = "Look up in Dictionary: " + currentWord_;
+            menu.add(dictLabel.c_str(), 0, onLookupDictionary, this);
+        }
+    } else if (!currentDictionaryLookupKey_.empty()) {
+        std::string dictLabel =
+            "Look up in Dictionary: " + currentDictionaryLookupKey_;
+        menu.add(dictLabel.c_str(), 0, onLookupDictionary, this);
     }
 
     if (!strongsNums.empty()) {
@@ -176,7 +189,7 @@ void VerseContext::show(const std::string& word, const std::string& href,
             strongActions_.push_back(StrongsMenuAction{
                 this, item.first, true
             });
-            std::string dictLabel = "Look up in Dictionary: " + item.second;
+            std::string dictLabel = "Look up Strong's in Dictionary: " + item.second;
             menu.add(dictLabel.c_str(), 0, onStrongsAction, &strongActions_.back());
         }
     }
@@ -252,6 +265,16 @@ void VerseContext::onSearchWord(Fl_Widget* /*w*/, void* data) {
     if (query.empty()) return;
     self->app_->mainWindow()->showSearchResults(
         query, self->currentContextModule_);
+}
+
+void VerseContext::onLookupDictionary(Fl_Widget* /*w*/, void* data) {
+    auto* self = static_cast<VerseContext*>(data);
+    if (!self || !self->app_ || !self->app_->mainWindow()) return;
+
+    std::string key = trimCopy(self->currentDictionaryLookupKey_);
+    if (key.empty()) return;
+
+    self->app_->mainWindow()->showDictionary(key, self->currentContextModule_);
 }
 
 } // namespace verdad

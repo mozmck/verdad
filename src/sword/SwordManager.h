@@ -147,10 +147,14 @@ public:
                          const std::string& word);
 
     /// Get Strong's definition from a lexicon
-    std::string getStrongsDefinition(const std::string& strongsNumber);
+    std::string getStrongsDefinition(
+        const std::string& strongsNumber,
+        const std::vector<std::string>& preferredLexicons = {});
 
     /// Get primary Greek/Hebrew lemma text for a Strong's key (for compact UI labels).
-    std::string getStrongsLemma(const std::string& strongsNumber);
+    std::string getStrongsLemma(
+        const std::string& strongsNumber,
+        const std::vector<std::string>& preferredLexicons = {});
 
     /// Get morphology definition
     std::string getMorphDefinition(const std::string& morphCode);

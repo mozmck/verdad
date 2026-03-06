@@ -42,6 +42,7 @@ private:
     std::string currentMorph_;
     std::string currentContextModule_;
     std::string currentVerseKey_;
+    std::string currentDictionaryLookupKey_;
 
     struct StrongsMenuAction {
         VerseContext* owner = nullptr;
@@ -61,6 +62,7 @@ private:
     static void onCopyVerse(Fl_Widget* w, void* data);
     static void onCopyWord(Fl_Widget* w, void* data);
     static void onSearchWord(Fl_Widget* w, void* data);
+    static void onLookupDictionary(Fl_Widget* w, void* data);
 };
 
 } // namespace verdad

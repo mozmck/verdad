@@ -77,6 +77,10 @@ public:
     /// Show dictionary entry in the active workspace tab
     void showDictionary(const std::string& key);
 
+    /// Show dictionary entry using the best default for the source module.
+    void showDictionary(const std::string& key,
+                        const std::string& contextModule);
+
     /// Queue Mag viewer info update in the left pane preview.
     void showWordInfo(const std::string& word, const std::string& href,
                       const std::string& strong, const std::string& morph,

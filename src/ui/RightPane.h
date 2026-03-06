@@ -52,6 +52,10 @@ public:
     /// Show a dictionary/lexicon entry
     void showDictionaryEntry(const std::string& key);
 
+    /// Show a dictionary entry using the best default for a source module.
+    void showDictionaryLookup(const std::string& key,
+                              const std::string& contextModule);
+
     /// Show a dictionary entry in a specific module
     void showDictionaryEntry(const std::string& moduleName, const std::string& key);
 

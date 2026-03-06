@@ -102,6 +102,100 @@ int clampHoverDelayMs(int ms) {
     return std::clamp(ms, 100, 5000);
 }
 
+std::string normalizePreviewDictionaryModule(const std::string& moduleName,
+                                             const char* fallback) {
+    std::string name = trimCopy(moduleName);
+    if (!name.empty()) return name;
+    return fallback ? std::string(fallback) : std::string();
+}
+
+std::string normalizeLanguageCode(const std::string& languageCode) {
+    std::string code = trimCopy(languageCode);
+    std::transform(code.begin(), code.end(), code.begin(),
+                   [](unsigned char c) {
+                       return static_cast<char>(std::tolower(c));
+                   });
+
+    size_t sep = code.find_first_of("-_");
+    if (sep != std::string::npos) code = code.substr(0, sep);
+
+    if (code == "eng") return "en";
+    if (code == "spa") return "es";
+    if (code == "fra" || code == "fre") return "fr";
+    if (code == "deu" || code == "ger") return "de";
+    if (code == "por") return "pt";
+    if (code == "ita") return "it";
+    if (code == "rus") return "ru";
+    if (code == "nld" || code == "dut") return "nl";
+    if (code == "ell" || code == "gre") return "el";
+    if (code == "heb" || code == "hbo") return "he";
+    if (code == "ara") return "ar";
+    if (code == "zho" || code == "chi") return "zh";
+    if (code == "lat") return "la";
+
+    return code;
+}
+
+bool containsNoCase(const std::string& haystack, const std::string& needle) {
+    if (needle.empty()) return true;
+    if (needle.size() > haystack.size()) return false;
+
+    for (size_t i = 0; i + needle.size() <= haystack.size(); ++i) {
+        bool match = true;
+        for (size_t j = 0; j < needle.size(); ++j) {
+            if (std::tolower(static_cast<unsigned char>(haystack[i + j])) !=
+                std::tolower(static_cast<unsigned char>(needle[j]))) {
+                match = false;
+                break;
+            }
+        }
+        if (match) return true;
+    }
+    return false;
+}
+
+bool isGreekPreviewDictionary(const ModuleInfo& mod) {
+    if (mod.name == "StrongsGreek" ||
+        mod.name == "StrongsRealGreek" ||
+        mod.name == "Thayer") {
+        return true;
+    }
+
+    return containsNoCase(mod.name, "Greek") ||
+           containsNoCase(mod.description, "Greek");
+}
+
+bool isHebrewPreviewDictionary(const ModuleInfo& mod) {
+    if (mod.name == "StrongsHebrew" ||
+        mod.name == "StrongsRealHebrew" ||
+        mod.name == "TWOT") {
+        return true;
+    }
+
+    return containsNoCase(mod.name, "Hebrew") ||
+           containsNoCase(mod.description, "Hebrew");
+}
+
+bool isStrongsKeyedDictionary(const ModuleInfo& mod) {
+    if (isGreekPreviewDictionary(mod) || isHebrewPreviewDictionary(mod)) {
+        return true;
+    }
+
+    return containsNoCase(mod.name, "Strong") ||
+           containsNoCase(mod.description, "Strong's") ||
+           mod.name == "TWOT" ||
+           mod.name == "Thayer";
+}
+
+bool hasDictionaryModuleName(const std::vector<ModuleInfo>& modules,
+                             const std::string& moduleName) {
+    if (moduleName.empty()) return false;
+    for (const auto& mod : modules) {
+        if (mod.name == moduleName) return true;
+    }
+    return false;
+}
+
 std::string escapeCssString(const std::string& text) {
     std::string out;
     out.reserve(text.size());
@@ -275,6 +369,24 @@ void VerdadApp::loadPreferences() {
     appearanceSettings_.hoverDelayMs =
         clampHoverDelayMs(parseIntOr(prefs["hover_delay_ms"],
                                      appearanceSettings_.hoverDelayMs));
+    previewDictionarySettings_.greekModule =
+        normalizePreviewDictionaryModule(prefs["preview_dict_greek"],
+                                         previewDictionarySettings_.greekModule.c_str());
+    previewDictionarySettings_.hebrewModule =
+        normalizePreviewDictionaryModule(prefs["preview_dict_hebrew"],
+                                         previewDictionarySettings_.hebrewModule.c_str());
+    previewDictionarySettings_.languageModules.clear();
+    for (const auto& kv : prefs) {
+        static const std::string prefix = "default_dict_lang_";
+        if (kv.first.compare(0, prefix.size(), prefix) != 0) continue;
+
+        std::string code = normalizeLanguageCode(kv.first.substr(prefix.size()));
+        std::string module = trimCopy(kv.second);
+        if (!code.empty() && !module.empty()) {
+            previewDictionarySettings_.languageModules[code] = module;
+        }
+    }
+    setPreviewDictionarySettings(previewDictionarySettings_);
 
     // New session format: restore full window/tabs/splitter state.
     if (prefs.find("study_tab_count") != prefs.end()) {
@@ -357,6 +469,19 @@ void VerdadApp::savePreferences() {
         file << "text_font_family=" << appearanceSettings_.textFontFamily << "\n";
         file << "text_font_size=" << appearanceSettings_.textFontSize << "\n";
         file << "hover_delay_ms=" << appearanceSettings_.hoverDelayMs << "\n";
+        file << "preview_dict_greek=" << previewDictionarySettings_.greekModule << "\n";
+        file << "preview_dict_hebrew=" << previewDictionarySettings_.hebrewModule << "\n";
+        std::vector<std::string> languageCodes;
+        languageCodes.reserve(previewDictionarySettings_.languageModules.size());
+        for (const auto& kv : previewDictionarySettings_.languageModules) {
+            if (kv.first.empty() || trimCopy(kv.second).empty()) continue;
+            languageCodes.push_back(kv.first);
+        }
+        std::sort(languageCodes.begin(), languageCodes.end());
+        for (const auto& code : languageCodes) {
+            file << "default_dict_lang_" << code << "="
+                 << previewDictionarySettings_.languageModules.at(code) << "\n";
+        }
 
         MainWindow::SessionState state = mainWindow_->captureSessionState();
         file << "window_x=" << state.windowX << "\n";
@@ -419,6 +544,135 @@ void VerdadApp::setAppearanceSettings(const AppearanceSettings& settings) {
             appearanceSettings_.appFontSize,
             textStyleOverrideCss());
     }
+}
+
+void VerdadApp::setPreviewDictionarySettings(
+    const PreviewDictionarySettings& settings) {
+    PreviewDictionarySettings normalized = settings;
+    normalized.greekModule =
+        normalizePreviewDictionaryModule(normalized.greekModule,
+                                         "StrongsRealGreek");
+    normalized.hebrewModule =
+        normalizePreviewDictionaryModule(normalized.hebrewModule,
+                                         "StrongsRealHebrew");
+
+    std::unordered_map<std::string, std::string> normalizedLanguageModules;
+    for (const auto& kv : normalized.languageModules) {
+        std::string code = normalizeLanguageCode(kv.first);
+        std::string module = trimCopy(kv.second);
+        if (!code.empty() && !module.empty()) {
+            normalizedLanguageModules[code] = module;
+        }
+    }
+
+    previewDictionarySettings_.greekModule = std::move(normalized.greekModule);
+    previewDictionarySettings_.hebrewModule = std::move(normalized.hebrewModule);
+    previewDictionarySettings_.languageModules = std::move(normalizedLanguageModules);
+}
+
+std::string VerdadApp::preferredPreviewDictionary(char strongPrefix) const {
+    char prefix = static_cast<char>(
+        std::toupper(static_cast<unsigned char>(strongPrefix)));
+    std::vector<std::string> candidates = strongsDictionaryModules(prefix);
+
+    std::string configured;
+    std::vector<std::string> preferredNames;
+    if (prefix == 'G') {
+        configured = trimCopy(previewDictionarySettings_.greekModule);
+        preferredNames = {"StrongsRealGreek", "StrongsGreek", "Thayer"};
+    } else if (prefix == 'H') {
+        configured = trimCopy(previewDictionarySettings_.hebrewModule);
+        preferredNames = {"StrongsRealHebrew", "StrongsHebrew", "TWOT"};
+    } else {
+        return "";
+    }
+
+    if (!configured.empty() &&
+        std::find(candidates.begin(), candidates.end(), configured) != candidates.end()) {
+        return configured;
+    }
+
+    auto dicts = swordManager().getDictionaryModules();
+    for (const auto& name : preferredNames) {
+        if (hasDictionaryModuleName(dicts, name)) return name;
+    }
+
+    if (!candidates.empty()) return candidates.front();
+    return "";
+}
+
+std::vector<std::string> VerdadApp::strongsDictionaryModules(char strongPrefix) const {
+    char prefix = static_cast<char>(
+        std::toupper(static_cast<unsigned char>(strongPrefix)));
+    std::vector<std::string> names;
+
+    for (const auto& mod : swordManager().getDictionaryModules()) {
+        if (mod.name.empty()) continue;
+
+        bool include = false;
+        if (prefix == 'G') {
+            include = isGreekPreviewDictionary(mod);
+        } else if (prefix == 'H') {
+            include = isHebrewPreviewDictionary(mod);
+        }
+
+        if (include) names.push_back(mod.name);
+    }
+
+    return names;
+}
+
+std::vector<std::string> VerdadApp::wordDictionaryModules(
+    const std::string& languageCode) const {
+    std::vector<std::string> names;
+    std::string normalizedCode = normalizeLanguageCode(languageCode);
+
+    for (const auto& mod : swordManager().getDictionaryModules()) {
+        if (mod.name.empty() || isStrongsKeyedDictionary(mod)) continue;
+
+        std::string modLanguage = normalizeLanguageCode(mod.language);
+        if (!normalizedCode.empty() && modLanguage != normalizedCode) continue;
+
+        names.push_back(mod.name);
+    }
+
+    return names;
+}
+
+std::string VerdadApp::preferredWordDictionary(
+    const std::string& languageCode) const {
+    std::string normalizedCode = normalizeLanguageCode(languageCode);
+    auto installedDicts = swordManager().getDictionaryModules();
+
+    auto configuredModule = [&](const std::string& code) -> std::string {
+        if (code.empty()) return "";
+        auto it = previewDictionarySettings_.languageModules.find(code);
+        if (it == previewDictionarySettings_.languageModules.end()) return "";
+
+        std::string module = trimCopy(it->second);
+        if (module.empty()) return "";
+        if (!hasDictionaryModuleName(installedDicts, module)) return "";
+        return module;
+    };
+
+    std::string configured = configuredModule(normalizedCode);
+    if (!configured.empty()) return configured;
+
+    auto candidates = wordDictionaryModules(normalizedCode);
+    if (!candidates.empty()) return candidates.front();
+
+    if (!normalizedCode.empty()) return "";
+
+    std::string englishConfigured = configuredModule("en");
+    if (!englishConfigured.empty()) return englishConfigured;
+
+    auto englishCandidates = wordDictionaryModules("en");
+    if (!englishCandidates.empty()) return englishCandidates.front();
+
+    auto anyCandidates = wordDictionaryModules("");
+    if (!anyCandidates.empty()) return anyCandidates.front();
+
+    return "";
 }
 
 Fl_Font VerdadApp::appFont() const {

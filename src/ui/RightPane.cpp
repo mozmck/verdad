@@ -8,6 +8,7 @@
 #include <FL/Fl.H>
 
 #include <algorithm>
+#include <cctype>
 #include <fstream>
 
 namespace verdad {
@@ -92,6 +93,51 @@ void layoutDictionaryPane(int paneX,
                            paneY + choiceH + 4,
                            choiceW,
                            std::max(10, clampedPaneH - choiceH - 6));
+}
+
+std::string initialDictionaryModuleForKey(VerdadApp* app,
+                                          const std::string& key) {
+    if (!app || key.empty()) return "";
+
+    char prefix = static_cast<char>(
+        std::toupper(static_cast<unsigned char>(key[0])));
+    if (prefix != 'H' && prefix != 'G') return "";
+
+    return app->preferredPreviewDictionary(prefix);
+}
+
+std::string moduleLanguageForName(VerdadApp* app,
+                                  const std::string& moduleName) {
+    if (!app || moduleName.empty()) return "";
+
+    for (const auto& mod : app->swordManager().getModules()) {
+        if (mod.name == moduleName) return mod.language;
+    }
+
+    return "";
+}
+
+std::string defaultDictionaryModuleForLookup(VerdadApp* app,
+                                             const std::string& key,
+                                             const std::string& contextModule) {
+    if (!app || key.empty()) return "";
+
+    std::string strongsModule = initialDictionaryModuleForKey(app, key);
+    if (!strongsModule.empty()) return strongsModule;
+
+    std::string language = moduleLanguageForName(app, contextModule);
+    return app->preferredWordDictionary(language);
+}
+
+void selectFirstDictionaryModule(Fl_Choice* dictionaryChoice,
+                                 std::string& currentDictionary) {
+    if (!dictionaryChoice || dictionaryChoice->size() <= 0) return;
+
+    const Fl_Menu_Item& item = dictionaryChoice->menu()[0];
+    if (!item.label()) return;
+
+    currentDictionary = item.label();
+    dictionaryChoice->value(0);
 }
 
 } // namespace
@@ -370,29 +416,26 @@ void RightPane::showCommentary(const std::string& moduleName,
 }
 
 void RightPane::showDictionaryEntry(const std::string& key) {
-    if (currentDictionary_.empty()) {
-        if (!key.empty()) {
-            char prefix = key[0];
-            if (prefix == 'H') {
-                auto dicts = app_->swordManager().getDictionaryModules();
-                for (const auto& d : dicts) {
-                    if (d.name.find("Hebrew") != std::string::npos ||
-                        d.name == "StrongsHebrew") {
-                        setDictionaryModule(d.name);
-                        break;
-                    }
-                }
-            } else if (prefix == 'G') {
-                auto dicts = app_->swordManager().getDictionaryModules();
-                for (const auto& d : dicts) {
-                    if (d.name.find("Greek") != std::string::npos ||
-                        d.name == "StrongsGreek") {
-                        setDictionaryModule(d.name);
-                        break;
-                    }
-                }
-            }
-        }
+    std::string moduleName = initialDictionaryModuleForKey(app_, key);
+    if (!moduleName.empty()) {
+        setDictionaryModule(moduleName);
+    } else if (currentDictionary_.empty()) {
+        selectFirstDictionaryModule(dictionaryChoice_, currentDictionary_);
+    }
+
+    if (!currentDictionary_.empty()) {
+        showDictionaryEntry(currentDictionary_, key);
+    }
+}
+
+void RightPane::showDictionaryLookup(const std::string& key,
+                                     const std::string& contextModule) {
+    std::string moduleName =
+        defaultDictionaryModuleForLookup(app_, key, contextModule);
+    if (!moduleName.empty()) {
+        setDictionaryModule(moduleName);
+    } else if (currentDictionary_.empty()) {
+        selectFirstDictionaryModule(dictionaryChoice_, currentDictionary_);
     }
 
     if (!currentDictionary_.empty()) {
