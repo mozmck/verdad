@@ -2,8 +2,11 @@
 #include "app/VerdadApp.h"
 #include "ui/HtmlWidget.h"
 #include "ui/MainWindow.h"
+#include "ui/LeftPane.h"
+#include "ui/TagPanel.h"
 #include "ui/VerseContext.h"
 #include "sword/SwordManager.h"
+#include "tags/TagManager.h"
 #include "app/PerfTrace.h"
 
 #include <FL/Fl.H>
@@ -20,6 +23,44 @@ constexpr int kContentPadding = 2;
 constexpr int kParallelHeaderH = 28;
 constexpr int kParallelHeaderSpacing = 6;
 constexpr int kRefInputWidth = 190; // Fits: "2 Thessalonians xx:xxx"
+
+std::string htmlEscape(const std::string& text) {
+    std::string out;
+    out.reserve(text.size());
+    for (char c : text) {
+        switch (c) {
+        case '&': out += "&amp;"; break;
+        case '<': out += "&lt;"; break;
+        case '>': out += "&gt;"; break;
+        case '"': out += "&quot;"; break;
+        default: out.push_back(c); break;
+        }
+    }
+    return out;
+}
+
+std::string buildVerseTagMarkersHtml(VerdadApp* app, const std::string& verseRef) {
+    if (!app) return "";
+
+    const auto tags = app->tagManager().getTagsForVerse(verseRef);
+    if (tags.empty()) return "";
+
+    const std::string escapedVerseRef = htmlEscape(verseRef);
+    std::ostringstream html;
+    html << "<span class=\"verse-tags\">";
+    for (const auto& tag : tags) {
+        html << "<a class=\"verse-tag\" href=\"tags:" << escapedVerseRef << "\""
+             << " title=\"Show tags containing " << escapedVerseRef << "\"";
+        if (!tag.color.empty()) {
+            const std::string escapedColor = htmlEscape(tag.color);
+            html << " style=\"border-color:" << escapedColor
+                 << ";color:" << escapedColor << ";\"";
+        }
+        html << ">" << htmlEscape(tag.name) << "</a>";
+    }
+    html << "</span>";
+    return html.str();
+}
 } // namespace
 
 BiblePane::BiblePane(VerdadApp* app, int X, int Y, int W, int H)
@@ -672,6 +713,9 @@ void BiblePane::updateDisplay() {
 
     std::string html;
     perf::StepTimer step;
+    auto verseDecorator = [this](const std::string& verseRef) {
+        return buildVerseTagMarkersHtml(app_, verseRef);
+    };
 
     if (parallelMode_) {
         normalizeParallelModules();
@@ -699,7 +743,7 @@ void BiblePane::updateDisplay() {
         }
         html = app_->swordManager().getParallelText(
             parallelModules_, currentBook_, currentChapter_, paragraphMode_,
-            currentVerse_);
+            currentVerse_, verseDecorator);
         perf::logf("BiblePane::updateDisplay getParallelText (%zu cols): %.3f ms",
                    parallelModules_.size(), step.elapsedMs());
         step.reset();
@@ -710,7 +754,7 @@ void BiblePane::updateDisplay() {
         }
         html = app_->swordManager().getChapterText(
             moduleName_, currentBook_, currentChapter_, paragraphMode_,
-            currentVerse_);
+            currentVerse_, verseDecorator);
         perf::logf("BiblePane::updateDisplay getChapterText %s %s %d: %.3f ms",
                    moduleName_.c_str(), currentBook_.c_str(), currentChapter_,
                    step.elapsedMs());
@@ -1107,6 +1151,13 @@ void BiblePane::onLinkClicked(const std::string& url) {
             selectVerse(verse);
         } catch (...) {
             // Ignore malformed verse links.
+        }
+    } else if (url.find("tags:") == 0) {
+        std::string verseRef = url.substr(5);
+        if (app_->mainWindow() && app_->mainWindow()->leftPane() &&
+            app_->mainWindow()->leftPane()->tagPanel()) {
+            app_->mainWindow()->leftPane()->showTagTab();
+            app_->mainWindow()->leftPane()->tagPanel()->showTagsForVerse(verseRef);
         }
     } else if (url.find("strongs:") == 0 || url.find("strong:") == 0) {
         size_t colonPos = url.find(':');

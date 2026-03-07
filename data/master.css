@@ -282,7 +282,12 @@ div.dictionary .entry-key {
 }
 
 /* Verse tags */
-span.verse-tag {
+span.verse-tags {
+    display: inline-block;
+    margin-left: 6px;
+}
+
+a.verse-tag {
     display: inline-block;
     font-size: 0.75em;
     background-color: #e0e8f0;
@@ -290,10 +295,16 @@ span.verse-tag {
     padding: 1px 5px;
     border-radius: 3px;
     margin-left: 4px;
+    border: 1px solid #c0d0e0;
     cursor: pointer;
+    text-decoration: none;
 }
 
-span.verse-tag:hover {
+a.verse-tag:first-child {
+    margin-left: 0;
+}
+
+a.verse-tag:hover {
     background-color: #c0d0e0;
 }
 

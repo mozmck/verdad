@@ -1633,7 +1633,8 @@ std::string SwordManager::getChapterText(const std::string& moduleName,
                                           const std::string& book,
                                           int chapter,
                                           bool paragraphMode,
-                                          int selectedVerse) {
+                                          int selectedVerse,
+                                          VerseDecorationCallback verseDecorator) {
     std::lock_guard<std::mutex> lock(mutex_);
     sword::SWModule* mod = getModule(moduleName);
     if (!mod) return "<p><i>Module not found: " + moduleName + "</i></p>";
@@ -1745,6 +1746,9 @@ std::string SwordManager::getChapterText(const std::string& moduleName,
             html << "<a class=\"versenum-link\" href=\"verse:" << verse << "\">"
                  << "<sup class=\"versenum\">" << verse << "</sup></a> ";
             html << verseText;
+            if (verseDecorator) {
+                html << verseDecorator(verseRef);
+            }
             html << "</" << verseTag << ">\n";
         }
 
@@ -1759,7 +1763,8 @@ std::string SwordManager::getParallelText(
     const std::vector<std::string>& moduleNames,
     const std::string& book, int chapter,
     bool paragraphMode,
-    int selectedVerse) {
+    int selectedVerse,
+    VerseDecorationCallback verseDecorator) {
 
     (void)paragraphMode; // Parallel view uses column layout; mode not applicable
     if (moduleNames.empty()) return "";
@@ -1836,6 +1841,8 @@ std::string SwordManager::getParallelText(
 
     // Verse rows
     for (int v = 1; v <= verseCount; ++v) {
+        const std::string verseRef = book + " " + std::to_string(chapter)
+                                     + ":" + std::to_string(v);
         html << "<div class=\"parallel-row\" id=\"v" << v << "\">\n";
         for (size_t i = 0; i < moduleNames.size(); ++i) {
             bool isLast = (i + 1 == moduleNames.size());
@@ -1852,11 +1859,9 @@ std::string SwordManager::getParallelText(
                  << "<div class=\"" << cellClasses << "\" data-module=\""
                  << moduleAttr << "\">";
             if (mod) {
-                std::string ref = book + " " + std::to_string(chapter)
-                                  + ":" + std::to_string(v);
-                mod->setKey(ref.c_str());
+                mod->setKey(verseRef.c_str());
                 if (!mod->popError()) {
-                    std::string cacheKey = moduleNames[i] + "|" + ref;
+                    std::string cacheKey = moduleNames[i] + "|" + verseRef;
                     std::string verseText;
                     if (!tryGetVerseHtmlCache(cacheKey, verseText)) {
                         verseText = std::string(mod->renderText().c_str());
@@ -1870,6 +1875,9 @@ std::string SwordManager::getParallelText(
                          << "<sup class=\"versenum\">" << v << "</sup></a> ";
                     html << verseText;
                 }
+            }
+            if (isLast && verseDecorator) {
+                html << verseDecorator(verseRef);
             }
             html << "</div></div>\n";
         }

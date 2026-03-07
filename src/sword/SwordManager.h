@@ -51,6 +51,8 @@ struct WordInfo {
 /// Manages all SWORD library interactions
 class SwordManager {
 public:
+    using VerseDecorationCallback = std::function<std::string(const std::string& verseRef)>;
+
     SwordManager();
     ~SwordManager();
 
@@ -96,7 +98,8 @@ public:
     std::string getChapterText(const std::string& moduleName,
                                const std::string& book, int chapter,
                                bool paragraphMode = false,
-                               int selectedVerse = 0);
+                               int selectedVerse = 0,
+                               VerseDecorationCallback verseDecorator = {});
 
     /// Get rendered XHTML for parallel Bibles showing the same chapter
     /// @param moduleNames    List of modules to show in parallel
@@ -109,7 +112,8 @@ public:
     std::string getParallelText(const std::vector<std::string>& moduleNames,
                                 const std::string& book, int chapter,
                                 bool paragraphMode = false,
-                                int selectedVerse = 0);
+                                int selectedVerse = 0,
+                                VerseDecorationCallback verseDecorator = {});
 
     /// Get commentary text for a given verse reference
     std::string getCommentaryText(const std::string& moduleName,
