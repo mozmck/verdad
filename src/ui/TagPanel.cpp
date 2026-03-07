@@ -313,8 +313,8 @@ TagPanel::TagPanel(VerdadApp* app, int X, int Y, int W, int H)
     , verseBrowser_(nullptr)
     , newTagButton_(nullptr)
     , deleteTagButton_(nullptr)
-    , renameTagButton_(nullptr) {
-
+    , renameTagButton_(nullptr)
+    , removeVerseButton_(nullptr) {
     begin();
 
     filterInput_ = new Fl_Input(X, Y, W, 28);
@@ -338,6 +338,9 @@ TagPanel::TagPanel(VerdadApp* app, int X, int Y, int W, int H)
 
     deleteTagButton_ = new Fl_Button(X, Y, 10, 10, "Delete");
     deleteTagButton_->callback(onDeleteTag, this);
+
+    removeVerseButton_ = new Fl_Button(X, Y, 10, 10, "Remove Verse");
+    removeVerseButton_->callback(onRemoveVerse, this);
 
     end();
 
@@ -379,34 +382,41 @@ void TagPanel::showTagsForVerse(const std::string& verseKey) {
 
 void TagPanel::layoutChildren() {
     if (!filterInput_ || !tagBrowser_ || !verseBrowser_ ||
-        !newTagButton_ || !renameTagButton_ || !deleteTagButton_) {
+        !newTagButton_ || !renameTagButton_ || !deleteTagButton_ ||
+        !removeVerseButton_) {
         return;
     }
 
     const int padding = 2;
+    const int topInset = 12;
     const int filterH = 26;
     const int buttonH = 25;
     const int innerX = x() + padding;
     const int innerW = std::max(20, w() - 2 * padding);
-    const int buttonY = y() + h() - buttonH - padding;
+    const int bottomY = y() + h() - padding;
 
-    int cy = y() + padding;
+    int cy = y() + topInset;
     filterInput_->resize(innerX, cy, innerW, filterH);
     cy += filterH + padding;
 
-    int listAreaH = std::max(50, buttonY - cy - padding);
+    int listAreaH = std::max(50, bottomY - cy - (2 * buttonH) - (3 * padding));
     int tagH = std::max(24, listAreaH / 2);
-    int verseH = std::max(24, listAreaH - tagH - padding);
+    int verseH = std::max(24, listAreaH - tagH);
 
     tagBrowser_->resize(innerX, cy, innerW, tagH);
     cy += tagH + padding;
-    verseBrowser_->resize(innerX, cy, innerW, verseH);
 
     const int buttonW = (innerW - 2 * padding) / 3;
-    newTagButton_->resize(innerX, buttonY, buttonW, buttonH);
-    renameTagButton_->resize(innerX + buttonW + padding, buttonY, buttonW, buttonH);
-    deleteTagButton_->resize(innerX + 2 * (buttonW + padding), buttonY,
+    newTagButton_->resize(innerX, cy, buttonW, buttonH);
+    renameTagButton_->resize(innerX + buttonW + padding, cy, buttonW, buttonH);
+    deleteTagButton_->resize(innerX + 2 * (buttonW + padding), cy,
                              innerW - 2 * (buttonW + padding), buttonH);
+    cy += buttonH + padding;
+
+    verseBrowser_->resize(innerX, cy, innerW, verseH);
+    cy += verseH + padding;
+
+    removeVerseButton_->resize(innerX, std::min(cy, bottomY - buttonH), innerW, buttonH);
 }
 
 void TagPanel::refreshBiblePane() {
@@ -653,6 +663,17 @@ void TagPanel::onRenameTag(Fl_Widget* /*w*/, void* data) {
     } else {
         fl_alert("Cannot rename: tag '%s' already exists.", newName.c_str());
     }
+}
+
+void TagPanel::onRemoveVerse(Fl_Widget* /*w*/, void* data) {
+    auto* self = static_cast<TagPanel*>(data);
+    if (!self) return;
+    if (self->selectedTagName_.empty() || self->selectedVerseKey_.empty()) return;
+
+    self->app_->tagManager().untagVerse(self->selectedVerseKey_, self->selectedTagName_);
+    self->app_->tagManager().save();
+    self->populateTags();
+    self->refreshBiblePane();
 }
 
 } // namespace verdad

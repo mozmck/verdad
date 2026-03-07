@@ -46,6 +46,7 @@ private:
     Fl_Button* newTagButton_;
     Fl_Button* deleteTagButton_;
     Fl_Button* renameTagButton_;
+    Fl_Button* removeVerseButton_;
     std::vector<std::string> visibleTags_;
     std::string selectedTagName_;
     std::string selectedVerseKey_;
@@ -69,6 +70,7 @@ private:
     static void onNewTag(Fl_Widget* w, void* data);
     static void onDeleteTag(Fl_Widget* w, void* data);
     static void onRenameTag(Fl_Widget* w, void* data);
+    static void onRemoveVerse(Fl_Widget* w, void* data);
 };
 
 } // namespace verdad

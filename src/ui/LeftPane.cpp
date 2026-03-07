@@ -14,6 +14,29 @@
 
 namespace verdad {
 
+namespace {
+
+void layoutTabPanels(Fl_Tabs* tabs,
+                     ModulePanel* modulePanel,
+                     SearchPanel* searchPanel,
+                     TagPanel* tagPanel) {
+    if (!tabs || !modulePanel || !searchPanel || !tagPanel) return;
+
+    int panelX = tabs->x();
+    int panelY = tabs->y();
+    int panelW = tabs->w();
+    int panelH = tabs->h();
+    tabs->client_area(panelX, panelY, panelW, panelH);
+
+    panelW = std::max(10, panelW);
+    panelH = std::max(10, panelH);
+    modulePanel->resize(panelX, panelY, panelW, panelH);
+    searchPanel->resize(panelX, panelY, panelW, panelH);
+    tagPanel->resize(panelX, panelY, panelW, panelH);
+}
+
+} // namespace
+
 LeftPane::LeftPane(VerdadApp* app, int X, int Y, int W, int H)
     : Fl_Group(X, Y, W, H)
     , app_(app)
@@ -79,23 +102,24 @@ LeftPane::LeftPane(VerdadApp* app, int X, int Y, int W, int H)
 
     // Modules tab
     modulePanel_ = new ModulePanel(app_, X + padding, contentY + 25,
-                                   contentW, tabsInitH - 25);
+                                   contentW, std::max(10, tabsInitH - 25));
     modulePanel_->label("Modules");
 
     // Search results tab
     searchPanel_ = new SearchPanel(app_, X + padding, contentY + 25,
-                                   contentW, tabsInitH - 25);
+                                   contentW, std::max(10, tabsInitH - 25));
     searchPanel_->label("Search");
 
     // Tags tab
     tagPanel_ = new TagPanel(app_, X + padding, contentY + 25,
-                             contentW, tabsInitH - 25);
+                             contentW, std::max(10, tabsInitH - 25));
     tagPanel_->label("Tags");
 
     tabs_->end();
     tabs_->resizable(modulePanel_);
     tabs_->value(modulePanel_); // Default to modules tab
     tabs_->callback(onTabChanged, this);
+    layoutTabPanels(tabs_, modulePanel_, searchPanel_, tagPanel_);
     syncTabPanelVisibility();
 
     // Preview area at bottom
@@ -138,7 +162,6 @@ void LeftPane::resize(int X, int Y, int W, int H) {
     const int minTabH = 80;
     const int minPreviewH = 60;
     const int buttonW = 60;
-    const int tabHeaderH = 25;
 
     searchGroup_->resize(X + padding, Y + padding,
                          std::max(20, W - 2 * padding), searchH);
@@ -159,11 +182,7 @@ void LeftPane::resize(int X, int Y, int W, int H) {
     tabs_->resize(X + padding, tileY, tileW, tabsH);
     previewWidget_->resize(X + padding, tileY + tabsH, tileW, tileH - tabsH);
 
-    int panelY = tileY + tabHeaderH;
-    int panelH = std::max(10, tabsH - tabHeaderH);
-    modulePanel_->resize(X + padding, panelY, tileW, panelH);
-    searchPanel_->resize(X + padding, panelY, tileW, panelH);
-    tagPanel_->resize(X + padding, panelY, tileW, panelH);
+    layoutTabPanels(tabs_, modulePanel_, searchPanel_, tagPanel_);
 
     tabs_->redraw();
     contentTile_->init_sizes();
@@ -255,7 +274,6 @@ void LeftPane::setPreviewHeight(int height) {
 
     const int minTabH = 80;
     const int minPreviewH = 60;
-    const int tabHeaderH = 25;
 
     const int tileX = contentTile_->x();
     const int tileY = contentTile_->y();
@@ -271,11 +289,7 @@ void LeftPane::setPreviewHeight(int height) {
     tabs_->resize(tileX, tileY, tileW, tabsH);
     previewWidget_->resize(tileX, tileY + tabsH, tileW, tileH - tabsH);
 
-    int panelY = tileY + tabHeaderH;
-    int panelH = std::max(10, tabsH - tabHeaderH);
-    modulePanel_->resize(tileX, panelY, tileW, panelH);
-    searchPanel_->resize(tileX, panelY, tileW, panelH);
-    tagPanel_->resize(tileX, panelY, tileW, panelH);
+    layoutTabPanels(tabs_, modulePanel_, searchPanel_, tagPanel_);
 
     contentTile_->init_sizes();
     contentTile_->damage(FL_DAMAGE_ALL);
