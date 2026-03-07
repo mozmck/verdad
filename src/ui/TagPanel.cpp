@@ -7,7 +7,10 @@
 #include "tags/TagManager.h"
 
 #include <FL/Fl.H>
+#include <FL/Fl_Box.H>
+#include <FL/Fl_Double_Window.H>
 #include <FL/Fl_Hold_Browser.H>
+#include <FL/Fl_Return_Button.H>
 #include <FL/fl_ask.H>
 #include <algorithm>
 #include <cctype>
@@ -101,6 +104,158 @@ bool tagMatchesFilter(TagManager& tagMgr,
                            return verseMatchesFilter(verseKey, query);
                        });
 }
+
+class AddTagDialog {
+public:
+    AddTagDialog(TagManager& tagMgr, const std::string& verseKey)
+        : tagMgr_(tagMgr)
+        , verseKey_(verseKey)
+        , dialog_(440, 380, "Add Tag") {
+        allTags_ = tagMgr_.getAllTags();
+
+        dialog_.set_modal();
+        dialog_.begin();
+
+        prompt_ = new Fl_Box(16, 16, dialog_.w() - 32, 44);
+        prompt_->align(FL_ALIGN_LEFT | FL_ALIGN_INSIDE | FL_ALIGN_WRAP);
+        std::string promptText = "Add tag to " + verseKey_ +
+                                 ":\nSelect an existing tag or type a new one.";
+        prompt_->copy_label(promptText.c_str());
+
+        input_ = new Fl_Input(16, 72, dialog_.w() - 32, 28, "Tag:");
+        input_->align(FL_ALIGN_TOP_LEFT);
+        input_->when(FL_WHEN_CHANGED);
+        input_->callback(onInputChanged, this);
+
+        browser_ = new Fl_Hold_Browser(16, 120, dialog_.w() - 32, 200, "Existing tags:");
+        browser_->align(FL_ALIGN_TOP_LEFT);
+        browser_->type(FL_HOLD_BROWSER);
+        browser_->when(FL_WHEN_CHANGED);
+        browser_->callback(onBrowserSelect, this);
+
+        cancelButton_ = new Fl_Button(dialog_.w() - 180, dialog_.h() - 40, 80, 28, "Cancel");
+        cancelButton_->callback(onCancel, this);
+
+        okButton_ = new Fl_Return_Button(dialog_.w() - 92, dialog_.h() - 40, 76, 28, "OK");
+        okButton_->callback(onOk, this);
+
+        dialog_.end();
+        updateVisibleTags();
+    }
+
+    bool open(std::string& tagName) {
+        dialog_.show();
+        input_->take_focus();
+        while (dialog_.shown()) {
+            Fl::wait();
+        }
+
+        if (!accepted_) return false;
+
+        tagName = resultTagName_;
+        return true;
+    }
+
+private:
+    static void onInputChanged(Fl_Widget* /*w*/, void* data) {
+        auto* self = static_cast<AddTagDialog*>(data);
+        if (!self) return;
+        self->updateVisibleTags();
+    }
+
+    static void onBrowserSelect(Fl_Widget* /*w*/, void* data) {
+        auto* self = static_cast<AddTagDialog*>(data);
+        if (!self) return;
+
+        std::string selected = self->selectedTagName();
+        if (selected.empty()) return;
+
+        self->input_->value(selected.c_str());
+        self->input_->insert_position(static_cast<int>(selected.size()));
+    }
+
+    static void onCancel(Fl_Widget* /*w*/, void* data) {
+        auto* self = static_cast<AddTagDialog*>(data);
+        if (!self) return;
+        self->accepted_ = false;
+        self->dialog_.hide();
+    }
+
+    static void onOk(Fl_Widget* /*w*/, void* data) {
+        auto* self = static_cast<AddTagDialog*>(data);
+        if (!self) return;
+        self->accept();
+    }
+
+    void accept() {
+        std::string tagName = trimCopy(input_->value() ? input_->value() : "");
+        if (tagName.empty()) {
+            tagName = selectedTagName();
+        }
+
+        if (tagName.empty()) {
+            fl_alert("Enter a tag name or select an existing tag.");
+            input_->take_focus();
+            return;
+        }
+
+        resultTagName_ = tagName;
+        accepted_ = true;
+        dialog_.hide();
+    }
+
+    std::string selectedTagName() const {
+        int index = browser_->value();
+        if (index <= 0 || index > static_cast<int>(visibleTags_.size())) {
+            return "";
+        }
+
+        return visibleTags_[index - 1];
+    }
+
+    void updateVisibleTags() {
+        const std::string filter = toLowerCopy(trimCopy(input_->value() ? input_->value() : ""));
+        const std::string currentSelection = selectedTagName();
+        const std::string exactInput = trimCopy(input_->value() ? input_->value() : "");
+
+        browser_->clear();
+        visibleTags_.clear();
+
+        int selectedLine = 0;
+        for (const auto& tag : allTags_) {
+            if (!filter.empty() && toLowerCopy(tag.name).find(filter) == std::string::npos) {
+                continue;
+            }
+
+            visibleTags_.push_back(tag.name);
+            std::string line = tag.name + " (" +
+                               std::to_string(tagMgr_.getTagCount(tag.name)) + ")";
+            browser_->add(line.c_str());
+
+            if (selectedLine == 0 && !currentSelection.empty() && tag.name == currentSelection) {
+                selectedLine = browser_->size();
+            }
+            if (selectedLine == 0 && !exactInput.empty() && tag.name == exactInput) {
+                selectedLine = browser_->size();
+            }
+        }
+
+        browser_->value(selectedLine);
+    }
+
+    TagManager& tagMgr_;
+    std::string verseKey_;
+    std::vector<Tag> allTags_;
+    std::vector<std::string> visibleTags_;
+    bool accepted_ = false;
+    std::string resultTagName_;
+    Fl_Double_Window dialog_;
+    Fl_Box* prompt_ = nullptr;
+    Fl_Input* input_ = nullptr;
+    Fl_Hold_Browser* browser_ = nullptr;
+    Fl_Button* cancelButton_ = nullptr;
+    Fl_Return_Button* okButton_ = nullptr;
+};
 
 } // namespace
 
@@ -203,31 +358,9 @@ void TagPanel::refresh() {
 }
 
 void TagPanel::showAddTagDialog(const std::string& verseKey) {
-    auto tags = app_->tagManager().getAllTags();
-
-    if (tags.empty()) {
-        const char* name = fl_input("Create a new tag for %s:", "", verseKey.c_str());
-        if (name && name[0]) {
-            app_->tagManager().createTag(name);
-            app_->tagManager().tagVerse(verseKey, name);
-            app_->tagManager().save();
-            selectedTagName_ = name;
-            selectedVerseKey_ = verseKey;
-            populateTags();
-            refreshBiblePane();
-        }
-        return;
-    }
-
-    const char* choice = fl_input("Add tag to %s:\n(Enter tag name)",
-                                   tags[0].name.c_str(), verseKey.c_str());
-    if (choice && choice[0]) {
-        std::string tagName = choice;
-        if (app_->tagManager().getAllTags().empty() ||
-            std::none_of(tags.begin(), tags.end(),
-                         [&](const Tag& t) { return t.name == tagName; })) {
-            app_->tagManager().createTag(tagName);
-        }
+    AddTagDialog dialog(app_->tagManager(), verseKey);
+    std::string tagName;
+    if (dialog.open(tagName)) {
         app_->tagManager().tagVerse(verseKey, tagName);
         app_->tagManager().save();
         selectedTagName_ = tagName;
@@ -450,16 +583,22 @@ void TagPanel::onVerseSelect(Fl_Widget* /*w*/, void* data) {
 void TagPanel::onNewTag(Fl_Widget* /*w*/, void* data) {
     auto* self = static_cast<TagPanel*>(data);
 
-    const char* name = fl_input("New tag name:");
-    if (name && name[0]) {
-        if (self->app_->tagManager().createTag(name)) {
-            self->app_->tagManager().save();
-            self->selectedTagName_ = name;
-            self->populateTags();
-            self->refreshBiblePane();
-        } else {
-            fl_alert("Tag '%s' already exists.", name);
-        }
+    const char* rawName = fl_input("New tag name:");
+    if (!rawName) return;
+
+    std::string name = trimCopy(rawName);
+    if (name.empty()) {
+        fl_alert("Blank tags are not valid.");
+        return;
+    }
+
+    if (self->app_->tagManager().createTag(name)) {
+        self->app_->tagManager().save();
+        self->selectedTagName_ = name;
+        self->populateTags();
+        self->refreshBiblePane();
+    } else {
+        fl_alert("Tag '%s' already exists.", name.c_str());
     }
 }
 
@@ -495,17 +634,24 @@ void TagPanel::onRenameTag(Fl_Widget* /*w*/, void* data) {
     if (idx - 1 >= static_cast<int>(self->visibleTags_.size())) return;
 
     std::string oldName = self->visibleTags_[idx - 1];
-    const char* newName = fl_input("Rename tag '%s' to:", oldName.c_str(),
-                                    oldName.c_str());
-    if (newName && newName[0] && std::string(newName) != oldName) {
-        if (self->app_->tagManager().renameTag(oldName, newName)) {
-            self->app_->tagManager().save();
-            self->selectedTagName_ = newName;
-            self->populateTags();
-            self->refreshBiblePane();
-        } else {
-            fl_alert("Cannot rename: tag '%s' already exists.", newName);
-        }
+    const char* rawNewName = fl_input("Rename tag '%s' to:", oldName.c_str(),
+                                      oldName.c_str());
+    if (!rawNewName) return;
+
+    std::string newName = trimCopy(rawNewName);
+    if (newName.empty()) {
+        fl_alert("Blank tags are not valid.");
+        return;
+    }
+    if (newName == oldName) return;
+
+    if (self->app_->tagManager().renameTag(oldName, newName)) {
+        self->app_->tagManager().save();
+        self->selectedTagName_ = newName;
+        self->populateTags();
+        self->refreshBiblePane();
+    } else {
+        fl_alert("Cannot rename: tag '%s' already exists.", newName.c_str());
     }
 }
 
