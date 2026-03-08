@@ -31,6 +31,13 @@ public:
         std::unordered_map<std::string, std::string> languageModules;
     };
 
+    struct OptionDisplaySettings {
+        bool showStrongsMarkers = false;
+        bool showMorphMarkers = false;
+        bool showFootnoteMarkers = true;
+        bool showCrossReferenceMarkers = true;
+    };
+
     VerdadApp();
     ~VerdadApp();
 
@@ -93,6 +100,14 @@ public:
     /// Resolve configured UI font to FLTK font enum.
     Fl_Font appFont() const;
 
+    /// Current inline marker display settings.
+    const OptionDisplaySettings& optionDisplaySettings() const {
+        return optionDisplaySettings_;
+    }
+
+    /// Update inline marker display settings and apply them immediately.
+    void setOptionDisplaySettings(const OptionDisplaySettings& settings);
+
     /// Build runtime CSS overrides for HTML-rendered text panes.
     std::string textStyleOverrideCss() const;
 
@@ -114,6 +129,7 @@ private:
     std::unique_ptr<MainWindow> mainWindow_;
     AppearanceSettings appearanceSettings_;
     PreviewDictionarySettings previewDictionarySettings_;
+    OptionDisplaySettings optionDisplaySettings_;
     std::vector<std::string> systemFontFamilies_;
     /// Map from family name (lowercase) to FLTK font index
     std::unordered_map<std::string, Fl_Font> fontFamilyMap_;

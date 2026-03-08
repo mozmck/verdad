@@ -566,6 +566,13 @@ void HtmlWidget::setHtml(const std::string& html, const std::string& baseUrl) {
     currentHtml_ = html;
     baseUrl_ = baseUrl;
     scrollY_ = 0;
+    lastHoverWord_.clear();
+    lastHoverHref_.clear();
+    lastHoverStrong_.clear();
+    lastHoverMorph_.clear();
+    lastHoverModule_.clear();
+    lastHoverTitle_.clear();
+    tooltip(nullptr);
     clearSelection();
     textFragments_.clear();
 
@@ -688,6 +695,8 @@ HtmlWidget::Snapshot HtmlWidget::takeSnapshot() {
     lastHoverStrong_.clear();
     lastHoverMorph_.clear();
     lastHoverModule_.clear();
+    lastHoverTitle_.clear();
+    tooltip(nullptr);
     clearSelection();
     textFragments_.clear();
     updateScrollbar();
@@ -713,6 +722,8 @@ void HtmlWidget::restoreSnapshot(const Snapshot& snapshot) {
     lastHoverStrong_.clear();
     lastHoverMorph_.clear();
     lastHoverModule_.clear();
+    lastHoverTitle_.clear();
+    tooltip(nullptr);
     clearSelection();
     textFragments_.clear();
 
@@ -772,6 +783,7 @@ void HtmlWidget::restoreSnapshot(Snapshot&& snapshot) {
     lastHoverStrong_.clear();
     lastHoverMorph_.clear();
     lastHoverModule_.clear();
+    lastHoverTitle_.clear();
     clearSelection();
     textFragments_.clear();
 
@@ -922,7 +934,7 @@ int HtmlWidget::handle(int event) {
                     docX, docY,
                     [](const std::shared_ptr<litehtml::render_item>&) { return true; });
 
-                std::string word, href, strong, morph, module;
+                std::string word, href, strong, morph, module, title;
                 if (el) {
                     HitElement hit = findDeepestElementAtPoint(el, docX, docY);
                     if (hit.element) el = hit.element;
@@ -1072,7 +1084,7 @@ int HtmlWidget::handle(int event) {
                     Fl::event_x() - x(), Fl::event_y() - y() + scrollY_,
                     [](const std::shared_ptr<litehtml::render_item>&) { return true; });
 
-                std::string word, href, strong, morph, module;
+                std::string word, href, strong, morph, module, title;
                 if (el) {
                     // Get text content of the element under the cursor
                     litehtml::string elText;
@@ -1121,8 +1133,12 @@ int HtmlWidget::handle(int event) {
                             auto dm = cur->get_attr("data-module");
                             if (dm && *dm) module = dm;
                         }
+                        if (title.empty()) {
+                            auto t = cur->get_attr("title");
+                            if (t && *t) title = t;
+                        }
                         if (!strong.empty() && !morph.empty() &&
-                            !href.empty() && !module.empty())
+                            !href.empty() && !module.empty() && !title.empty())
                             break;
                         cur = cur->parent();
                     }
@@ -1130,12 +1146,18 @@ int HtmlWidget::handle(int event) {
 
                 if (href != lastHoverHref_ || word != lastHoverWord_ ||
                     strong != lastHoverStrong_ || morph != lastHoverMorph_ ||
-                    module != lastHoverModule_) {
+                    module != lastHoverModule_ || title != lastHoverTitle_) {
                     lastHoverWord_   = word;
                     lastHoverHref_   = href;
                     lastHoverStrong_ = strong;
                     lastHoverMorph_  = morph;
                     lastHoverModule_ = module;
+                    lastHoverTitle_  = title;
+                    if (!title.empty()) {
+                        copy_tooltip(title.c_str());
+                    } else {
+                        tooltip(nullptr);
+                    }
                     hoverCallback_(word, href, strong, morph, module,
                                    Fl::event_x(), Fl::event_y());
                 }
@@ -1185,12 +1207,14 @@ int HtmlWidget::handle(int event) {
     case FL_LEAVE:
         if (hoverCallback_ && (!lastHoverWord_.empty() || !lastHoverHref_.empty() ||
                                 !lastHoverStrong_.empty() || !lastHoverMorph_.empty() ||
-                                !lastHoverModule_.empty())) {
+                                !lastHoverModule_.empty() || !lastHoverTitle_.empty())) {
             lastHoverWord_.clear();
             lastHoverHref_.clear();
             lastHoverStrong_.clear();
             lastHoverMorph_.clear();
             lastHoverModule_.clear();
+            lastHoverTitle_.clear();
+            tooltip(nullptr);
             hoverCallback_("", "", "", "", "", 0, 0);
         }
         return 1;

@@ -5,7 +5,9 @@
 #include "ui/TagPanel.h"
 #include "ui/HtmlWidget.h"
 #include "ui/MainWindow.h"
+#include "ui/BiblePane.h"
 #include "ui/StyledTabs.h"
+#include "sword/SwordManager.h"
 
 #include <FL/Fl.H>
 #include <FL/fl_ask.H>
@@ -135,6 +137,8 @@ LeftPane::LeftPane(VerdadApp* app, int X, int Y, int W, int H)
                          std::istreambuf_iterator<char>());
         previewWidget_->setMasterCSS(css);
     }
+    previewWidget_->setLinkCallback(
+        [this](const std::string& url) { onPreviewLink(url); });
 
     contentTile_->end();
     contentTile_->resizable(contentResizeBox_);
@@ -250,10 +254,22 @@ void LeftPane::syncTabPanelVisibility() {
     }
 }
 
-void LeftPane::setPreviewText(const std::string& html) {
+void LeftPane::setPreviewText(const std::string& html,
+                              const std::string& sourceModule,
+                              const std::string& sourceKey) {
+    previewSourceModule_ = sourceModule;
+    previewSourceKey_ = sourceKey;
     if (previewWidget_) {
         previewWidget_->setHtml(html);
     }
+}
+
+void LeftPane::showReferenceResults(const std::string& moduleName,
+                                    const std::vector<std::string>& references,
+                                    const std::string& statusSuffix) {
+    if (!searchPanel_) return;
+    searchPanel_->showReferenceResults(moduleName, references, statusSuffix);
+    showSearchTab();
 }
 
 void LeftPane::setHtmlStyleOverride(const std::string& css) {
@@ -310,6 +326,43 @@ void LeftPane::redrawChrome() {
 void LeftPane::refresh() {
     if (modulePanel_) modulePanel_->refresh();
     if (tagPanel_) tagPanel_->refresh();
+}
+
+void LeftPane::onPreviewLink(const std::string& url) {
+    if (!previewWidget_ || !app_) return;
+    if (!url.empty() && url[0] == '#') {
+        previewWidget_->scrollToAnchor(url.substr(1));
+        return;
+    }
+
+    if (!app_->mainWindow()) return;
+
+    std::string activeBibleModule;
+    if (app_->mainWindow()->biblePane()) {
+        activeBibleModule = app_->mainWindow()->biblePane()->currentModule();
+    }
+
+    if (url.rfind("strongs:", 0) == 0 || url.rfind("strong:", 0) == 0 ||
+        url.rfind("morph:", 0) == 0) {
+        app_->mainWindow()->showWordInfoNow("", url, "", "");
+        return;
+    }
+
+    std::vector<std::string> refs = app_->swordManager().verseReferencesFromLink(
+        url, previewSourceKey_, activeBibleModule);
+    if (refs.size() > 1) {
+        showReferenceResults(activeBibleModule, refs, "(linked verses)");
+        return;
+    }
+
+    std::string html = app_->swordManager().buildLinkPreviewHtml(
+        previewSourceModule_,
+        previewSourceKey_,
+        url,
+        activeBibleModule);
+    if (!html.empty()) {
+        setPreviewText(html, previewSourceModule_, previewSourceKey_);
+    }
 }
 
 void LeftPane::onSearch(Fl_Widget* /*w*/, void* data) {

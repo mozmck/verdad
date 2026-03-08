@@ -38,6 +38,13 @@ struct SearchResult {
     std::string module;         // Source module name
 };
 
+struct GeneralBookTocEntry {
+    std::string key;
+    std::string label;
+    int depth = 0;
+    bool hasChildren = false;
+};
+
 /// Strongs/morphology info for a word
 struct WordInfo {
     std::string word;           // The actual word
@@ -142,6 +149,25 @@ public:
     /// Get a general book entry
     std::string getGeneralBookEntry(const std::string& moduleName,
                                     const std::string& key);
+
+    /// Return the flattened TOC for a general book module.
+    std::vector<GeneralBookTocEntry> getGeneralBookToc(
+        const std::string& moduleName) const;
+
+    /// Resolve a verse-link URL into one or more normalized verse references.
+    std::vector<std::string> verseReferencesFromLink(
+        const std::string& url,
+        const std::string& defaultKey = "",
+        const std::string& verseModuleForRefs = "") const;
+
+    /// Build preview HTML for a supported SWORD link target.
+    std::string buildLinkPreviewHtml(const std::string& sourceModule,
+                                     const std::string& sourceKey,
+                                     const std::string& url,
+                                     const std::string& verseModuleForRefs = "");
+
+    /// Extract a verse reference from a supported SWORD link URL.
+    static std::string verseReferenceFromLink(const std::string& url);
 
     /// Search a module for text
     /// @param moduleName   Module to search

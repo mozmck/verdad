@@ -118,6 +118,9 @@ add_custom_target(copy_runtime_assets ALL
     COMMAND ${CMAKE_COMMAND} -E copy
             "${CMAKE_SOURCE_DIR}/data/master.css"
             "${CMAKE_BINARY_DIR}/data/master.css"
+    COMMAND ${CMAKE_COMMAND} -E copy
+            "${CMAKE_SOURCE_DIR}/data/help.html"
+            "${CMAKE_BINARY_DIR}/data/help.html"
     VERBATIM
 )
 add_dependencies(verdad copy_runtime_assets)
@@ -151,4 +154,4 @@ endif()
 
 # Installation
 install(TARGETS verdad DESTINATION bin)
-install(FILES data/master.css DESTINATION share/verdad)
+install(FILES data/master.css data/help.html DESTINATION share/verdad)

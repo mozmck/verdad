@@ -26,6 +26,11 @@ public:
     void search(const std::string& query,
                 const std::string& moduleOverride = "");
 
+    /// Show a supplied set of verse references in the results browser.
+    void showReferenceResults(const std::string& moduleName,
+                              const std::vector<std::string>& references,
+                              const std::string& statusSuffix = "");
+
     /// Set the selected module in the search dropdown (if present).
     void setSelectedModule(const std::string& moduleName);
 

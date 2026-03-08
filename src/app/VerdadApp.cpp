@@ -369,6 +369,18 @@ void VerdadApp::loadPreferences() {
     appearanceSettings_.hoverDelayMs =
         clampHoverDelayMs(parseIntOr(prefs["hover_delay_ms"],
                                      appearanceSettings_.hoverDelayMs));
+    optionDisplaySettings_.showStrongsMarkers =
+        parseBoolOr(prefs["show_strongs_markers"],
+                    optionDisplaySettings_.showStrongsMarkers);
+    optionDisplaySettings_.showMorphMarkers =
+        parseBoolOr(prefs["show_morph_markers"],
+                    optionDisplaySettings_.showMorphMarkers);
+    optionDisplaySettings_.showFootnoteMarkers =
+        parseBoolOr(prefs["show_footnote_markers"],
+                    optionDisplaySettings_.showFootnoteMarkers);
+    optionDisplaySettings_.showCrossReferenceMarkers =
+        parseBoolOr(prefs["show_cross_reference_markers"],
+                    optionDisplaySettings_.showCrossReferenceMarkers);
     previewDictionarySettings_.greekModule =
         normalizePreviewDictionaryModule(prefs["preview_dict_greek"],
                                          previewDictionarySettings_.greekModule.c_str());
@@ -471,6 +483,10 @@ void VerdadApp::savePreferences() {
         file << "text_font_family=" << appearanceSettings_.textFontFamily << "\n";
         file << "text_font_size=" << appearanceSettings_.textFontSize << "\n";
         file << "hover_delay_ms=" << appearanceSettings_.hoverDelayMs << "\n";
+        file << "show_strongs_markers=" << (optionDisplaySettings_.showStrongsMarkers ? 1 : 0) << "\n";
+        file << "show_morph_markers=" << (optionDisplaySettings_.showMorphMarkers ? 1 : 0) << "\n";
+        file << "show_footnote_markers=" << (optionDisplaySettings_.showFootnoteMarkers ? 1 : 0) << "\n";
+        file << "show_cross_reference_markers=" << (optionDisplaySettings_.showCrossReferenceMarkers ? 1 : 0) << "\n";
         file << "preview_dict_greek=" << previewDictionarySettings_.greekModule << "\n";
         file << "preview_dict_hebrew=" << previewDictionarySettings_.hebrewModule << "\n";
         std::vector<std::string> languageCodes;
@@ -572,6 +588,18 @@ void VerdadApp::setPreviewDictionarySettings(
     previewDictionarySettings_.greekModule = std::move(normalized.greekModule);
     previewDictionarySettings_.hebrewModule = std::move(normalized.hebrewModule);
     previewDictionarySettings_.languageModules = std::move(normalizedLanguageModules);
+}
+
+void VerdadApp::setOptionDisplaySettings(
+    const OptionDisplaySettings& settings) {
+    optionDisplaySettings_ = settings;
+
+    if (mainWindow_) {
+        mainWindow_->applyAppearanceSettings(
+            appFont(),
+            appearanceSettings_.appFontSize,
+            textStyleOverrideCss());
+    }
 }
 
 std::string VerdadApp::preferredPreviewDictionary(char strongPrefix) const {
@@ -686,6 +714,7 @@ Fl_Font VerdadApp::appFont() const {
 std::string VerdadApp::textStyleOverrideCss() const {
     std::string family = escapeCssString(appearanceSettings_.textFontFamily);
     int size = clampFontSize(appearanceSettings_.textFontSize);
+    const auto& options = optionDisplaySettings_;
 
     std::ostringstream css;
     css << "body,\n"
@@ -700,6 +729,20 @@ std::string VerdadApp::textStyleOverrideCss() const {
         << "  font-family: \"" << family << "\" !important;\n"
         << "  font-size: " << size << "px !important;\n"
         << "}\n";
+
+    css << "span.verdad-inline-marker { display: none; }\n";
+    if (options.showStrongsMarkers) {
+        css << "span.verdad-inline-marker.strongs-marker { display: inline; }\n";
+    }
+    if (options.showMorphMarkers) {
+        css << "span.verdad-inline-marker.morph-marker { display: inline; }\n";
+    }
+    if (!options.showFootnoteMarkers) {
+        css << "a.noteMarker:not(.crossReference), a.footnote:not(.crossReference) { display: none; }\n";
+    }
+    if (!options.showCrossReferenceMarkers) {
+        css << "a.noteMarker.crossReference, a.footnote.crossReference { display: none; }\n";
+    }
 
     return css.str();
 }

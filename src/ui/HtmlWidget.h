@@ -217,6 +217,7 @@ private:
     std::string lastHoverStrong_;
     std::string lastHoverMorph_;
     std::string lastHoverModule_;
+    std::string lastHoverTitle_;
 
     struct TextFragment {
         std::string text;

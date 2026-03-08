@@ -445,7 +445,7 @@ void TagPanel::updateVersePreview(const std::string& verseKey) {
     if (module.empty()) return;
 
     std::string html = app_->swordManager().getVerseText(module, verseKey);
-    app_->mainWindow()->leftPane()->setPreviewText(html);
+    app_->mainWindow()->leftPane()->setPreviewText(html, module, verseKey);
 }
 
 void TagPanel::populateTags() {

@@ -13,7 +13,7 @@
 #include <chrono>
 
 class Fl_Box;
-class Fl_Text_Buffer;
+class Fl_Hold_Browser;
 
 namespace verdad {
 
@@ -22,6 +22,7 @@ class LeftPane;
 class BiblePane;
 class RightPane;
 class StyledTabs;
+class HtmlWidget;
 
 /// Main application window with left pane + tabbed Bible/Commentary workspaces.
 class MainWindow : public Fl_Double_Window {
@@ -87,6 +88,10 @@ public:
     void showWordInfo(const std::string& word, const std::string& href,
                       const std::string& strong, const std::string& morph,
                       int screenX, int screenY);
+
+    /// Immediately render Strong's/morph info into the left preview pane.
+    void showWordInfoNow(const std::string& word, const std::string& href,
+                         const std::string& strong, const std::string& morph);
 
     /// Cancel pending hover update (does not clear current MAG content).
     void hideWordInfo();
@@ -300,9 +305,14 @@ private:
 
     /// Open/search help window with search mode examples and regex tips.
     void showSearchHelpWindow();
+    void selectHelpTopic(int index);
+    static void onHelpTopicSelect(Fl_Widget* w, void* data);
 
     Fl_Double_Window* searchHelpWindow_ = nullptr;
-    Fl_Text_Buffer* searchHelpTextBuffer_ = nullptr;
+    Fl_Hold_Browser* searchHelpTopicBrowser_ = nullptr;
+    HtmlWidget* searchHelpHtml_ = nullptr;
+    std::vector<std::pair<std::string, std::string>> searchHelpTopics_;
+    std::string searchHelpDocumentHtml_;
 };
 
 } // namespace verdad

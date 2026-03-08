@@ -1,7 +1,9 @@
 #include "ui/RightPane.h"
 #include "app/VerdadApp.h"
+#include "ui/BiblePane.h"
 #include "ui/HtmlEditorWidget.h"
 #include "ui/HtmlWidget.h"
+#include "ui/LeftPane.h"
 #include "ui/MainWindow.h"
 #include "ui/StyledTabs.h"
 #include "sword/SwordManager.h"
@@ -163,6 +165,16 @@ std::string pathLeaf(const std::string& path) {
     return path.substr(slash + 1);
 }
 
+int findGeneralBookTocIndex(
+    const std::vector<GeneralBookTocEntry>& toc,
+    const std::string& key) {
+    if (key.empty()) return -1;
+    for (size_t i = 0; i < toc.size(); ++i) {
+        if (toc[i].key == key) return static_cast<int>(i);
+    }
+    return -1;
+}
+
 } // namespace
 
 RightPane::RightPane(VerdadApp* app, int X, int Y, int W, int H)
@@ -188,8 +200,7 @@ RightPane::RightPane(VerdadApp* app, int X, int Y, int W, int H)
     , currentDictKey_()
     , generalBooksGroup_(nullptr)
     , generalBookChoice_(nullptr)
-    , generalBookKeyInput_(nullptr)
-    , generalBookGoButton_(nullptr)
+    , generalBookTocChoice_(nullptr)
     , generalBookHtml_(nullptr)
     , currentGeneralBook_()
     , currentGeneralBookKey_()
@@ -210,8 +221,6 @@ RightPane::RightPane(VerdadApp* app, int X, int Y, int W, int H)
     const int minBottomH = 90;
     const int tabsHeaderH = 25;
     const int choiceH = 25;
-    const int goW = 42;
-
     int tileX = X + padding;
     int tileY = Y + padding;
     int tileW = std::max(20, W - 2 * padding);
@@ -264,20 +273,11 @@ RightPane::RightPane(VerdadApp* app, int X, int Y, int W, int H)
     generalBooksGroup_->begin();
     generalBookChoice_ = new Fl_Choice(tileX + 2, panelY + 2, tileW - 4, choiceH);
     generalBookChoice_->callback(onGeneralBookModuleChange, this);
-
-    generalBookKeyInput_ = new Fl_Input(tileX + 2,
-                                        panelY + choiceH + 4,
-                                        tileW - 4 - goW - 2,
-                                        choiceH);
-    generalBookKeyInput_->when(FL_WHEN_ENTER_KEY);
-    generalBookKeyInput_->callback(onGeneralBookKeyInput, this);
-
-    generalBookGoButton_ = new Fl_Button(tileX + tileW - goW - 2,
-                                         panelY + choiceH + 4,
-                                         goW,
-                                         choiceH,
-                                         "Go");
-    generalBookGoButton_->callback(onGeneralBookGo, this);
+    generalBookTocChoice_ = new Fl_Choice(tileX + 2,
+                                          panelY + choiceH + 4,
+                                          tileW - 4,
+                                          choiceH);
+    generalBookTocChoice_->callback(onGeneralBookTocChange, this);
 
     generalBookHtml_ = new HtmlWidget(tileX + 2,
                                       panelY + (choiceH * 2) + 6,
@@ -393,7 +393,7 @@ void RightPane::layoutTopTabContents(int tabsX, int tabsY, int tabsW, int tabsH)
     if (!commentaryGroup_ || !commentaryChoice_ || !commentaryEditButton_ ||
         !commentarySaveButton_ || !commentaryCancelButton_ || !commentaryHtml_ ||
         !commentaryEditor_ || !generalBooksGroup_ || !generalBookChoice_ ||
-        !generalBookKeyInput_ || !generalBookGoButton_ || !generalBookHtml_ ||
+        !generalBookTocChoice_ || !generalBookHtml_ ||
         !documentsGroup_ || !documentNewButton_ || !documentOpenButton_ ||
         !documentSaveButton_ || !documentCloseButton_ || !documentPathLabel_ ||
         !documentsEditor_) {
@@ -402,7 +402,6 @@ void RightPane::layoutTopTabContents(int tabsX, int tabsY, int tabsW, int tabsH)
 
     const int tabsHeaderH = 25;
     const int rowH = 25;
-    const int goW = 42;
     const int buttonGap = 2;
 
     int clampedTabsW = std::max(20, tabsW);
@@ -441,12 +440,7 @@ void RightPane::layoutTopTabContents(int tabsX, int tabsY, int tabsW, int tabsH)
         ->resize(contentX, commentaryContentY, contentW, commentaryContentH);
 
     generalBookChoice_->resize(contentX, panelY + 2, contentW, rowH);
-    int generalKeyW = std::max(20, contentW - goW - buttonGap);
-    generalBookKeyInput_->resize(contentX, panelY + rowH + 4, generalKeyW, rowH);
-    generalBookGoButton_->resize(contentX + generalKeyW + buttonGap,
-                                 panelY + rowH + 4,
-                                 goW,
-                                 rowH);
+    generalBookTocChoice_->resize(contentX, panelY + rowH + 4, contentW, rowH);
     generalBookHtml_->resize(contentX,
                              panelY + (rowH * 2) + 6,
                              contentW,
@@ -498,8 +492,8 @@ void RightPane::resize(int X, int Y, int W, int H) {
         !documentsGroup_ || !documentsEditor_ || !dictionaryPaneGroup_ ||
         !dictionaryKeyInput_ || !dictionaryChoice_ || !dictionaryHtml_ ||
         !generalBooksGroup_ ||
-        !generalBookChoice_ || !generalBookKeyInput_ ||
-        !generalBookGoButton_ || !generalBookHtml_) {
+        !generalBookChoice_ || !generalBookTocChoice_ ||
+        !generalBookHtml_) {
         return;
     }
 
@@ -690,14 +684,28 @@ void RightPane::showGeneralBookEntry(const std::string& key) {
 
 void RightPane::showGeneralBookEntry(const std::string& moduleName,
                                      const std::string& key) {
+    bool moduleChanged = (moduleName != currentGeneralBook_);
     currentGeneralBook_ = moduleName;
+    if (moduleChanged || generalBookToc_.empty()) {
+        populateGeneralBookToc();
+    }
     currentGeneralBookKey_ = key;
-
-    if (generalBookKeyInput_) {
-        generalBookKeyInput_->value(currentGeneralBookKey_.c_str());
+    if (currentGeneralBookKey_.empty() && !generalBookToc_.empty()) {
+        currentGeneralBookKey_ = generalBookToc_.front().key;
+    }
+    if (generalBookTocChoice_) {
+        for (int i = 0; i < generalBookTocChoice_->size(); ++i) {
+            const Fl_Menu_Item& item = generalBookTocChoice_->menu()[i];
+            if (item.label() && i < static_cast<int>(generalBookToc_.size()) &&
+                generalBookToc_[static_cast<size_t>(i)].key == currentGeneralBookKey_) {
+                generalBookTocChoice_->value(i);
+                break;
+            }
+        }
     }
 
-    std::string html = app_->swordManager().getGeneralBookEntry(moduleName, key);
+    std::string html = app_->swordManager().getGeneralBookEntry(
+        moduleName, currentGeneralBookKey_);
     if (generalBookHtml_) {
         generalBookHtml_->setHtml(html);
     }
@@ -744,6 +752,8 @@ void RightPane::setGeneralBookModule(const std::string& moduleName) {
             break;
         }
     }
+
+    populateGeneralBookToc();
 }
 
 bool RightPane::isDictionaryTabActive() const {
@@ -798,7 +808,7 @@ void RightPane::setDictionaryPaneHeight(int height) {
     if (!contentTile_ || !tabs_ || !commentaryGroup_ || !commentaryChoice_ ||
         !commentaryHtml_ || !commentaryEditor_ ||
         !generalBooksGroup_ || !generalBookChoice_ ||
-        !generalBookKeyInput_ || !generalBookGoButton_ || !generalBookHtml_ ||
+        !generalBookTocChoice_ || !generalBookHtml_ ||
         !documentsGroup_ || !documentsEditor_ ||
         !dictionaryPaneGroup_ || !dictionaryKeyInput_ ||
         !dictionaryChoice_ || !dictionaryHtml_) {
@@ -860,9 +870,7 @@ void RightPane::setStudyState(const std::string& commentaryModule,
     if (dictionaryKeyInput_) {
         dictionaryKeyInput_->value(currentDictKey_.c_str());
     }
-    if (generalBookKeyInput_) {
-        generalBookKeyInput_->value(currentGeneralBookKey_.c_str());
-    }
+    populateGeneralBookToc();
 
     setDictionaryTabActive(dictionaryActive);
     updateCommentaryEditorChrome();
@@ -1042,8 +1050,7 @@ void RightPane::redrawChrome() {
     if (dictionaryKeyInput_) dictionaryKeyInput_->redraw();
     if (dictionaryChoice_) dictionaryChoice_->redraw();
     if (generalBookChoice_) generalBookChoice_->redraw();
-    if (generalBookKeyInput_) generalBookKeyInput_->redraw();
-    if (generalBookGoButton_) generalBookGoButton_->redraw();
+    if (generalBookTocChoice_) generalBookTocChoice_->redraw();
     if (documentNewButton_) documentNewButton_->redraw();
     if (documentOpenButton_) documentOpenButton_->redraw();
     if (documentSaveButton_) documentSaveButton_->redraw();
@@ -1225,17 +1232,45 @@ void RightPane::populateGeneralBookModules() {
         if (item.label()) {
             currentGeneralBook_ = item.label();
         }
+        populateGeneralBookToc();
         showGeneralBookEntry(currentGeneralBook_, currentGeneralBookKey_);
     } else {
         currentGeneralBook_.clear();
         currentGeneralBookKey_.clear();
-        if (generalBookKeyInput_) {
-            generalBookKeyInput_->value("");
+        generalBookToc_.clear();
+        if (generalBookTocChoice_) {
+            generalBookTocChoice_->clear();
         }
         if (generalBookHtml_) {
             generalBookHtml_->setHtml(
                 "<p><i>No general book modules installed.</i></p>");
         }
+    }
+}
+
+void RightPane::populateGeneralBookToc() {
+    generalBookToc_.clear();
+    if (!generalBookTocChoice_) return;
+
+    generalBookTocChoice_->clear();
+    if (currentGeneralBook_.empty()) return;
+
+    generalBookToc_ = app_->swordManager().getGeneralBookToc(currentGeneralBook_);
+    for (const auto& entry : generalBookToc_) {
+        std::string label(static_cast<size_t>(entry.depth) * 2, ' ');
+        label += entry.label;
+        if (entry.hasChildren) label += " ...";
+        generalBookTocChoice_->add(label.c_str());
+    }
+
+    if (!generalBookToc_.empty()) {
+        int selectedIndex = findGeneralBookTocIndex(generalBookToc_,
+                                                    currentGeneralBookKey_);
+        if (selectedIndex < 0) {
+            selectedIndex = 0;
+            currentGeneralBookKey_ = generalBookToc_.front().key;
+        }
+        generalBookTocChoice_->value(selectedIndex);
     }
 }
 
@@ -1516,33 +1551,61 @@ bool RightPane::closeDocument() {
 void RightPane::onHtmlLink(const std::string& url, bool commentarySource) {
     if (!app_ || !app_->mainWindow()) return;
 
-    if (url.rfind("sword://", 0) == 0) {
-        app_->mainWindow()->navigateTo(url.substr(8));
+    HtmlWidget* sourceWidget = commentarySource ? commentaryHtml_ : generalBookHtml_;
+    std::string sourceModule = commentarySource ? currentCommentary_ : currentGeneralBook_;
+    std::string sourceKey = commentarySource ? currentCommentaryRef_ : currentGeneralBookKey_;
+
+    if (!url.empty() && url[0] == '#') {
+        if (sourceWidget) sourceWidget->scrollToAnchor(url.substr(1));
         return;
     }
+
     if (url.rfind("strongs:", 0) == 0 || url.rfind("strong:", 0) == 0) {
-        size_t colon = url.find(':');
-        if (colon != std::string::npos) {
-            app_->mainWindow()->showDictionary(url.substr(colon + 1));
-        }
+        app_->mainWindow()->showWordInfoNow("", url, "", "");
         return;
     }
     if (url.rfind("morph:", 0) == 0) {
-        app_->mainWindow()->showDictionary(url.substr(6));
+        app_->mainWindow()->showWordInfoNow("", url, "", "");
         return;
     }
+
+    std::string previewModule;
+    if (app_->mainWindow()->biblePane()) {
+        previewModule = app_->mainWindow()->biblePane()->currentModule();
+    }
+
     if (commentarySource && url.rfind("verse:", 0) == 0) {
         try {
             int verse = std::stoi(url.substr(6));
             SwordManager::VerseRef ref = SwordManager::parseVerseRef(currentCommentaryRef_);
-            if (!ref.book.empty() && ref.chapter > 0 && verse > 0) {
+            if (!ref.book.empty() && ref.chapter > 0 && verse > 0 &&
+                app_->mainWindow()->leftPane()) {
                 std::ostringstream target;
                 target << ref.book << " " << ref.chapter << ":" << verse;
-                app_->mainWindow()->navigateTo(target.str());
+                app_->mainWindow()->leftPane()->setPreviewText(
+                    app_->swordManager().getVerseText(previewModule, target.str()),
+                    previewModule, target.str());
                 return;
             }
         } catch (...) {
         }
+    }
+
+    std::vector<std::string> refs = app_->swordManager().verseReferencesFromLink(
+        url, sourceKey, previewModule);
+    if (refs.size() > 1 && app_->mainWindow()->leftPane()) {
+        app_->mainWindow()->leftPane()->showReferenceResults(
+            previewModule, refs, "(linked verses)");
+        return;
+    }
+
+    std::string previewHtml = app_->swordManager().buildLinkPreviewHtml(
+        sourceModule, sourceKey, url, previewModule);
+    if (!previewHtml.empty() &&
+        app_->mainWindow()->leftPane()) {
+        app_->mainWindow()->leftPane()->setPreviewText(
+            previewHtml, sourceModule, sourceKey);
+        return;
     }
 }
 
@@ -1663,26 +1726,27 @@ void RightPane::onGeneralBookModuleChange(Fl_Widget* /*w*/, void* data) {
     const Fl_Menu_Item* item = self->generalBookChoice_->mvalue();
     if (item && item->label()) {
         self->currentGeneralBook_ = item->label();
+        self->populateGeneralBookToc();
         self->showGeneralBookEntry(self->currentGeneralBook_,
                                    self->currentGeneralBookKey_);
     }
 }
 
-void RightPane::onGeneralBookGo(Fl_Widget* /*w*/, void* data) {
+void RightPane::onGeneralBookTocChange(Fl_Widget* /*w*/, void* data) {
     auto* self = static_cast<RightPane*>(data);
-    if (!self || self->currentGeneralBook_.empty() || !self->generalBookKeyInput_) {
+    if (!self || self->currentGeneralBook_.empty() || !self->generalBookTocChoice_) {
         return;
     }
 
-    self->currentGeneralBookKey_ = self->generalBookKeyInput_->value()
-                                   ? self->generalBookKeyInput_->value()
-                                   : "";
+    int index = self->generalBookTocChoice_->value();
+    if (index < 0 ||
+        index >= static_cast<int>(self->generalBookToc_.size())) {
+        return;
+    }
+    self->currentGeneralBookKey_ =
+        self->generalBookToc_[static_cast<size_t>(index)].key;
     self->showGeneralBookEntry(self->currentGeneralBook_,
                                self->currentGeneralBookKey_);
-}
-
-void RightPane::onGeneralBookKeyInput(Fl_Widget* /*w*/, void* data) {
-    onGeneralBookGo(nullptr, data);
 }
 
 void RightPane::onDocumentNew(Fl_Widget* /*w*/, void* data) {

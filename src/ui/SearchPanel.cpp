@@ -306,6 +306,35 @@ std::string collapseWhitespace(const std::string& in) {
     return (start == 0) ? out : out.substr(start);
 }
 
+void replaceAll(std::string& text,
+                const std::string& from,
+                const std::string& to) {
+    if (from.empty()) return;
+    size_t pos = 0;
+    while ((pos = text.find(from, pos)) != std::string::npos) {
+        text.replace(pos, from.size(), to);
+        pos += to.size();
+    }
+}
+
+std::string htmlToSnippetText(std::string html) {
+    static const std::regex kTagRe(R"(<[^>]+>)");
+    html = std::regex_replace(html, kTagRe, " ");
+    replaceAll(html, "&nbsp;", " ");
+    replaceAll(html, "&amp;", "&");
+    replaceAll(html, "&quot;", "\"");
+    replaceAll(html, "&lt;", "<");
+    replaceAll(html, "&gt;", ">");
+    replaceAll(html, "&#39;", "'");
+    html = collapseWhitespace(html);
+    constexpr size_t kMaxSnippetLen = 220;
+    if (html.size() > kMaxSnippetLen) {
+        html.resize(kMaxSnippetLen);
+        html += "...";
+    }
+    return html;
+}
+
 constexpr int kResultRefColumnWidth = 100;
 constexpr int kResultLinePadding = 4;
 constexpr int kResultColumnGap = 8;
@@ -1022,6 +1051,62 @@ void SearchPanel::search(const std::string& query,
     redraw();
 }
 
+void SearchPanel::showReferenceResults(const std::string& moduleName,
+                                       const std::vector<std::string>& references,
+                                       const std::string& statusSuffix) {
+    cancelPendingPreviewUpdate();
+    pendingPreviewModule_.clear();
+    pendingPreviewKey_.clear();
+    lastPreviewModule_.clear();
+    lastPreviewKey_.clear();
+    resultDisplayKeys_.clear();
+    resetHighlightState();
+    results_.clear();
+    resultBrowser_->clear();
+    resultBrowser_->value(0);
+    stopIndexingIndicator();
+
+    std::string module = trimCopy(moduleName);
+    if (module.empty() &&
+        app_ && app_->mainWindow() && app_->mainWindow()->biblePane()) {
+        module = trimCopy(app_->mainWindow()->biblePane()->currentModule());
+    }
+    if (module.empty()) {
+        setResultCountLabel("(no active module)");
+        return;
+    }
+
+    setSelectedModule(module);
+
+    for (const auto& rawRef : references) {
+        std::string ref = trimCopy(rawRef);
+        if (ref.empty()) continue;
+
+        SearchResult result;
+        result.module = module;
+        result.key = ref;
+        result.text = htmlToSnippetText(
+            app_->swordManager().getVerseText(module, ref));
+        if (result.text.empty()) result.text = ref;
+        results_.push_back(std::move(result));
+    }
+
+    for (const auto& r : results_) {
+        std::string shortKey = app_->swordManager().getShortReference(r.module, r.key);
+        resultDisplayKeys_.push_back(shortKey.empty() ? r.key : shortKey);
+        resultBrowser_->add(" ");
+    }
+
+    setResultCountLabel(statusSuffix.empty() ? "(linked references)" : statusSuffix);
+
+    if (!results_.empty()) {
+        resultBrowser_->value(1);
+        schedulePreviewUpdate(results_.front());
+    }
+
+    redraw();
+}
+
 void SearchPanel::clear() {
     cancelPendingPreviewUpdate();
     pendingPreviewModule_.clear();
@@ -1274,7 +1359,8 @@ void SearchPanel::applyPendingPreviewUpdate() {
     std::string html = app_->swordManager().getVerseText(
         pendingPreviewModule_, pendingPreviewKey_);
     html = applyPreviewHighlights(html);
-    app_->mainWindow()->leftPane()->setPreviewText(html);
+    app_->mainWindow()->leftPane()->setPreviewText(
+        html, pendingPreviewModule_, pendingPreviewKey_);
     lastPreviewModule_ = pendingPreviewModule_;
     lastPreviewKey_ = pendingPreviewKey_;
 }

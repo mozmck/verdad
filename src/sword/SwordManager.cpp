@@ -4,6 +4,7 @@
 #include <swmgr.h>
 #include <swmodule.h>
 #include <swkey.h>
+#include <treekey.h>
 #include <versekey.h>
 #include <listkey.h>
 #include <markupfiltmgr.h>
@@ -18,6 +19,8 @@
 
 namespace verdad {
 namespace {
+
+std::string htmlEscapeAttr(const std::string& s);
 
 std::string trimCopy(const std::string& s) {
     size_t start = 0;
@@ -686,6 +689,139 @@ std::string extractQueryValue(const std::string& url, const std::string& key) {
     return "";
 }
 
+std::vector<std::string> splitList(const std::string& text, char delim) {
+    std::vector<std::string> items;
+    size_t start = 0;
+    while (start <= text.size()) {
+        size_t end = text.find(delim, start);
+        std::string item = trimCopy(text.substr(
+            start,
+            (end == std::string::npos ? text.size() : end) - start));
+        if (!item.empty()) items.push_back(item);
+        if (end == std::string::npos) break;
+        start = end + 1;
+    }
+    return items;
+}
+
+std::string normalizeSingleLinkedVerseRef(const std::string& rawRef) {
+    std::string ref = trimCopy(rawRef);
+    if (ref.empty()) return "";
+
+    std::vector<std::string> parts = splitList(ref, '.');
+    if (parts.size() >= 3) {
+        std::ostringstream out;
+        for (size_t i = 0; i + 2 < parts.size(); ++i) {
+            if (i) out << ' ';
+            out << parts[i];
+        }
+        out << ' ' << parts[parts.size() - 2];
+        out << ':' << parts.back();
+        ref = out.str();
+    }
+
+    if (!ref.empty() &&
+        std::isdigit(static_cast<unsigned char>(ref[0]))) {
+        size_t pos = 1;
+        while (pos < ref.size() &&
+               std::isdigit(static_cast<unsigned char>(ref[pos]))) {
+            ++pos;
+        }
+        if (pos < ref.size() &&
+            std::isalpha(static_cast<unsigned char>(ref[pos])) &&
+            ref[pos - 1] != ' ') {
+            ref.insert(pos, " ");
+        }
+    }
+
+    return trimCopy(ref);
+}
+
+std::string normalizeLinkedVerseRef(const std::string& rawRef) {
+    std::vector<std::string> parts = splitList(rawRef, '-');
+    if (parts.size() <= 1) return normalizeSingleLinkedVerseRef(rawRef);
+
+    std::ostringstream out;
+    for (size_t i = 0; i < parts.size(); ++i) {
+        if (i) out << '-';
+        out << normalizeSingleLinkedVerseRef(parts[i]);
+    }
+    return trimCopy(out.str());
+}
+
+std::string sanitizeHtmlId(const std::string& text) {
+    std::string out;
+    out.reserve(text.size() + 8);
+    for (char c : text) {
+        unsigned char uc = static_cast<unsigned char>(c);
+        if (std::isalnum(uc)) {
+            out.push_back(static_cast<char>(std::tolower(uc)));
+        } else if (out.empty() || out.back() != '-') {
+            out.push_back('-');
+        }
+    }
+    while (!out.empty() && out.back() == '-') out.pop_back();
+    if (out.empty()) out = "section";
+    return out;
+}
+
+void appendGeneralBookTocEntries(sword::TreeKey* treeKey,
+                                 int depth,
+                                 std::vector<GeneralBookTocEntry>& out) {
+    if (!treeKey) return;
+
+    do {
+        GeneralBookTocEntry entry;
+        entry.key = treeKey->getText();
+        entry.label = treeKey->getLocalName();
+        entry.depth = depth;
+        entry.hasChildren = treeKey->hasChildren();
+        out.push_back(std::move(entry));
+
+        if (treeKey->hasChildren() && treeKey->firstChild()) {
+            appendGeneralBookTocEntries(treeKey, depth + 1, out);
+            treeKey->parent();
+        }
+    } while (treeKey->nextSibling());
+}
+
+int findGeneralBookTocIndex(const std::vector<GeneralBookTocEntry>& toc,
+                            const std::string& key) {
+    std::string wanted = trimCopy(key);
+    if (toc.empty() || wanted.empty()) return -1;
+
+    for (size_t i = 0; i < toc.size(); ++i) {
+        if (toc[i].key == wanted) return static_cast<int>(i);
+    }
+
+    std::string wantedLower = toLowerAscii(wanted);
+    for (size_t i = 0; i < toc.size(); ++i) {
+        if (toLowerAscii(toc[i].label) == wantedLower) {
+            return static_cast<int>(i);
+        }
+    }
+
+    return -1;
+}
+
+std::string renderGeneralBookSectionHtml(sword::SWModule* mod,
+                                         const GeneralBookTocEntry& entry) {
+    if (!mod) return "";
+    mod->setKey(entry.key.c_str());
+    if (mod->popError()) return "";
+
+    std::string text = std::string(mod->renderText().c_str());
+    if (trimCopy(text).empty()) return "";
+
+    std::ostringstream html;
+    html << "<div class=\"general-book-section\" id=\"gb-"
+         << sanitizeHtmlId(entry.key) << "\">\n";
+    html << "<h4>" << htmlEscapeAttr(entry.label) << "</h4>\n";
+    html << text << "\n";
+    html << "</div>\n";
+    return html.str();
+}
+
 bool isWordByte(unsigned char c) {
     return std::isalnum(c) || c == '\'' || c == '-' || c >= 0x80;
 }
@@ -809,6 +945,20 @@ std::string buildWordSpanOpenTag(const HoverMeta& meta) {
         out += '"';
     }
     out += '>';
+    return out;
+}
+
+std::string buildInlineMarkerHtml(const std::string& innerHtml,
+                                  const HoverMeta& meta) {
+    if (trimCopy(innerHtml).empty() || meta.empty()) return "";
+
+    std::string classes = "verdad-inline-marker";
+    if (!meta.strong.empty()) classes += " strongs-marker";
+    if (!meta.morph.empty()) classes += " morph-marker";
+
+    std::string out = "<span class=\"" + classes + "\">";
+    out += innerHtml;
+    out += "</span>";
     return out;
 }
 
@@ -1926,6 +2076,26 @@ std::vector<ModuleInfo> SwordManager::getGeneralBookModules() const {
     return modules;
 }
 
+std::vector<GeneralBookTocEntry> SwordManager::getGeneralBookToc(
+    const std::string& moduleName) const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    std::vector<GeneralBookTocEntry> toc;
+
+    sword::SWModule* mod = getModule(moduleName);
+    if (!mod) return toc;
+
+    std::unique_ptr<sword::SWKey> key(mod->createKey());
+    auto* treeKey = dynamic_cast<sword::TreeKey*>(key.get());
+    if (!treeKey) return toc;
+
+    treeKey->root();
+    if (treeKey->hasChildren() && treeKey->firstChild()) {
+        appendGeneralBookTocEntries(treeKey, 0, toc);
+    }
+
+    return toc;
+}
+
 std::string SwordManager::getVerseText(const std::string& moduleName,
                                         const std::string& key) {
     std::lock_guard<std::mutex> lock(mutex_);
@@ -2412,7 +2582,23 @@ std::string SwordManager::getGeneralBookEntry(const std::string& moduleName,
     sword::SWModule* mod = getModule(moduleName);
     if (!mod) return "<p><i>General book module not found: " + moduleName + "</i></p>";
 
+    std::vector<GeneralBookTocEntry> toc;
+    {
+        std::unique_ptr<sword::SWKey> tocKey(mod->createKey());
+        auto* treeKey = dynamic_cast<sword::TreeKey*>(tocKey.get());
+        if (treeKey) {
+            treeKey->root();
+            if (treeKey->hasChildren() && treeKey->firstChild()) {
+                appendGeneralBookTocEntries(treeKey, 0, toc);
+            }
+        }
+    }
+
     std::string lookupKey = trimCopy(key);
+    if (lookupKey.empty() && !toc.empty()) {
+        lookupKey = toc.front().key;
+    }
+
     if (lookupKey.empty()) {
         std::ostringstream html;
         html << "<div class=\"general-book\">\n";
@@ -2421,23 +2607,279 @@ std::string SwordManager::getGeneralBookEntry(const std::string& moduleName,
         if (desc && *desc) {
             html << "<p>" << desc << "</p>\n";
         }
-        html << "<p><i>Enter a key and press Go to open an entry.</i></p>\n";
+        html << "<p><i>Select a table-of-contents item to open a section.</i></p>\n";
         html << "</div>\n";
         return html.str();
     }
 
-    mod->setKey(lookupKey.c_str());
-    std::string text = std::string(mod->renderText().c_str());
-    if (text.empty()) {
+    int tocIndex = findGeneralBookTocIndex(toc, lookupKey);
+    if (tocIndex < 0) {
+        mod->setKey(lookupKey.c_str());
+        if (!mod->popError()) {
+            std::string text = std::string(mod->renderText().c_str());
+            if (!trimCopy(text).empty()) {
+                std::ostringstream html;
+                html << "<div class=\"general-book\">\n";
+                html << "<div class=\"entry-key\">" << htmlEscapeAttr(lookupKey) << "</div>\n";
+                html << text;
+                html << "</div>\n";
+                return html.str();
+            }
+        }
         return "<p><i>No entry found for: " + lookupKey + "</i></p>";
     }
 
+    const GeneralBookTocEntry& selected = toc[static_cast<size_t>(tocIndex)];
     std::ostringstream html;
     html << "<div class=\"general-book\">\n";
-    html << "<div class=\"entry-key\">" << htmlEscapeAttr(lookupKey) << "</div>\n";
-    html << text;
+    html << "<div class=\"entry-key\">" << htmlEscapeAttr(selected.label) << "</div>\n";
+
+    if (!toc.empty()) {
+        html << "<div class=\"general-book-toc\">\n";
+        html << "<div class=\"general-book-toc-title\">Contents</div>\n";
+        html << "<ul>\n";
+        int baseDepth = selected.depth;
+        for (size_t i = static_cast<size_t>(tocIndex);
+             i < toc.size() && toc[i].depth >= baseDepth;
+             ++i) {
+            if (i != static_cast<size_t>(tocIndex) && toc[i].depth == baseDepth) break;
+            html << "<li class=\"depth-" << (toc[i].depth - baseDepth) << "\">";
+            html << "<a href=\"#gb-" << sanitizeHtmlId(toc[i].key) << "\">"
+                 << htmlEscapeAttr(toc[i].label) << "</a></li>\n";
+        }
+        html << "</ul>\n";
+        html << "</div>\n";
+    }
+
+    for (size_t i = static_cast<size_t>(tocIndex);
+         i < toc.size() && toc[i].depth >= selected.depth;
+         ++i) {
+        if (i != static_cast<size_t>(tocIndex) && toc[i].depth == selected.depth) break;
+        html << renderGeneralBookSectionHtml(mod, toc[i]);
+    }
+
     html << "</div>\n";
     return html.str();
+}
+
+std::string SwordManager::verseReferenceFromLink(const std::string& url) {
+    std::string decoded = trimCopy(decodeHtmlEntities(url));
+    if (decoded.empty()) return "";
+
+    std::string lower = toLowerAscii(decoded);
+    if (lower.rfind("sword://", 0) == 0) {
+        return trimCopy(decoded.substr(8));
+    }
+
+    if (!containsNoCase(lower, "passagestudy.jsp")) return "";
+    std::string action = toLowerAscii(extractQueryValue(decoded, "action"));
+    std::string type = toLowerAscii(extractQueryValue(decoded, "type"));
+    if (action == "showref" && (type.empty() || type == "scripref")) {
+        return normalizeLinkedVerseRef(extractQueryValue(decoded, "value"));
+    }
+
+    return "";
+}
+
+std::vector<std::string> SwordManager::verseReferencesFromLink(
+    const std::string& url,
+    const std::string& defaultKey,
+    const std::string& verseModuleForRefs) const {
+    std::string decoded = trimCopy(decodeHtmlEntities(url));
+    if (decoded.empty()) return {};
+
+    std::string rawRefs;
+    std::string lower = toLowerAscii(decoded);
+    if (lower.rfind("sword://", 0) == 0) {
+        rawRefs = trimCopy(decoded.substr(8));
+    } else if (containsNoCase(lower, "passagestudy.jsp")) {
+        std::string action = toLowerAscii(extractQueryValue(decoded, "action"));
+        std::string type = toLowerAscii(extractQueryValue(decoded, "type"));
+        if (action == "showref" && (type.empty() || type == "scripref")) {
+            rawRefs = trimCopy(extractQueryValue(decoded, "value"));
+        }
+    }
+
+    if (rawRefs.empty()) return {};
+
+    sword::VerseKey vk;
+    vk.setAutoNormalize(true);
+
+    std::string verseModule = trimCopy(verseModuleForRefs);
+    if (!verseModule.empty()) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        sword::SWModule* mod = getModule(verseModule);
+        if (mod) {
+            const char* v11n = mod->getConfigEntry("Versification");
+            if (v11n && *v11n) {
+                vk.setVersificationSystem(v11n);
+            }
+        }
+    }
+
+    std::string defaultRef = trimCopy(defaultKey);
+    sword::ListKey refs = vk.parseVerseList(
+        rawRefs.c_str(),
+        defaultRef.empty() ? nullptr : defaultRef.c_str(),
+        true);
+
+    std::vector<std::string> out;
+    for (refs = sword::TOP; !refs.popError(); refs++) {
+        const char* refText = refs.getText();
+        if (!refText || !*refText) continue;
+        std::string normalized = trimCopy(refText);
+        if (!normalized.empty()) out.push_back(std::move(normalized));
+    }
+
+    if (out.empty()) {
+        std::string normalized = normalizeLinkedVerseRef(rawRefs);
+        if (!normalized.empty()) out.push_back(std::move(normalized));
+    }
+
+    return out;
+}
+
+std::string SwordManager::buildLinkPreviewHtml(const std::string& sourceModule,
+                                               const std::string& sourceKey,
+                                               const std::string& url,
+                                               const std::string& verseModuleForRefs) {
+    auto resolveVerseModule = [&]() -> std::string {
+        std::string moduleName = trimCopy(verseModuleForRefs);
+        if (!moduleName.empty()) return moduleName;
+
+        if (!trimCopy(sourceModule).empty()) {
+            std::lock_guard<std::mutex> lock(mutex_);
+            sword::SWModule* source = getModule(sourceModule);
+            if (source && source->getType() &&
+                std::string(source->getType()) == "Biblical Texts") {
+                return sourceModule;
+            }
+        }
+
+        auto bibles = getBibleModules();
+        if (!bibles.empty()) return bibles.front().name;
+        return "";
+    };
+
+    std::vector<std::string> verseRefs = verseReferencesFromLink(
+        url, sourceKey, verseModuleForRefs);
+    if (verseRefs.size() == 1) {
+        std::string verseModule = resolveVerseModule();
+        if (verseModule.empty()) return "";
+        return getVerseText(verseModule, verseRefs.front());
+    }
+    if (verseRefs.size() > 1) {
+        return "";
+    }
+
+    std::string decoded = trimCopy(decodeHtmlEntities(url));
+    if (decoded.empty() || !containsNoCase(decoded, "passagestudy.jsp")) {
+        return "";
+    }
+
+    std::string action = toLowerAscii(extractQueryValue(decoded, "action"));
+    if (action != "shownote") return "";
+
+    std::string noteModule = trimCopy(extractQueryValue(decoded, "module"));
+    if (noteModule.empty()) noteModule = trimCopy(sourceModule);
+    std::string noteValue = trimCopy(extractQueryValue(decoded, "value"));
+    std::string noteType = toLowerAscii(extractQueryValue(decoded, "type"));
+    std::string passage = trimCopy(extractQueryValue(decoded, "passage"));
+    if (passage.empty()) passage = trimCopy(sourceKey);
+    if (noteModule.empty() || noteValue.empty() || passage.empty()) return "";
+
+    std::string renderedBody;
+    std::string refList;
+    std::string noteLabel;
+    std::string noteKind;
+    std::string noteOsisRef;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        sword::SWModule* mod = getModule(noteModule);
+        if (!mod) return "";
+
+        mod->setProcessEntryAttributes(true);
+        mod->setKey(passage.c_str());
+        (void)mod->renderText();
+        auto& attrs = mod->getEntryAttributes();
+        auto typeIt = attrs.find("Footnote");
+        if (typeIt == attrs.end()) return "";
+        auto entryIt = typeIt->second.find(noteValue.c_str());
+        if (entryIt == typeIt->second.end()) return "";
+
+        auto bodyIt = entryIt->second.find("body");
+        if (bodyIt != entryIt->second.end()) {
+            renderedBody = std::string(
+                mod->renderText(bodyIt->second.c_str(), -1, true).c_str());
+            renderedBody = postProcessHtml(renderedBody);
+        }
+        auto refListIt = entryIt->second.find("refList");
+        if (refListIt != entryIt->second.end()) {
+            refList = refListIt->second.c_str();
+        }
+        auto labelIt = entryIt->second.find("n");
+        if (labelIt != entryIt->second.end()) {
+            noteLabel = labelIt->second.c_str();
+        }
+        auto kindIt = entryIt->second.find("type");
+        if (kindIt != entryIt->second.end()) {
+            noteKind = toLowerAscii(kindIt->second.c_str());
+        }
+        auto osisIt = entryIt->second.find("osisRef");
+        if (osisIt != entryIt->second.end()) {
+            noteOsisRef = osisIt->second.c_str();
+        }
+    }
+
+    if (noteKind.empty()) noteKind = noteType;
+
+    if ((noteKind == "crossreference" || noteType == "x") && !refList.empty()) {
+        std::string verseModule = resolveVerseModule();
+        if (verseModule.empty()) return "";
+
+        std::vector<std::string> refs = splitList(refList, ';');
+        constexpr size_t kMaxPreviewRefs = 8;
+        const size_t shown = std::min(refs.size(), kMaxPreviewRefs);
+
+        std::ostringstream html;
+        html << "<div class=\"link-preview crossref-preview\">\n";
+        html << "<div class=\"entry-key\">Cross references";
+        if (!noteOsisRef.empty()) {
+            html << " for " << htmlEscapeAttr(normalizeLinkedVerseRef(noteOsisRef));
+        }
+        html << "</div>\n";
+        for (size_t i = 0; i < shown; ++i) {
+            std::string ref = normalizeLinkedVerseRef(refs[i]);
+            if (ref.empty()) continue;
+            html << "<div class=\"crossref-item\">\n";
+            html << getVerseText(verseModule, ref);
+            html << "</div>\n";
+        }
+        if (refs.size() > shown) {
+            html << "<p><i>Showing " << shown << " of " << refs.size()
+                 << " cross references.</i></p>\n";
+        }
+        html << "</div>\n";
+        return html.str();
+    }
+
+    if (!renderedBody.empty()) {
+        std::ostringstream html;
+        html << "<div class=\"link-preview note-preview\">\n";
+        html << "<div class=\"entry-key\">Footnote";
+        if (!noteLabel.empty()) {
+            html << " " << htmlEscapeAttr(noteLabel);
+        }
+        if (!noteOsisRef.empty()) {
+            html << " on " << htmlEscapeAttr(normalizeLinkedVerseRef(noteOsisRef));
+        }
+        html << "</div>\n";
+        html << renderedBody << "\n";
+        html << "</div>\n";
+        return html.str();
+    }
+
+    return "";
 }
 
 std::vector<SearchResult> SwordManager::search(
@@ -3052,6 +3494,7 @@ std::string SwordManager::postProcessHtml(const std::string& html) const {
                 bool isMarkerBlock = parseSmallBlockMeta(block, blockMeta);
                 if (isMarkerBlock) {
                     applyMetaToTarget(out, lastTarget, blockMeta);
+                    out += buildInlineMarkerHtml(block, blockMeta);
                 } else {
                     size_t outStart = out.size();
                     out += block;
@@ -3100,6 +3543,9 @@ std::string SwordManager::postProcessHtml(const std::string& html) const {
                     } else {
                         if (!linkMeta.empty()) {
                             applyMetaToTarget(out, lastTarget, linkMeta);
+                            if (codeText) {
+                                out += buildInlineMarkerHtml(inner, linkMeta);
+                            }
                         } else if (!inner.empty() && !codeText) {
                             size_t outStart = out.size();
                             out += inner;

@@ -8,6 +8,7 @@
 #include <FL/Fl_Input.H>
 #include <FL/Fl_Button.H>
 #include <string>
+#include <vector>
 
 namespace verdad {
 
@@ -41,7 +42,14 @@ public:
     void showTagTab();
 
     /// Update the preview area with text
-    void setPreviewText(const std::string& html);
+    void setPreviewText(const std::string& html,
+                        const std::string& sourceModule = "",
+                        const std::string& sourceKey = "");
+
+    /// Show a set of linked verse references in the Search tab.
+    void showReferenceResults(const std::string& moduleName,
+                              const std::vector<std::string>& references,
+                              const std::string& statusSuffix = "");
 
     /// Apply runtime HTML style overrides to the preview widget.
     void setHtmlStyleOverride(const std::string& css);
@@ -90,9 +98,13 @@ private:
 
     // Preview area at bottom
     HtmlWidget* previewWidget_;
+    std::string previewSourceModule_;
+    std::string previewSourceKey_;
 
     /// Show only the active tab panel to avoid cross-tab redraw artifacts.
     void syncTabPanelVisibility();
+
+    void onPreviewLink(const std::string& url);
 
     // Callbacks
     static void onSearch(Fl_Widget* w, void* data);

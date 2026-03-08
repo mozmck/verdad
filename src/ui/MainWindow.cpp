@@ -2,6 +2,7 @@
 #include "app/VerdadApp.h"
 #include "ui/LeftPane.h"
 #include "ui/BiblePane.h"
+#include "ui/HtmlWidget.h"
 #include "ui/RightPane.h"
 #include "ui/ModuleManagerDialog.h"
 #include "ui/StyledTabs.h"
@@ -18,13 +19,14 @@
 #include <FL/Fl_Return_Button.H>
 #include <FL/Fl_Box.H>
 #include <FL/Fl_Browser_.H>
+#include <FL/Fl_Hold_Browser.H>
 #include <FL/Fl_Input_.H>
 #include <FL/Fl_Menu_.H>
-#include <FL/Fl_Text_Display.H>
 
 #include <algorithm>
 #include <cctype>
 #include <chrono>
+#include <fstream>
 #include <regex>
 #include <set>
 #include <sstream>
@@ -85,52 +87,41 @@ std::string extractStrongsToken(const std::string& query) {
     return tok;
 }
 
-const char* kSearchHelpText =
-    "Search Help\n"
-    "===========\n"
-    "\n"
-    "Search Module\n"
-    "- The module dropdown in the Search tab controls which Bible module is searched.\n"
-    "- If a search is started from a word right-click menu, that module is used automatically.\n"
-    "\n"
-    "Search Types\n"
-    "1) Multi-word\n"
-    "- Matches verses by terms (word-based search).\n"
-    "- Example: faith hope\n"
-    "\n"
-    "2) Exact phrase\n"
-    "- Words must appear together in order.\n"
-    "- Example: in the beginning\n"
-    "\n"
-    "3) Regex\n"
-    "- Uses ECMAScript regex syntax and is case-insensitive.\n"
-    "- Regex search runs on indexed plain verse text.\n"
-    "- If the module is not indexed yet, indexing is queued and regex returns no results until ready.\n"
-    "- Examples:\n"
-    "  ^In\\b\n"
-    "  \\b(king|kingdom)\\b\n"
-    "  grac(e|es)\n"
-    "  God.*spirit\n"
-    "\n"
-    "Strong's / Lemma Search\n"
-    "- Enter a Strong's key directly in the search box:\n"
-    "  G3588\n"
-    "  H7225\n"
-    "- You can also use prefixes:\n"
-    "  strongs:G3588\n"
-    "  lemma:H7225\n"
-    "- Right-click on a Bible word to use \"Search Strong's: ...\" menu items.\n"
-    "\n"
-    "Search Results\n"
-    "- Left click: select result and update verse preview.\n"
-    "- Left double-click: open verse in current study tab.\n"
-    "- Middle click: open verse in a new study tab.\n"
-    "- Results are sorted by book, chapter, and verse.\n"
-    "\n"
-    "Regex Tips\n"
-    "- Escape special characters when searching literal punctuation.\n"
-    "- Use \\b for word boundaries.\n"
-    "- Use .* to allow any characters between terms.\n";
+const char* kFallbackHelpHtml = R"(
+<div class="help-doc">
+  <h2 id="overview">Overview</h2>
+  <p>Verdad opens with the search, modules, and tags pane on the left, Bible text in the center, and commentary, dictionary, or general books on the right.</p>
+  <h2 id="search">Search</h2>
+  <p>The search box supports multi-word, exact-phrase, regex, and Strong's lookups. Select a result to update the preview pane and double-click to navigate.</p>
+  <h2 id="regex">Regex</h2>
+  <p>Regex uses ECMAScript syntax and is case-insensitive. Use <code>\\b</code> for word boundaries and <code>.*</code> to span text between terms.</p>
+  <h2 id="features">Features</h2>
+  <p>Use the Bible toolbar to switch modules, toggle paragraph mode, manage parallel columns, and show or hide study markers such as Strong's, morphology, notes, and cross references.</p>
+</div>
+)";
+
+std::string readFileOrFallback(const std::string& path,
+                               const std::string& fallback) {
+    std::ifstream in(path);
+    if (!in.is_open()) return fallback;
+    return std::string((std::istreambuf_iterator<char>(in)),
+                       std::istreambuf_iterator<char>());
+}
+
+std::vector<std::pair<std::string, std::string>> parseHelpTopics(
+    const std::string& html) {
+    std::vector<std::pair<std::string, std::string>> topics;
+    static const std::regex headingRe(
+        R"help(<h2[^>]*id\s*=\s*"([^"]+)"[^>]*>\s*([^<]+?)\s*</h2>)help",
+        std::regex::icase);
+
+    auto begin = std::sregex_iterator(html.begin(), html.end(), headingRe);
+    auto end = std::sregex_iterator();
+    for (auto it = begin; it != end; ++it) {
+        topics.push_back({trimCopy((*it)[1].str()), trimCopy((*it)[2].str())});
+    }
+    return topics;
+}
 
 void appendEscapedTextLines(std::ostringstream& out,
                             const std::string& text,
@@ -514,10 +505,8 @@ MainWindow::~MainWindow() {
         delete searchHelpWindow_;
         searchHelpWindow_ = nullptr;
     }
-    if (searchHelpTextBuffer_) {
-        delete searchHelpTextBuffer_;
-        searchHelpTextBuffer_ = nullptr;
-    }
+    searchHelpTopicBrowser_ = nullptr;
+    searchHelpHtml_ = nullptr;
 }
 
 void MainWindow::addStudyTab(const std::string& module,
@@ -1343,6 +1332,23 @@ void MainWindow::showWordInfo(const std::string& word, const std::string& href,
     hoverDelayScheduled_ = true;
 }
 
+void MainWindow::showWordInfoNow(const std::string& word,
+                                 const std::string& href,
+                                 const std::string& strong,
+                                 const std::string& morph) {
+    if (hoverDelayScheduled_) {
+        Fl::remove_timeout(onHoverDelayTimeout, this);
+        hoverDelayScheduled_ = false;
+    }
+
+    pendingWordInfo_.word = word;
+    pendingWordInfo_.href = href;
+    pendingWordInfo_.strong = strong;
+    pendingWordInfo_.morph = morph;
+    pendingWordInfo_.tabIndex = activeStudyTab_;
+    applyPendingWordInfo();
+}
+
 void MainWindow::hideWordInfo() {
     if (hoverDelayScheduled_) {
         Fl::remove_timeout(onHoverDelayTimeout, this);
@@ -1473,6 +1479,9 @@ void MainWindow::applyAppearanceSettings(Fl_Font appFont,
     if (!appearanceApplied_ || uiFontChanged) {
         Fl_Font boldFont = app_ ? app_->boldFltkFont(appFont) : appFont;
         applyUiFontRecursively(this, appFont, boldFont, clampedSize);
+        if (searchHelpWindow_) {
+            applyUiFontRecursively(searchHelpWindow_, appFont, boldFont, clampedSize);
+        }
     }
 
     // Re-apply HTML CSS only when needed.
@@ -1480,7 +1489,9 @@ void MainWindow::applyAppearanceSettings(Fl_Font appFont,
         if (leftPane_) leftPane_->setHtmlStyleOverride(textCssOverride);
         if (biblePane_) biblePane_->setHtmlStyleOverride(textCssOverride);
         if (rightPane_) rightPane_->setHtmlStyleOverride(textCssOverride);
+        if (searchHelpHtml_) searchHelpHtml_->setStyleOverrideCss(textCssOverride);
     }
+    if (biblePane_) biblePane_->syncOptionButtons();
 
     // Only drop inactive tab buffers when text rendering style actually changed.
     if (cssChanged) {
@@ -1817,7 +1828,7 @@ void MainWindow::buildMenu() {
     menuBar_->add("&View/&Parallel Bibles", FL_CTRL + 'p', onViewParallel, this);
     menuBar_->add("&View/&Settings...", 0, onViewSettings, this);
     menuBar_->add("&View/&New Study Tab", FL_CTRL + 't', onViewNewStudyTab, this);
-    menuBar_->add("&Help/&Search Help", FL_F + 1, onHelpSearch, this);
+    menuBar_->add("&Help/&Help Topics", FL_F + 1, onHelpSearch, this);
     menuBar_->add("&Help/&About Verdad", 0, onHelpAbout, this);
 }
 
@@ -2100,21 +2111,56 @@ void MainWindow::onHelpSearch(Fl_Widget* /*w*/, void* data) {
     self->showSearchHelpWindow();
 }
 
+void MainWindow::selectHelpTopic(int index) {
+    if (!searchHelpHtml_ ||
+        index < 0 ||
+        index >= static_cast<int>(searchHelpTopics_.size())) {
+        return;
+    }
+
+    if (searchHelpTopicBrowser_ &&
+        searchHelpTopicBrowser_->value() != index + 1) {
+        searchHelpTopicBrowser_->value(index + 1);
+    }
+    searchHelpHtml_->scrollToAnchor(searchHelpTopics_[static_cast<size_t>(index)].first);
+}
+
+void MainWindow::onHelpTopicSelect(Fl_Widget* /*w*/, void* data) {
+    auto* self = static_cast<MainWindow*>(data);
+    if (!self || !self->searchHelpTopicBrowser_) return;
+
+    int line = self->searchHelpTopicBrowser_->value();
+    if (line > 0) {
+        self->selectHelpTopic(line - 1);
+    }
+}
+
 void MainWindow::showSearchHelpWindow() {
     if (!searchHelpWindow_) {
-        searchHelpWindow_ = new Fl_Double_Window(780, 600, "Search Help");
+        searchHelpWindow_ = new Fl_Double_Window(980, 680, "Help Topics");
         searchHelpWindow_->begin();
 
-        auto* helpText = new Fl_Text_Display(10, 10, 760, 542);
-        helpText->box(FL_DOWN_BOX);
-        helpText->wrap_mode(Fl_Text_Display::WRAP_AT_BOUNDS, 0);
-        helpText->textfont(FL_HELVETICA);
-        helpText->textsize(14);
+        searchHelpTopicBrowser_ = new Fl_Hold_Browser(10, 10, 220, 626);
+        searchHelpTopicBrowser_->box(FL_DOWN_BOX);
+        searchHelpTopicBrowser_->callback(onHelpTopicSelect, this);
 
-        searchHelpTextBuffer_ = new Fl_Text_Buffer();
-        helpText->buffer(searchHelpTextBuffer_);
+        searchHelpHtml_ = new HtmlWidget(236, 10, 734, 626);
+        std::string cssFile = app_->getDataDir() + "/master.css";
+        std::ifstream cssStream(cssFile);
+        if (cssStream.is_open()) {
+            std::string css((std::istreambuf_iterator<char>(cssStream)),
+                            std::istreambuf_iterator<char>());
+            searchHelpHtml_->setMasterCSS(css);
+        }
+        searchHelpHtml_->setStyleOverrideCss(lastAppliedTextCss_);
+        searchHelpHtml_->setLinkCallback(
+            [this](const std::string& url) {
+                if (searchHelpHtml_ && !url.empty() && url[0] == '#') {
+                    searchHelpHtml_->scrollToAnchor(url.substr(1));
+                }
+            });
 
-        auto* closeBtn = new Fl_Return_Button(680, 560, 90, 28, "Close");
+        auto* closeBtn = new Fl_Return_Button(880, 646, 90, 24, "Close");
         closeBtn->callback(
             [](Fl_Widget* w, void* /*data*/) {
                 if (w && w->window()) w->window()->hide();
@@ -2126,12 +2172,35 @@ void MainWindow::showSearchHelpWindow() {
                 if (w) w->hide();
             },
             nullptr);
-        searchHelpWindow_->resizable(helpText);
+        searchHelpWindow_->resizable(searchHelpHtml_);
         searchHelpWindow_->end();
     }
 
-    if (searchHelpTextBuffer_) {
-        searchHelpTextBuffer_->text(kSearchHelpText);
+    searchHelpDocumentHtml_ = readFileOrFallback(
+        app_->getDataDir() + "/help.html",
+        kFallbackHelpHtml);
+    searchHelpTopics_ = parseHelpTopics(searchHelpDocumentHtml_);
+
+    if (searchHelpTopicBrowser_) {
+        searchHelpTopicBrowser_->clear();
+        for (const auto& topic : searchHelpTopics_) {
+            searchHelpTopicBrowser_->add(topic.second.c_str());
+        }
+    }
+    if (searchHelpHtml_) {
+        searchHelpHtml_->setHtml(searchHelpDocumentHtml_);
+    }
+    if (!searchHelpTopics_.empty()) {
+        selectHelpTopic(0);
+    }
+    if (appearanceApplied_ && searchHelpWindow_) {
+        Fl_Font boldFont = app_ ? app_->boldFltkFont(lastAppliedAppFont_)
+                                : lastAppliedAppFont_;
+        applyUiFontRecursively(searchHelpWindow_,
+                               lastAppliedAppFont_,
+                               boldFont,
+                               lastAppliedAppFontSize_);
+        if (searchHelpHtml_) searchHelpHtml_->setStyleOverrideCss(lastAppliedTextCss_);
     }
 
     searchHelpWindow_->show();

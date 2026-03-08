@@ -117,6 +117,9 @@ public:
     /// Redraw toolbar chrome during live layout changes.
     void redrawChrome();
 
+    /// Sync option button state from the application settings.
+    void syncOptionButtons();
+
 protected:
     void resize(int X, int Y, int W, int H) override;
 
@@ -135,6 +138,10 @@ private:
     Fl_Button* parallelButton_;
     Fl_Button* paragraphButton_;
     Fl_Button* parallelAddButton_;
+    Fl_Button* strongsToggleButton_;
+    Fl_Button* morphToggleButton_;
+    Fl_Button* footnotesToggleButton_;
+    Fl_Button* crossRefsToggleButton_;
     Fl_Box* navSpacer_;
     Fl_Group* parallelHeader_;
 
@@ -194,6 +201,10 @@ private:
     static void onModuleChange(Fl_Widget* w, void* data);
     static void onParallel(Fl_Widget* w, void* data);
     static void onParagraphToggle(Fl_Widget* w, void* data);
+    static void onStrongsToggle(Fl_Widget* w, void* data);
+    static void onMorphToggle(Fl_Widget* w, void* data);
+    static void onFootnotesToggle(Fl_Widget* w, void* data);
+    static void onCrossRefsToggle(Fl_Widget* w, void* data);
     static void onParallelAdd(Fl_Widget* w, void* data);
     static void onParallelRemove(Fl_Widget* w, void* data);
     static void onParallelModuleChange(Fl_Widget* w, void* data);

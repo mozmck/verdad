@@ -46,18 +46,23 @@ std::string buildVerseTagMarkersHtml(VerdadApp* app, const std::string& verseRef
     if (tags.empty()) return "";
 
     const std::string escapedVerseRef = htmlEscape(verseRef);
+    std::ostringstream tooltip;
+    tooltip << "Tagged: ";
+    for (size_t i = 0; i < tags.size(); ++i) {
+        if (i) tooltip << ", ";
+        tooltip << tags[i].name;
+    }
+
     std::ostringstream html;
     html << "<span class=\"verse-tags\">";
-    for (const auto& tag : tags) {
-        html << "<a class=\"verse-tag\" href=\"tags:" << escapedVerseRef << "\""
-             << " title=\"Show tags containing " << escapedVerseRef << "\"";
-        if (!tag.color.empty()) {
-            const std::string escapedColor = htmlEscape(tag.color);
-            html << " style=\"border-color:" << escapedColor
-                 << ";color:" << escapedColor << ";\"";
-        }
-        html << ">" << htmlEscape(tag.name) << "</a>";
+    html << "<a class=\"verse-tag-marker\" href=\"tags:" << escapedVerseRef << "\""
+         << " title=\"" << htmlEscape(tooltip.str()) << "\"";
+    if (!tags.front().color.empty()) {
+        const std::string escapedColor = htmlEscape(tags.front().color);
+        html << " style=\"border-color:" << escapedColor
+             << ";color:" << escapedColor << ";\"";
     }
+    html << ">[Tagged]</a>";
     html << "</span>";
     return html.str();
 }
@@ -77,6 +82,10 @@ BiblePane::BiblePane(VerdadApp* app, int X, int Y, int W, int H)
     , parallelButton_(nullptr)
     , paragraphButton_(nullptr)
     , parallelAddButton_(nullptr)
+    , strongsToggleButton_(nullptr)
+    , morphToggleButton_(nullptr)
+    , footnotesToggleButton_(nullptr)
+    , crossRefsToggleButton_(nullptr)
     , navSpacer_(nullptr)
     , parallelHeader_(nullptr)
     , htmlWidget_(nullptr)
@@ -136,6 +145,7 @@ BiblePane::BiblePane(VerdadApp* app, int X, int Y, int W, int H)
     if (parallelAddButton_) {
         parallelAddButton_->hide();
     }
+    syncOptionButtons();
 
     // Select default module (if available). Initial navigation is performed
     // by MainWindow after this pane is attached to a context tab.
@@ -156,6 +166,8 @@ void BiblePane::resize(int X, int Y, int W, int H) {
     if (!navBar_ || !bookChoice_ || !chapterChoice_ || !moduleChoice_ ||
         !refInput_ || !goButton_ || !prevButton_ || !nextButton_ ||
         !parallelButton_ || !paragraphButton_ || !parallelAddButton_ ||
+        !strongsToggleButton_ || !morphToggleButton_ ||
+        !footnotesToggleButton_ || !crossRefsToggleButton_ ||
         !navSpacer_ || !parallelHeader_ || !htmlWidget_) {
         return;
     }
@@ -164,10 +176,10 @@ void BiblePane::resize(int X, int Y, int W, int H) {
     const int padding = kContentPadding;
     const int spacing = 2;
     const int buttonW = 30;
+    const int compactBtnW = 25;
     const int bookW = 120;
     const int chapW = 50;
     const int moduleW = 100;
-    const int smallBtnW = 25;
     const int refW = kRefInputWidth;
 
     navBar_->resize(X, Y, W, navH);
@@ -196,14 +208,26 @@ void BiblePane::resize(int X, int Y, int W, int H) {
     moduleChoice_->resize(cx, cy, moduleW, nh);
     cx += moduleW + spacing;
 
-    parallelButton_->resize(cx, cy, smallBtnW, nh);
-    cx += smallBtnW + spacing;
+    parallelButton_->resize(cx, cy, compactBtnW, nh);
+    cx += compactBtnW + spacing;
 
-    paragraphButton_->resize(cx, cy, smallBtnW, nh);
-    cx += smallBtnW + spacing;
+    paragraphButton_->resize(cx, cy, compactBtnW, nh);
+    cx += compactBtnW + spacing;
 
-    parallelAddButton_->resize(cx, cy, smallBtnW, nh);
-    cx += smallBtnW + spacing;
+    strongsToggleButton_->resize(cx, cy, strongsToggleButton_->w(), nh);
+    cx += strongsToggleButton_->w() + spacing;
+
+    morphToggleButton_->resize(cx, cy, morphToggleButton_->w(), nh);
+    cx += morphToggleButton_->w() + spacing;
+
+    footnotesToggleButton_->resize(cx, cy, footnotesToggleButton_->w(), nh);
+    cx += footnotesToggleButton_->w() + spacing;
+
+    crossRefsToggleButton_->resize(cx, cy, crossRefsToggleButton_->w(), nh);
+    cx += crossRefsToggleButton_->w() + spacing;
+
+    parallelAddButton_->resize(cx, cy, compactBtnW, nh);
+    cx += compactBtnW + spacing;
 
     int spacerW = std::max(0, (X + W - 2) - cx);
     navSpacer_->resize(cx, cy, spacerW, nh);
@@ -397,12 +421,30 @@ void BiblePane::prevChapter() {
 
 void BiblePane::refresh() {
     perf::ScopeTimer timer("BiblePane::refresh");
+    syncOptionButtons();
     updateDisplay();
 }
 
 void BiblePane::setHtmlStyleOverride(const std::string& css) {
     if (htmlWidget_) {
         htmlWidget_->setStyleOverrideCss(css);
+    }
+}
+
+void BiblePane::syncOptionButtons() {
+    if (!app_) return;
+    const auto& options = app_->optionDisplaySettings();
+    if (strongsToggleButton_) {
+        strongsToggleButton_->value(options.showStrongsMarkers ? 1 : 0);
+    }
+    if (morphToggleButton_) {
+        morphToggleButton_->value(options.showMorphMarkers ? 1 : 0);
+    }
+    if (footnotesToggleButton_) {
+        footnotesToggleButton_->value(options.showFootnoteMarkers ? 1 : 0);
+    }
+    if (crossRefsToggleButton_) {
+        crossRefsToggleButton_->value(options.showCrossReferenceMarkers ? 1 : 0);
     }
 }
 
@@ -413,6 +455,10 @@ void BiblePane::redrawChrome() {
         navBar_->redraw();
     }
     if (parallelAddButton_) parallelAddButton_->redraw();
+    if (strongsToggleButton_) strongsToggleButton_->redraw();
+    if (morphToggleButton_) morphToggleButton_->redraw();
+    if (footnotesToggleButton_) footnotesToggleButton_->redraw();
+    if (crossRefsToggleButton_) crossRefsToggleButton_->redraw();
     if (parallelHeader_) {
         parallelHeader_->damage(FL_DAMAGE_ALL);
         parallelHeader_->redraw();
@@ -496,6 +542,7 @@ void BiblePane::setStudyState(const std::string& module,
     if (paragraphButton_) {
         paragraphButton_->value(paragraphMode_ ? 1 : 0);
     }
+    syncOptionButtons();
     if (parallelAddButton_) {
         if (parallelMode_) parallelAddButton_->show();
         else parallelAddButton_->hide();
@@ -653,19 +700,43 @@ void BiblePane::buildNavBar() {
     parallelButton_->callback(onParallel, this);
     parallelButton_->tooltip("Toggle parallel Bible view");
     parallelButton_->type(FL_TOGGLE_BUTTON);
-    cx += 27;
+    cx += parallelButton_->w() + 2;
 
     paragraphButton_ = new Fl_Button(cx, cy, 25, nh, "\xC2\xB6");
     paragraphButton_->callback(onParagraphToggle, this);
     paragraphButton_->tooltip("Toggle paragraph / verse-per-line display");
     paragraphButton_->type(FL_TOGGLE_BUTTON);
-    cx += 27;
+    cx += paragraphButton_->w() + 2;
+
+    strongsToggleButton_ = new Fl_Button(cx, cy, 34, nh, u8"αא");
+    strongsToggleButton_->callback(onStrongsToggle, this);
+    strongsToggleButton_->tooltip("Show or hide inline Strong's markers");
+    strongsToggleButton_->type(FL_TOGGLE_BUTTON);
+    cx += strongsToggleButton_->w() + 2;
+
+    morphToggleButton_ = new Fl_Button(cx, cy, 52, nh, "Morph");
+    morphToggleButton_->callback(onMorphToggle, this);
+    morphToggleButton_->tooltip("Show or hide inline morphology markers");
+    morphToggleButton_->type(FL_TOGGLE_BUTTON);
+    cx += morphToggleButton_->w() + 2;
+
+    footnotesToggleButton_ = new Fl_Button(cx, cy, 50, nh, "Notes");
+    footnotesToggleButton_->callback(onFootnotesToggle, this);
+    footnotesToggleButton_->tooltip("Show or hide inline footnote markers");
+    footnotesToggleButton_->type(FL_TOGGLE_BUTTON);
+    cx += footnotesToggleButton_->w() + 2;
+
+    crossRefsToggleButton_ = new Fl_Button(cx, cy, 46, nh, "Xref");
+    crossRefsToggleButton_->callback(onCrossRefsToggle, this);
+    crossRefsToggleButton_->tooltip("Show or hide inline cross-reference markers");
+    crossRefsToggleButton_->type(FL_TOGGLE_BUTTON);
+    cx += crossRefsToggleButton_->w() + 2;
 
     parallelAddButton_ = new Fl_Button(cx, cy, 25, nh, "+");
     parallelAddButton_->callback(onParallelAdd, this);
     parallelAddButton_->tooltip("Add parallel Bible column (up to 7)");
     parallelAddButton_->hide();
-    cx += 27;
+    cx += parallelAddButton_->w() + 2;
 
     navSpacer_ = new Fl_Box(cx, cy, 0, nh);
     navBar_->resizable(navSpacer_);
@@ -1116,6 +1187,46 @@ void BiblePane::onParagraphToggle(Fl_Widget* /*w*/, void* data) {
     self->toggleParagraphMode();
 }
 
+void BiblePane::onStrongsToggle(Fl_Widget* /*w*/, void* data) {
+    auto* self = static_cast<BiblePane*>(data);
+    if (!self || !self->app_) return;
+
+    auto options = self->app_->optionDisplaySettings();
+    options.showStrongsMarkers = !options.showStrongsMarkers;
+    self->app_->setOptionDisplaySettings(options);
+    self->syncOptionButtons();
+}
+
+void BiblePane::onMorphToggle(Fl_Widget* /*w*/, void* data) {
+    auto* self = static_cast<BiblePane*>(data);
+    if (!self || !self->app_) return;
+
+    auto options = self->app_->optionDisplaySettings();
+    options.showMorphMarkers = !options.showMorphMarkers;
+    self->app_->setOptionDisplaySettings(options);
+    self->syncOptionButtons();
+}
+
+void BiblePane::onFootnotesToggle(Fl_Widget* /*w*/, void* data) {
+    auto* self = static_cast<BiblePane*>(data);
+    if (!self || !self->app_) return;
+
+    auto options = self->app_->optionDisplaySettings();
+    options.showFootnoteMarkers = !options.showFootnoteMarkers;
+    self->app_->setOptionDisplaySettings(options);
+    self->syncOptionButtons();
+}
+
+void BiblePane::onCrossRefsToggle(Fl_Widget* /*w*/, void* data) {
+    auto* self = static_cast<BiblePane*>(data);
+    if (!self || !self->app_) return;
+
+    auto options = self->app_->optionDisplaySettings();
+    options.showCrossReferenceMarkers = !options.showCrossReferenceMarkers;
+    self->app_->setOptionDisplaySettings(options);
+    self->syncOptionButtons();
+}
+
 void BiblePane::onParallelAdd(Fl_Widget* /*w*/, void* data) {
     auto* self = static_cast<BiblePane*>(data);
     if (!self) return;
@@ -1145,6 +1256,8 @@ void BiblePane::onParallelModuleChange(Fl_Widget* w, void* data) {
 }
 
 void BiblePane::onLinkClicked(const std::string& url) {
+    if (!app_ || !app_->mainWindow()) return;
+
     if (url.find("verse:") == 0) {
         try {
             int verse = std::stoi(url.substr(6));
@@ -1160,18 +1273,36 @@ void BiblePane::onLinkClicked(const std::string& url) {
             app_->mainWindow()->leftPane()->tagPanel()->showTagsForVerse(verseRef);
         }
     } else if (url.find("strongs:") == 0 || url.find("strong:") == 0) {
-        size_t colonPos = url.find(':');
-        std::string num = url.substr(colonPos + 1);
-        if (app_->mainWindow()) {
-            app_->mainWindow()->showDictionary(num);
-        }
-    } else if (url.find("sword://") == 0) {
-        std::string ref = url.substr(8);
-        navigateToReference(ref);
+        app_->mainWindow()->showWordInfoNow("", url, "", "");
     } else if (url.find("morph:") == 0) {
-        std::string code = url.substr(6);
-        if (app_->mainWindow()) {
-            app_->mainWindow()->showDictionary(code);
+        app_->mainWindow()->showWordInfoNow("", url, "", "");
+    } else {
+        std::string contextKey = currentBook_ + " " + std::to_string(currentChapter_);
+        std::string verseModule = currentModule();
+        auto refs = app_->swordManager().verseReferencesFromLink(
+            url, contextKey, verseModule);
+
+        if (refs.size() > 1) {
+            if (app_->mainWindow()->leftPane()) {
+                app_->mainWindow()->leftPane()->showReferenceResults(
+                    verseModule, refs, "(linked verses)");
+            }
+            return;
+        }
+
+        std::string previewHtml = app_->swordManager().buildLinkPreviewHtml(
+            verseModule, contextKey, url, verseModule);
+        if (!previewHtml.empty()) {
+            if (app_->mainWindow()->leftPane()) {
+                app_->mainWindow()->leftPane()->setPreviewText(
+                    previewHtml, verseModule, contextKey);
+            }
+            return;
+        }
+
+        if (url.find("sword://") == 0) {
+            std::string ref = url.substr(8);
+            navigateToReference(ref);
         }
     }
 }

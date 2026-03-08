@@ -14,6 +14,8 @@
 #include <deque>
 #include <unordered_map>
 
+#include "sword/SwordManager.h"
+
 namespace verdad {
 
 class VerdadApp;
@@ -202,11 +204,11 @@ private:
     // General books tab (top pane)
     Fl_Group* generalBooksGroup_;
     Fl_Choice* generalBookChoice_;
-    Fl_Input* generalBookKeyInput_;
-    Fl_Button* generalBookGoButton_;
+    Fl_Choice* generalBookTocChoice_;
     HtmlWidget* generalBookHtml_;
     std::string currentGeneralBook_;
     std::string currentGeneralBookKey_;
+    std::vector<GeneralBookTocEntry> generalBookToc_;
 
     // Documents tab (global, not tied to study tabs)
     Fl_Group* documentsGroup_;
@@ -238,6 +240,7 @@ private:
 
     /// Populate general book module choices
     void populateGeneralBookModules();
+    void populateGeneralBookToc();
 
     void layoutTopTabContents(int tabsX, int tabsY, int tabsW, int tabsH);
     TopTab visibleTopTab() const;
@@ -261,8 +264,7 @@ private:
     static void onDictionaryKeyInput(Fl_Widget* w, void* data);
     static void onTopTabChange(Fl_Widget* w, void* data);
     static void onGeneralBookModuleChange(Fl_Widget* w, void* data);
-    static void onGeneralBookGo(Fl_Widget* w, void* data);
-    static void onGeneralBookKeyInput(Fl_Widget* w, void* data);
+    static void onGeneralBookTocChange(Fl_Widget* w, void* data);
     static void onDocumentNew(Fl_Widget* w, void* data);
     static void onDocumentOpen(Fl_Widget* w, void* data);
     static void onDocumentSave(Fl_Widget* w, void* data);
