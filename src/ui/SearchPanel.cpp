@@ -10,13 +10,16 @@
 #include <FL/fl_ask.H>
 #include <FL/Fl_Hold_Browser.H>
 #include <FL/Fl_Tabs.H>
+#include <FL/fl_draw.H>
 
 
 #include <algorithm>
 #include <cctype>
 #include <limits>
 #include <regex>
+#include <sstream>
 #include <unordered_map>
+#include <unordered_set>
 
 namespace verdad {
 class SearchResultBrowser : public Fl_Hold_Browser {
@@ -24,6 +27,10 @@ public:
     SearchResultBrowser(SearchPanel* owner, int X, int Y, int W, int H)
         : Fl_Hold_Browser(X, Y, W, H)
         , owner_(owner) {}
+
+    int item_height(void* item) const override;
+    int item_width(void* item) const override;
+    void item_draw(void* item, int X, int Y, int W, int H) const override;
 
     int handle(int event) override {
         if (event == FL_PUSH) {
@@ -145,6 +152,137 @@ std::string normalizeBookKey(const std::string& in) {
     return out;
 }
 
+std::string normalizeWordToken(const std::string& raw) {
+    auto isWordChar = [](unsigned char c) {
+        return std::isalnum(c) || c == '\'' || c == '-' || c >= 0x80;
+    };
+
+    size_t start = 0;
+    size_t end = raw.size();
+    while (start < end) {
+        unsigned char uc = static_cast<unsigned char>(raw[start]);
+        if (uc >= 0x80 || isWordChar(uc)) break;
+        ++start;
+    }
+    while (end > start) {
+        unsigned char uc = static_cast<unsigned char>(raw[end - 1]);
+        if (uc >= 0x80 || isWordChar(uc)) break;
+        --end;
+    }
+    return raw.substr(start, end - start);
+}
+
+std::vector<std::string> tokenizeWords(const std::string& text) {
+    std::vector<std::string> tokens;
+    std::unordered_set<std::string> seen;
+    std::istringstream ss(text);
+    std::string raw;
+    while (ss >> raw) {
+        std::string token = normalizeWordToken(raw);
+        if (token.empty()) continue;
+        std::string lower = token;
+        std::transform(lower.begin(), lower.end(), lower.begin(),
+                       [](unsigned char c) {
+                           return static_cast<char>(std::tolower(c));
+                       });
+        if (seen.insert(lower).second) {
+            tokens.push_back(token);
+        }
+    }
+    return tokens;
+}
+
+std::vector<std::string> extractStrongsTokens(const std::string& text) {
+    std::vector<std::string> terms;
+    std::unordered_set<std::string> seen;
+
+    auto addTerm = [&](const std::string& term) {
+        std::string token = trimCopy(term);
+        if (token.empty()) return;
+        for (char& c : token) {
+            if (std::isalpha(static_cast<unsigned char>(c))) {
+                c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+            }
+        }
+        if (seen.insert(token).second) {
+            terms.push_back(token);
+        }
+    };
+
+    auto addNumericForms = [&](const std::string& digitsRaw,
+                               const std::string& suffix) {
+        std::string digits = digitsRaw;
+        if (digits.empty()) return;
+
+        addTerm(digits + suffix);
+
+        size_t nz = digits.find_first_not_of('0');
+        std::string baseDigits = (nz == std::string::npos) ? "0" : digits.substr(nz);
+        addTerm(baseDigits + suffix);
+
+        for (int width : {4, 5}) {
+            if (static_cast<int>(baseDigits.size()) <= width) {
+                addTerm(std::string(width - baseDigits.size(), '0') +
+                        baseDigits + suffix);
+            }
+        }
+    };
+
+    static const std::regex kTokenRe(R"(([HhGg]?\d+[A-Za-z]?))");
+    auto it = std::sregex_iterator(text.begin(), text.end(), kTokenRe);
+    auto end = std::sregex_iterator();
+    for (; it != end; ++it) {
+        std::string token = trimCopy((*it)[1].str());
+        if (token.empty()) continue;
+
+        for (char& c : token) {
+            if (std::isalpha(static_cast<unsigned char>(c))) {
+                c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+            }
+        }
+
+        char prefix = 0;
+        size_t pos = 0;
+        if (std::isalpha(static_cast<unsigned char>(token[0]))) {
+            prefix = token[0];
+            pos = 1;
+        }
+
+        size_t digitStart = pos;
+        while (pos < token.size() &&
+               std::isdigit(static_cast<unsigned char>(token[pos]))) {
+            ++pos;
+        }
+        if (digitStart == pos) {
+            addTerm(token);
+            continue;
+        }
+
+        std::string digits = token.substr(digitStart, pos - digitStart);
+        std::string suffix = token.substr(pos);
+
+        if (prefix == 'H' || prefix == 'G') {
+            addTerm(std::string(1, prefix) + digits + suffix);
+            addNumericForms(digits, suffix);
+            size_t nz = digits.find_first_not_of('0');
+            std::string baseDigits = (nz == std::string::npos) ? "0" : digits.substr(nz);
+            for (int width : {4, 5}) {
+                if (static_cast<int>(baseDigits.size()) <= width) {
+                    addTerm(std::string(1, prefix) +
+                            std::string(width - baseDigits.size(), '0') +
+                            baseDigits + suffix);
+                }
+            }
+        } else {
+            addNumericForms(digits, suffix);
+            addTerm("H" + digits + suffix);
+            addTerm("G" + digits + suffix);
+        }
+    }
+
+    return terms;
+}
+
 std::string collapseWhitespace(const std::string& in) {
     std::string out;
     out.reserve(in.size());
@@ -168,22 +306,322 @@ std::string collapseWhitespace(const std::string& in) {
     return (start == 0) ? out : out.substr(start);
 }
 
-std::string stripSimpleHtmlTags(const std::string& in) {
-    std::string out;
-    out.reserve(in.size());
-    bool inTag = false;
-    for (char c : in) {
-        if (c == '<') {
-            inTag = true;
-            continue;
-        }
-        if (c == '>') {
-            inTag = false;
-            continue;
-        }
-        if (!inTag) out.push_back(c);
+constexpr int kResultRefColumnWidth = 100;
+constexpr int kResultLinePadding = 4;
+constexpr int kResultColumnGap = 8;
+
+struct MarkupChunk {
+    std::string text;
+    bool highlight = false;
+};
+
+std::string lowerAsciiCopy(std::string text) {
+    std::transform(text.begin(), text.end(), text.begin(),
+                   [](unsigned char c) {
+                       return static_cast<char>(std::tolower(c));
+                   });
+    return text;
+}
+
+bool isWordByte(unsigned char c) {
+    return std::isalnum(c) || c == '\'' || c == '-' || c >= 0x80;
+}
+
+void appendMarkupChunk(std::vector<MarkupChunk>& chunks,
+                       const std::string& text,
+                       bool highlight) {
+    if (text.empty()) return;
+    if (!chunks.empty() && chunks.back().highlight == highlight) {
+        chunks.back().text += text;
+        return;
     }
+    chunks.push_back({text, highlight});
+}
+
+std::vector<MarkupChunk> parseHighlightedMarkup(const std::string& markup) {
+    std::vector<MarkupChunk> chunks;
+    bool highlight = false;
+
+    for (size_t pos = 0; pos < markup.size();) {
+        if (markup[pos] != '<') {
+            size_t nextTag = markup.find('<', pos);
+            size_t end = (nextTag == std::string::npos) ? markup.size() : nextTag;
+            appendMarkupChunk(chunks, markup.substr(pos, end - pos), highlight);
+            pos = end;
+            continue;
+        }
+
+        size_t tagEnd = markup.find('>', pos);
+        if (tagEnd == std::string::npos) {
+            appendMarkupChunk(chunks, markup.substr(pos), highlight);
+            break;
+        }
+
+        std::string tag = markup.substr(pos, tagEnd - pos + 1);
+        std::string lowerTag = lowerAsciiCopy(tag);
+        if (lowerTag.rfind("<span", 0) == 0 &&
+            lowerTag.find("searchhit") != std::string::npos) {
+            highlight = true;
+        } else if (lowerTag.rfind("</span", 0) == 0) {
+            highlight = false;
+        }
+
+        pos = tagEnd + 1;
+    }
+
+    return chunks;
+}
+
+std::vector<MarkupChunk> normalizeMarkupWhitespace(
+    const std::vector<MarkupChunk>& chunks) {
+    std::vector<MarkupChunk> normalized;
+    bool pendingSpace = false;
+    bool spaceHighlight = false;
+    bool hasOutput = false;
+
+    for (const auto& chunk : chunks) {
+        for (char c : chunk.text) {
+            if (std::isspace(static_cast<unsigned char>(c))) {
+                if (hasOutput) {
+                    pendingSpace = true;
+                    spaceHighlight = chunk.highlight;
+                }
+                continue;
+            }
+
+            if (pendingSpace) {
+                appendMarkupChunk(normalized, " ", spaceHighlight);
+                pendingSpace = false;
+            }
+
+            appendMarkupChunk(normalized, std::string(1, c), chunk.highlight);
+            hasOutput = true;
+        }
+    }
+
+    return normalized;
+}
+
+void drawMarkupChunks(const std::vector<MarkupChunk>& chunks,
+                      int X, int Y, int W, int H,
+                      Fl_Color fg,
+                      Fl_Color highlightBg,
+                      Fl_Color highlightFg) {
+    fl_push_clip(X, Y, W, H);
+    fl_color(fg);
+
+    int cursorX = X;
+    const int baseline = Y + ((H + fl_height()) / 2) - fl_descent();
+    for (const auto& chunk : chunks) {
+        if (chunk.text.empty()) continue;
+
+        int chunkWidth = static_cast<int>(fl_width(chunk.text.c_str()));
+        if (chunk.highlight) {
+            fl_color(highlightBg);
+            fl_rectf(cursorX - 1, Y + 2, chunkWidth + 2, std::max(0, H - 4));
+            fl_color(highlightFg);
+        } else {
+            fl_color(fg);
+        }
+
+        fl_draw(chunk.text.c_str(), cursorX, baseline);
+        cursorX += chunkWidth;
+        if (cursorX >= X + W) break;
+    }
+
+    fl_pop_clip();
+}
+
+void markRange(std::vector<bool>& mask, size_t start, size_t end) {
+    if (start >= end || start >= mask.size()) return;
+    end = std::min(end, mask.size());
+    for (size_t i = start; i < end; ++i) {
+        mask[i] = true;
+    }
+}
+
+void markLiteralMatches(std::vector<bool>& mask,
+                        const std::string& text,
+                        const std::string& term,
+                        bool requireWordBoundaries) {
+    if (text.empty() || term.empty()) return;
+
+    std::string lowerText = lowerAsciiCopy(text);
+    std::string lowerTerm = lowerAsciiCopy(term);
+    size_t pos = 0;
+    while ((pos = lowerText.find(lowerTerm, pos)) != std::string::npos) {
+        size_t end = pos + lowerTerm.size();
+        bool ok = true;
+        if (requireWordBoundaries) {
+            if (pos > 0 && isWordByte(static_cast<unsigned char>(text[pos - 1]))) {
+                ok = false;
+            }
+            if (end < text.size() &&
+                isWordByte(static_cast<unsigned char>(text[end]))) {
+                ok = false;
+            }
+        }
+        if (ok) {
+            markRange(mask, pos, end);
+            pos = end;
+        } else {
+            ++pos;
+        }
+    }
+}
+
+void markRegexMatches(std::vector<bool>& mask,
+                      const std::string& text,
+                      const std::regex& re) {
+    auto begin = std::sregex_iterator(text.begin(), text.end(), re);
+    auto end = std::sregex_iterator();
+    for (auto it = begin; it != end; ++it) {
+        size_t pos = static_cast<size_t>((*it).position());
+        size_t len = static_cast<size_t>((*it).length());
+        if (len == 0) continue;
+        markRange(mask, pos, pos + len);
+    }
+}
+
+std::string wrapHighlightMask(const std::string& text,
+                              const std::vector<bool>& mask) {
+    if (text.empty() || mask.empty()) return text;
+
+    std::string out;
+    out.reserve(text.size() + 32);
+    bool inHighlight = false;
+    for (size_t i = 0; i < text.size(); ++i) {
+        bool shouldHighlight = i < mask.size() && mask[i];
+        if (shouldHighlight && !inHighlight) {
+            out += "<span class=\"searchhit\">";
+            inHighlight = true;
+        } else if (!shouldHighlight && inHighlight) {
+            out += "</span>";
+            inHighlight = false;
+        }
+        out.push_back(text[i]);
+    }
+    if (inHighlight) out += "</span>";
     return out;
+}
+
+std::string highlightPlainSnippetMarkup(
+    const std::string& text,
+    const std::vector<std::string>& terms,
+    const std::string& phrase,
+    const std::regex* regexPattern,
+    bool phraseMode) {
+
+    if (text.empty()) return "";
+
+    std::vector<bool> mask(text.size(), false);
+    if (regexPattern) {
+        markRegexMatches(mask, text, *regexPattern);
+    } else if (phraseMode && !phrase.empty()) {
+        markLiteralMatches(mask, text, phrase, false);
+        if (std::find(mask.begin(), mask.end(), true) == mask.end()) {
+            for (const auto& term : terms) {
+                markLiteralMatches(mask, text, term, true);
+            }
+        }
+    } else {
+        for (const auto& term : terms) {
+            markLiteralMatches(mask, text, term, true);
+        }
+    }
+
+    return wrapHighlightMask(text, mask);
+}
+
+bool extractTagAttribute(const std::string& tag,
+                         const std::string& name,
+                         std::string& valueOut) {
+    std::string lowerTag = lowerAsciiCopy(tag);
+    std::string needle = lowerAsciiCopy(name) + "=";
+    size_t pos = lowerTag.find(needle);
+    if (pos == std::string::npos) return false;
+
+    size_t valueStart = pos + needle.size();
+    if (valueStart >= tag.size()) return false;
+
+    char quote = tag[valueStart];
+    if (quote == '"' || quote == '\'') {
+        ++valueStart;
+        size_t end = tag.find(quote, valueStart);
+        if (end == std::string::npos) return false;
+        valueOut = tag.substr(valueStart, end - valueStart);
+        return true;
+    }
+
+    size_t end = valueStart;
+    while (end < tag.size() &&
+           !std::isspace(static_cast<unsigned char>(tag[end])) &&
+           tag[end] != '>') {
+        ++end;
+    }
+    valueOut = tag.substr(valueStart, end - valueStart);
+    return !valueOut.empty();
+}
+
+bool classListHasToken(const std::string& classList,
+                       const std::string& token) {
+    std::istringstream ss(classList);
+    std::string part;
+    while (ss >> part) {
+        if (part == token) return true;
+    }
+    return false;
+}
+
+std::string addClassTokenToTag(const std::string& tag,
+                               const std::string& token) {
+    std::string classes;
+    if (extractTagAttribute(tag, "class", classes)) {
+        if (classListHasToken(classes, token)) return tag;
+
+        size_t pos = lowerAsciiCopy(tag).find("class=");
+        if (pos == std::string::npos) return tag;
+        size_t valueStart = pos + 6;
+        if (valueStart >= tag.size()) return tag;
+        char quote = tag[valueStart];
+        if (quote != '"' && quote != '\'') return tag;
+        ++valueStart;
+        size_t valueEnd = tag.find(quote, valueStart);
+        if (valueEnd == std::string::npos) return tag;
+
+        std::string out = tag;
+        out.insert(valueEnd, " " + token);
+        return out;
+    }
+
+    size_t insertPos = tag.rfind('>');
+    if (insertPos == std::string::npos) return tag;
+    std::string out = tag;
+    out.insert(insertPos, " class=\"" + token + "\"");
+    return out;
+}
+
+bool strongsAttrMatches(const std::string& attr,
+                        const std::vector<std::string>& queryTokens) {
+    if (attr.empty() || queryTokens.empty()) return false;
+
+    std::unordered_set<std::string> wanted;
+    for (const auto& token : queryTokens) {
+        wanted.insert(lowerAsciiCopy(token));
+    }
+
+    size_t start = 0;
+    while (start <= attr.size()) {
+        size_t end = attr.find('|', start);
+        std::string token = attr.substr(start, end - start);
+        token = trimCopy(token);
+        if (!token.empty() && wanted.count(lowerAsciiCopy(token)) != 0) {
+            return true;
+        }
+        if (end == std::string::npos) break;
+        start = end + 1;
+    }
+    return false;
 }
 
 bool parseReferenceKey(const std::string& key, SwordManager::VerseRef& out) {
@@ -279,6 +717,54 @@ void sortSearchResultsCanonical(SwordManager& swordMgr,
 
 } // namespace
 
+int SearchResultBrowser::item_height(void* item) const {
+    return Fl_Hold_Browser::item_height(item);
+}
+
+int SearchResultBrowser::item_width(void* /*item*/) const {
+    return w();
+}
+
+void SearchResultBrowser::item_draw(void* item,
+                                    int X, int Y, int W, int H) const {
+    const bool selected = item_selected(item) != 0;
+    Fl_Color bg = selected ? selection_color() : color();
+    Fl_Color fg = fl_contrast(textcolor(), bg);
+    Fl_Color highlightBg = fl_rgb_color(255, 255, 128);
+    Fl_Color highlightFg = FL_BLACK;
+
+    fl_color(bg);
+    fl_rectf(X, Y, W, H);
+
+    if (!owner_) return;
+
+    int line = lineno(item);
+    if (line <= 0 || line > static_cast<int>(owner_->results_.size())) return;
+    if (line > static_cast<int>(owner_->resultDisplayKeys_.size())) return;
+
+    fl_font(textfont(), textsize());
+
+    const std::string& refLabel = owner_->resultDisplayKeys_[line - 1];
+    const auto refChunks = normalizeMarkupWhitespace(
+        parseHighlightedMarkup(refLabel));
+    drawMarkupChunks(refChunks,
+                     X + kResultLinePadding,
+                     Y, kResultRefColumnWidth - kResultLinePadding, H,
+                     fg, highlightBg, highlightFg);
+
+    const std::string& snippetMarkup = owner_->results_[line - 1].text;
+    if (snippetMarkup.empty()) return;
+
+    int snippetX = X + kResultRefColumnWidth + kResultColumnGap;
+    int snippetW = std::max(0, W - (snippetX - X) - kResultLinePadding);
+    if (snippetW <= 0) return;
+
+    const auto snippetChunks = normalizeMarkupWhitespace(
+        parseHighlightedMarkup(snippetMarkup));
+    drawMarkupChunks(snippetChunks, snippetX, Y, snippetW, H,
+                     fg, highlightBg, highlightFg);
+}
+
 SearchPanel::SearchPanel(VerdadApp* app, int X, int Y, int W, int H)
     : Fl_Group(X, Y, W, H)
     , app_(app)
@@ -352,6 +838,8 @@ void SearchPanel::search(const std::string& query,
     pendingPreviewKey_.clear();
     lastPreviewModule_.clear();
     lastPreviewKey_.clear();
+    resultDisplayKeys_.clear();
+    resetHighlightState();
     results_.clear();
     resultBrowser_->clear();
     resultBrowser_->value(0);
@@ -389,13 +877,30 @@ void SearchPanel::search(const std::string& query,
 
     if (regexSearch && !isStrongs) {
         try {
-            std::regex test(trimmedQuery, std::regex::ECMAScript | std::regex::icase);
-            (void)test;
+            highlightRegex_ = std::regex(trimmedQuery,
+                                         std::regex::ECMAScript |
+                                         std::regex::icase);
+            highlightRegexValid_ = true;
         } catch (const std::regex_error&) {
+            highlightRegexValid_ = false;
             fl_alert("Invalid regex pattern.");
             setResultCountLabel("(invalid regex)");
             return;
         }
+    }
+
+    if (isStrongs) {
+        highlightMode_ = HighlightMode::Strongs;
+        highlightStrongs_ = extractStrongsTokens(strongsQuery);
+    } else if (regexSearch) {
+        highlightMode_ = HighlightMode::Regex;
+    } else if (exactPhrase) {
+        highlightMode_ = HighlightMode::Phrase;
+        highlightPhrase_ = trimmedQuery;
+        highlightTerms_ = tokenizeWords(trimmedQuery);
+    } else {
+        highlightMode_ = HighlightMode::Terms;
+        highlightTerms_ = tokenizeWords(trimmedQuery);
     }
 
     bool indexingPending = false;
@@ -467,21 +972,27 @@ void SearchPanel::search(const std::string& query,
         updateIndexingIndicator();
     }
 
+    if (!isStrongs && runSwordFallback && !results_.empty()) {
+        const std::regex* regexPattern = highlightRegexValid_
+                                             ? &highlightRegex_
+                                             : nullptr;
+        const bool phraseMode = (highlightMode_ == HighlightMode::Phrase);
+        for (auto& result : results_) {
+            std::string snippet = collapseWhitespace(result.text);
+            result.text = highlightPlainSnippetMarkup(
+                snippet, highlightTerms_, highlightPhrase_,
+                regexPattern, phraseMode);
+        }
+    }
+
     sortSearchResultsCanonical(app_->swordManager(), moduleName, results_);
 
     // Populate result browser
     for (const auto& r : results_) {
-        std::string snippet = collapseWhitespace(stripSimpleHtmlTags(r.text));
-        if (snippet.size() > 36) {
-            snippet = snippet.substr(0, 36) + "...";
-        }
         const std::string& resultModule = r.module.empty() ? moduleName : r.module;
         std::string shortKey = app_->swordManager().getShortReference(resultModule, r.key);
-        std::string line = shortKey.empty() ? r.key : shortKey;
-        if (!snippet.empty()) {
-            line += " \t " + snippet;
-        }
-        resultBrowser_->add(line.c_str());
+        resultDisplayKeys_.push_back(shortKey.empty() ? r.key : shortKey);
+        resultBrowser_->add(" ");
     }
 
     std::string labelSuffix;
@@ -517,6 +1028,8 @@ void SearchPanel::clear() {
     pendingPreviewKey_.clear();
     lastPreviewModule_.clear();
     lastPreviewKey_.clear();
+    resultDisplayKeys_.clear();
+    resetHighlightState();
     results_.clear();
     resultBrowser_->clear();
     resultBrowser_->value(0);
@@ -555,6 +1068,95 @@ void SearchPanel::setSelectedModule(const std::string& moduleName) {
     if (moduleIndex >= 0) {
         moduleChoice_->value(moduleIndex);
     }
+}
+
+void SearchPanel::resetHighlightState() {
+    highlightMode_ = HighlightMode::None;
+    highlightTerms_.clear();
+    highlightStrongs_.clear();
+    highlightPhrase_.clear();
+    highlightRegexValid_ = false;
+}
+
+std::string SearchPanel::applyPreviewHighlights(const std::string& html) const {
+    if (html.empty() || highlightMode_ == HighlightMode::None) {
+        return html;
+    }
+
+    if (highlightMode_ == HighlightMode::Strongs) {
+        if (highlightStrongs_.empty()) return html;
+
+        std::string out;
+        out.reserve(html.size() + 32);
+        for (size_t pos = 0; pos < html.size();) {
+            if (html[pos] != '<') {
+                size_t nextTag = html.find('<', pos);
+                size_t end = (nextTag == std::string::npos) ? html.size() : nextTag;
+                out.append(html, pos, end - pos);
+                pos = end;
+                continue;
+            }
+
+            size_t tagEnd = html.find('>', pos);
+            if (tagEnd == std::string::npos) {
+                out.append(html, pos, html.size() - pos);
+                break;
+            }
+
+            std::string tag = html.substr(pos, tagEnd - pos + 1);
+            std::string lowerTag = lowerAsciiCopy(tag);
+            if (lowerTag.rfind("<span", 0) == 0 &&
+                lowerTag.find("</span") != 0) {
+                std::string classes;
+                std::string strongsAttr;
+                if (extractTagAttribute(tag, "class", classes) &&
+                    classListHasToken(classes, "w") &&
+                    extractTagAttribute(tag, "data-strong", strongsAttr) &&
+                    strongsAttrMatches(strongsAttr, highlightStrongs_)) {
+                    out += addClassTokenToTag(tag, "searchhit");
+                } else {
+                    out += tag;
+                }
+            } else {
+                out += tag;
+            }
+
+            pos = tagEnd + 1;
+        }
+        return out;
+    }
+
+    const std::regex* regexPattern = highlightRegexValid_ ? &highlightRegex_ : nullptr;
+    if (highlightTerms_.empty() && highlightPhrase_.empty() && !regexPattern) {
+        return html;
+    }
+
+    const bool phraseMode = (highlightMode_ == HighlightMode::Phrase);
+    std::string out;
+    out.reserve(html.size() + 48);
+    for (size_t pos = 0; pos < html.size();) {
+        if (html[pos] == '<') {
+            size_t tagEnd = html.find('>', pos);
+            if (tagEnd == std::string::npos) {
+                out.append(html, pos, html.size() - pos);
+                break;
+            }
+            out.append(html, pos, tagEnd - pos + 1);
+            pos = tagEnd + 1;
+            continue;
+        }
+
+        size_t nextTag = html.find('<', pos);
+        size_t end = (nextTag == std::string::npos) ? html.size() : nextTag;
+        out += highlightPlainSnippetMarkup(
+            html.substr(pos, end - pos),
+            highlightTerms_,
+            highlightPhrase_,
+            regexPattern,
+            phraseMode);
+        pos = end;
+    }
+    return out;
 }
 
 void SearchPanel::setResultCountLabel(const std::string& suffix) {
@@ -671,6 +1273,7 @@ void SearchPanel::applyPendingPreviewUpdate() {
 
     std::string html = app_->swordManager().getVerseText(
         pendingPreviewModule_, pendingPreviewKey_);
+    html = applyPreviewHighlights(html);
     app_->mainWindow()->leftPane()->setPreviewText(html);
     lastPreviewModule_ = pendingPreviewModule_;
     lastPreviewKey_ = pendingPreviewKey_;

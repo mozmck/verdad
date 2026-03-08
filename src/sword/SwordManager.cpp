@@ -1079,6 +1079,278 @@ bool parseSmallBlockMeta(const std::string& block, HoverMeta& meta) {
     return marker;
 }
 
+bool hoverMetaHasStrong(const HoverMeta& meta, const std::string& strongsNumber) {
+    if (meta.strong.empty() || strongsNumber.empty()) return false;
+
+    std::vector<std::string> tokens;
+    splitTokens(meta.strong, '|', tokens);
+    for (const auto& token : tokens) {
+        if (normalizeStrongsKey(token) == strongsNumber) {
+            return true;
+        }
+    }
+    return false;
+}
+
+void updateSnippetLastWordRange(const std::string& text,
+                                size_t baseOffset,
+                                size_t& startOut,
+                                size_t& endOut,
+                                bool& validOut) {
+    validOut = false;
+    if (text.empty()) return;
+
+    size_t end = text.size();
+    while (end > 0 &&
+           !isWordByte(static_cast<unsigned char>(text[end - 1]))) {
+        --end;
+    }
+    if (end == 0) return;
+
+    size_t start = end;
+    while (start > 0 &&
+           isWordByte(static_cast<unsigned char>(text[start - 1]))) {
+        --start;
+    }
+
+    startOut = baseOffset + start;
+    endOut = baseOffset + end;
+    validOut = (end > start);
+}
+
+void appendSnippetVisibleText(const std::string& rawText,
+                              std::string& plainOut,
+                              std::vector<bool>& maskOut,
+                              size_t& lastWordStart,
+                              size_t& lastWordEnd,
+                              bool& lastWordValid) {
+    std::string decoded = decodeHtmlEntities(rawText);
+    if (decoded.empty()) return;
+
+    size_t base = plainOut.size();
+    plainOut += decoded;
+    maskOut.insert(maskOut.end(), decoded.size(), false);
+    updateSnippetLastWordRange(decoded, base,
+                               lastWordStart, lastWordEnd, lastWordValid);
+}
+
+struct SearchSnippetData {
+    std::string text;
+    std::vector<bool> mask;
+};
+
+SearchSnippetData collapseSnippetWhitespace(const std::string& text,
+                                            const std::vector<bool>& mask) {
+    SearchSnippetData collapsed;
+    collapsed.text.reserve(text.size());
+    collapsed.mask.reserve(mask.size());
+
+    bool lastWasSpace = true;
+    for (size_t i = 0; i < text.size(); ++i) {
+        unsigned char uc = static_cast<unsigned char>(text[i]);
+        if (std::isspace(uc)) {
+            if (!lastWasSpace) {
+                collapsed.text.push_back(' ');
+                collapsed.mask.push_back(false);
+                lastWasSpace = true;
+            }
+            continue;
+        }
+
+        collapsed.text.push_back(text[i]);
+        collapsed.mask.push_back(i < mask.size() ? mask[i] : false);
+        lastWasSpace = false;
+    }
+
+    while (!collapsed.text.empty() && collapsed.text.back() == ' ') {
+        collapsed.text.pop_back();
+        if (!collapsed.mask.empty()) collapsed.mask.pop_back();
+    }
+    while (!collapsed.text.empty() && collapsed.text.front() == ' ') {
+        collapsed.text.erase(collapsed.text.begin());
+        if (!collapsed.mask.empty()) collapsed.mask.erase(collapsed.mask.begin());
+    }
+
+    return collapsed;
+}
+
+std::string buildMaskedSnippetMarkup(const std::string& text,
+                                     const std::vector<bool>& mask,
+                                     size_t maxLen = 160) {
+    if (text.empty()) return "";
+
+    size_t hitStart = std::string::npos;
+    size_t hitEnd = std::string::npos;
+    for (size_t i = 0; i < mask.size() && i < text.size(); ++i) {
+        if (!mask[i]) continue;
+        hitStart = i;
+        hitEnd = i + 1;
+        while (hitEnd < mask.size() && hitEnd < text.size() && mask[hitEnd]) {
+            ++hitEnd;
+        }
+        break;
+    }
+
+    size_t left = 0;
+    size_t right = text.size();
+    if (text.size() > maxLen) {
+        if (hitStart != std::string::npos) {
+            left = (hitStart > maxLen / 2) ? (hitStart - maxLen / 2) : 0;
+            if (hitEnd > left + maxLen) {
+                left = hitEnd - maxLen;
+            }
+        }
+        if (left > text.size()) left = text.size();
+        right = std::min(text.size(), left + maxLen);
+    }
+
+    std::string out;
+    out.reserve((right - left) + 32);
+    if (left > 0) out += "... ";
+
+    bool inHighlight = false;
+    for (size_t i = left; i < right; ++i) {
+        bool highlight = (i < mask.size()) && mask[i];
+        if (highlight && !inHighlight) {
+            out += "<span class=\"searchhit\">";
+            inHighlight = true;
+        } else if (!highlight && inHighlight) {
+            out += "</span>";
+            inHighlight = false;
+        }
+        out.push_back(text[i]);
+    }
+
+    if (inHighlight) out += "</span>";
+    if (right < text.size()) out += " ...";
+    return out;
+}
+
+std::string buildStrongsSearchSnippet(const std::string& html,
+                                      const std::string& strongsNumber,
+                                      size_t maxLen = 160) {
+    std::string wanted = normalizeStrongsKey(strongsNumber);
+    if (wanted.empty()) return trimCopy(stripTags(html));
+
+    std::string plain;
+    std::vector<bool> mask;
+    size_t lastWordStart = 0;
+    size_t lastWordEnd = 0;
+    bool lastWordValid = false;
+
+    size_t pos = 0;
+    while (pos < html.size()) {
+        if (html[pos] != '<') {
+            size_t nextTag = html.find('<', pos);
+            size_t end = (nextTag == std::string::npos) ? html.size() : nextTag;
+            appendSnippetVisibleText(html.substr(pos, end - pos),
+                                     plain, mask,
+                                     lastWordStart, lastWordEnd, lastWordValid);
+            pos = end;
+            continue;
+        }
+
+        size_t tagEnd = std::string::npos;
+        std::string tagName;
+        bool isClosing = false;
+        bool isSelfClosing = false;
+        if (!parseTag(html, pos, tagEnd, tagName, isClosing, isSelfClosing)) {
+            ++pos;
+            continue;
+        }
+
+        std::string rawTag = html.substr(pos, tagEnd - pos + 1);
+        if (!isClosing && tagName == "w") {
+            size_t closePos = findNoCase(html, "</w", tagEnd + 1);
+            if (closePos != std::string::npos) {
+                size_t closeEnd = std::string::npos;
+                std::string closeName;
+                bool closeIsClosing = false;
+                bool closeIsSelfClosing = false;
+                if (parseTag(html, closePos, closeEnd, closeName,
+                             closeIsClosing, closeIsSelfClosing) &&
+                    closeIsClosing && closeName == "w") {
+                    HoverMeta meta = extractMetaFromWTag(rawTag);
+                    std::string inner = html.substr(tagEnd + 1, closePos - (tagEnd + 1));
+                    std::string innerText = stripTags(inner);
+                    size_t before = plain.size();
+                    appendSnippetVisibleText(innerText, plain, mask,
+                                             lastWordStart, lastWordEnd, lastWordValid);
+                    if (hoverMetaHasStrong(meta, wanted)) {
+                        for (size_t i = before; i < plain.size() && i < mask.size(); ++i) {
+                            mask[i] = true;
+                        }
+                    }
+                    pos = closeEnd + 1;
+                    continue;
+                }
+            }
+        }
+
+        if (!isClosing && tagName == "small") {
+            size_t closePos = findNoCase(html, "</small>", tagEnd + 1);
+            if (closePos != std::string::npos) {
+                size_t blockEnd = closePos + 8;
+                std::string block = html.substr(pos, blockEnd - pos);
+                HoverMeta meta;
+                if (parseSmallBlockMeta(block, meta) &&
+                    lastWordValid &&
+                    hoverMetaHasStrong(meta, wanted)) {
+                    for (size_t i = lastWordStart;
+                         i < lastWordEnd && i < mask.size(); ++i) {
+                        mask[i] = true;
+                    }
+                }
+                pos = blockEnd;
+                continue;
+            }
+        }
+
+        if (!isClosing && tagName == "a") {
+            size_t closePos = findNoCase(html, "</a>", tagEnd + 1);
+            if (closePos != std::string::npos) {
+                HoverMeta meta;
+                std::string href;
+                bool isStrong = false;
+                bool isMorph = false;
+                if (extractAttributeValue(rawTag, "href", href)) {
+                    extractHrefMeta(href, meta, &isStrong, &isMorph);
+                }
+
+                std::string inner = html.substr(tagEnd + 1, closePos - (tagEnd + 1));
+                std::string innerText = stripTags(inner);
+                std::string plainInner = trimCopy(innerText);
+                bool codeText = isStrong && looksLikeStrongsDisplay(plainInner);
+
+                size_t before = plain.size();
+                appendSnippetVisibleText(innerText, plain, mask,
+                                         lastWordStart, lastWordEnd, lastWordValid);
+                if (!codeText && hoverMetaHasStrong(meta, wanted)) {
+                    for (size_t i = before; i < plain.size() && i < mask.size(); ++i) {
+                        mask[i] = true;
+                    }
+                }
+
+                pos = closePos + 4;
+                continue;
+            }
+        }
+
+        pos = tagEnd + 1;
+    }
+
+    SearchSnippetData collapsed = collapseSnippetWhitespace(plain, mask);
+    if (collapsed.text.empty()) return "";
+
+    if (std::find(collapsed.mask.begin(), collapsed.mask.end(), true) ==
+        collapsed.mask.end()) {
+        if (collapsed.text.size() <= maxLen) return collapsed.text;
+        return collapsed.text.substr(0, maxLen) + "...";
+    }
+
+    return buildMaskedSnippetMarkup(collapsed.text, collapsed.mask, maxLen);
+}
+
 bool isInlineStrongMarkerTag(const std::string& rawTag, const std::string& tagName) {
     if (rawTag.size() < 4 || rawTag.front() != '<' || rawTag.back() != '>') return false;
     if (rawTag.find(' ') != std::string::npos ||
@@ -2229,10 +2501,41 @@ std::vector<SearchResult> SwordManager::search(
 std::vector<SearchResult> SwordManager::searchStrongs(
     const std::string& moduleName,
     const std::string& strongsNumber) {
-    // Use attribute search for Strong's numbers
-    // Search type -2 = entry attribute search
-    std::string query = "Word//Lemma./" + strongsNumber;
-    return search(moduleName, query, -2);
+    std::lock_guard<std::mutex> lock(mutex_);
+    std::vector<SearchResult> results;
+
+    std::string normalizedStrong = normalizeStrongsKey(strongsNumber);
+    if (moduleName.empty() || normalizedStrong.empty()) return results;
+
+    sword::SWModule* mod = getModule(moduleName);
+    if (!mod) return results;
+
+    std::string query = "Word//Lemma./" + normalizedStrong;
+    sword::ListKey& resultKeys = mod->search(query.c_str(), -2, 0, nullptr, nullptr, nullptr);
+
+    for (resultKeys = sword::TOP; !resultKeys.popError(); resultKeys++) {
+        const char* keyText = resultKeys.getText();
+        if (!keyText || !*keyText) continue;
+
+        SearchResult result;
+        result.key = keyText;
+        result.module = moduleName;
+
+        mod->setKey(keyText);
+        std::string rendered = std::string(mod->renderText().c_str());
+        result.text = buildStrongsSearchSnippet(rendered, normalizedStrong);
+        if (result.text.empty()) {
+            const char* preview = mod->stripText();
+            result.text = preview ? preview : "";
+            if (result.text.size() > 200) {
+                result.text = result.text.substr(0, 200) + "...";
+            }
+        }
+
+        results.push_back(std::move(result));
+    }
+
+    return results;
 }
 
 WordInfo SwordManager::getWordInfo(const std::string& moduleName,

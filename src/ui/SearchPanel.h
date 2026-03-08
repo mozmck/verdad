@@ -6,6 +6,7 @@
 #include <FL/Fl_Box.H>
 #include <FL/Fl_Choice.H>
 #include <FL/Fl_Check_Button.H>
+#include <regex>
 #include <string>
 #include <vector>
 #include "sword/SwordManager.h"
@@ -40,6 +41,14 @@ public:
 private:
     friend class SearchResultBrowser;
 
+    enum class HighlightMode {
+        None,
+        Terms,
+        Phrase,
+        Regex,
+        Strongs
+    };
+
     VerdadApp* app_;
 
     // Module to search in
@@ -56,6 +65,7 @@ private:
 
     // Stored results
     std::vector<SearchResult> results_;
+    std::vector<std::string> resultDisplayKeys_;
 
     // Indexing indicator state
     bool indexingIndicatorActive_ = false;
@@ -68,6 +78,12 @@ private:
     std::string pendingPreviewKey_;
     std::string lastPreviewModule_;
     std::string lastPreviewKey_;
+    HighlightMode highlightMode_ = HighlightMode::None;
+    std::vector<std::string> highlightTerms_;
+    std::vector<std::string> highlightStrongs_;
+    std::string highlightPhrase_;
+    std::regex highlightRegex_;
+    bool highlightRegexValid_ = false;
 
     /// Populate module choices
     void populateModules();
@@ -80,6 +96,8 @@ private:
     void schedulePreviewUpdate(const SearchResult& result);
     void applyPendingPreviewUpdate();
     void activateResultLine(int line, int mouseButton, bool isDoubleClick);
+    void resetHighlightState();
+    std::string applyPreviewHighlights(const std::string& html) const;
 
     // Callbacks
     static void onResultSelect(Fl_Widget* w, void* data);

@@ -225,11 +225,241 @@ bool bindText(sqlite3_stmt* stmt, int index, const std::string& value) {
     return sqlite3_bind_text(stmt, index, value.c_str(), -1, SQLITE_TRANSIENT) == SQLITE_OK;
 }
 
+bool isWordByte(unsigned char c) {
+    return std::isalnum(c) || c == '\'' || c == '-' || c >= 0x80;
+}
+
+std::string decodeHtmlEntities(const std::string& text) {
+    std::string out;
+    out.reserve(text.size());
+
+    for (size_t i = 0; i < text.size(); ++i) {
+        if (text[i] != '&') {
+            out.push_back(text[i]);
+            continue;
+        }
+
+        if (text.compare(i, 5, "&amp;") == 0) {
+            out.push_back('&');
+            i += 4;
+        } else if (text.compare(i, 4, "&lt;") == 0) {
+            out.push_back('<');
+            i += 3;
+        } else if (text.compare(i, 4, "&gt;") == 0) {
+            out.push_back('>');
+            i += 3;
+        } else if (text.compare(i, 6, "&quot;") == 0) {
+            out.push_back('"');
+            i += 5;
+        } else if (text.compare(i, 6, "&apos;") == 0) {
+            out.push_back('\'');
+            i += 5;
+        } else if (text.compare(i, 6, "&nbsp;") == 0) {
+            out.push_back(' ');
+            i += 5;
+        } else {
+            out.push_back(text[i]);
+        }
+    }
+
+    return out;
+}
+
+std::string stripTagsSimple(const std::string& html) {
+    std::string out;
+    out.reserve(html.size());
+    bool inTag = false;
+    for (char c : html) {
+        if (c == '<') {
+            inTag = true;
+            continue;
+        }
+        if (c == '>') {
+            inTag = false;
+            continue;
+        }
+        if (!inTag) out.push_back(c);
+    }
+    return decodeHtmlEntities(out);
+}
+
+bool extractTagAttribute(const std::string& tag,
+                         const std::string& name,
+                         std::string& valueOut) {
+    std::string lowerTag = lowerCopy(tag);
+    std::string needle = lowerCopy(name) + "=";
+    size_t pos = lowerTag.find(needle);
+    if (pos == std::string::npos) return false;
+
+    size_t valueStart = pos + needle.size();
+    if (valueStart >= tag.size()) return false;
+
+    char quote = tag[valueStart];
+    if (quote == '"' || quote == '\'') {
+        ++valueStart;
+        size_t end = tag.find(quote, valueStart);
+        if (end == std::string::npos) return false;
+        valueOut = tag.substr(valueStart, end - valueStart);
+        return true;
+    }
+
+    size_t end = valueStart;
+    while (end < tag.size() &&
+           !std::isspace(static_cast<unsigned char>(tag[end])) &&
+           tag[end] != '>') {
+        ++end;
+    }
+    valueOut = tag.substr(valueStart, end - valueStart);
+    return !valueOut.empty();
+}
+
+void updateLastWordRange(const std::string& text,
+                         size_t baseOffset,
+                         size_t& startOut,
+                         size_t& endOut,
+                         bool& validOut) {
+    validOut = false;
+    if (text.empty()) return;
+
+    size_t end = text.size();
+    while (end > 0 &&
+           !isWordByte(static_cast<unsigned char>(text[end - 1]))) {
+        --end;
+    }
+    if (end == 0) return;
+
+    size_t start = end;
+    while (start > 0 &&
+           isWordByte(static_cast<unsigned char>(text[start - 1]))) {
+        --start;
+    }
+
+    startOut = baseOffset + start;
+    endOut = baseOffset + end;
+    validOut = (end > start);
+}
+
+void appendVisibleText(const std::string& rawText,
+                       std::string& plainOut,
+                       std::vector<bool>& maskOut,
+                       size_t& lastWordStart,
+                       size_t& lastWordEnd,
+                       bool& lastWordValid) {
+    std::string decoded = decodeHtmlEntities(rawText);
+    if (decoded.empty()) return;
+
+    size_t base = plainOut.size();
+    plainOut += decoded;
+    maskOut.insert(maskOut.end(), decoded.size(), false);
+    updateLastWordRange(decoded, base, lastWordStart, lastWordEnd, lastWordValid);
+}
+
+bool containsMatchingStrongs(const std::string& text,
+                             const std::unordered_set<std::string>& wanted) {
+    if (wanted.empty()) return false;
+    for (const auto& token : extractStrongsTokens(text)) {
+        if (wanted.count(token) != 0) return true;
+    }
+    return false;
+}
+
+struct MaskedText {
+    std::string text;
+    std::vector<bool> mask;
+};
+
+MaskedText collapseWhitespaceWithMask(const std::string& text,
+                                      const std::vector<bool>& mask) {
+    MaskedText collapsed;
+    collapsed.text.reserve(text.size());
+    collapsed.mask.reserve(mask.size());
+
+    bool lastWasSpace = true;
+    for (size_t i = 0; i < text.size(); ++i) {
+        unsigned char uc = static_cast<unsigned char>(text[i]);
+        if (std::isspace(uc)) {
+            if (!lastWasSpace) {
+                collapsed.text.push_back(' ');
+                collapsed.mask.push_back(false);
+                lastWasSpace = true;
+            }
+            continue;
+        }
+
+        collapsed.text.push_back(text[i]);
+        collapsed.mask.push_back(i < mask.size() ? mask[i] : false);
+        lastWasSpace = false;
+    }
+
+    while (!collapsed.text.empty() && collapsed.text.back() == ' ') {
+        collapsed.text.pop_back();
+        if (!collapsed.mask.empty()) collapsed.mask.pop_back();
+    }
+    while (!collapsed.text.empty() && collapsed.text.front() == ' ') {
+        collapsed.text.erase(collapsed.text.begin());
+        if (!collapsed.mask.empty()) collapsed.mask.erase(collapsed.mask.begin());
+    }
+
+    return collapsed;
+}
+
+std::string buildSnippetMarkup(const std::string& text,
+                               const std::vector<bool>& mask,
+                               size_t maxLen = 160) {
+    if (text.empty()) return "";
+
+    size_t hitStart = std::string::npos;
+    size_t hitEnd = std::string::npos;
+    for (size_t i = 0; i < mask.size() && i < text.size(); ++i) {
+        if (!mask[i]) continue;
+        hitStart = i;
+        hitEnd = i + 1;
+        while (hitEnd < mask.size() && hitEnd < text.size() && mask[hitEnd]) {
+            ++hitEnd;
+        }
+        break;
+    }
+
+    size_t left = 0;
+    size_t right = text.size();
+    if (text.size() > maxLen) {
+        if (hitStart != std::string::npos) {
+            left = (hitStart > maxLen / 2) ? (hitStart - maxLen / 2) : 0;
+            if (hitEnd > left + maxLen) {
+                left = hitEnd - maxLen;
+            }
+        }
+        if (left > text.size()) left = text.size();
+        right = std::min(text.size(), left + maxLen);
+    }
+
+    std::string out;
+    out.reserve((right - left) + 32);
+    if (left > 0) out += "... ";
+
+    bool inHighlight = false;
+    for (size_t i = left; i < right; ++i) {
+        bool highlight = (i < mask.size()) && mask[i];
+        if (highlight && !inHighlight) {
+            out += "<span class=\"searchhit\">";
+            inHighlight = true;
+        } else if (!highlight && inHighlight) {
+            out += "</span>";
+            inHighlight = false;
+        }
+        out.push_back(text[i]);
+    }
+
+    if (inHighlight) out += "</span>";
+    if (right < text.size()) out += " ...";
+    return out;
+}
+
 std::string buildRegexSnippet(const std::string& text,
                               const std::smatch& match,
+                              const std::regex& re,
                               size_t maxLen = 160) {
     if (text.empty()) return "";
-    if (text.size() <= maxLen) return text;
 
     const size_t startPos = static_cast<size_t>(match.position());
     const size_t endPos = startPos + static_cast<size_t>(match.length());
@@ -243,11 +473,138 @@ std::string buildRegexSnippet(const std::string& text,
     }
     if (left > text.size()) left = text.size();
 
-    size_t len = std::min(maxLen, text.size() - left);
-    std::string out = text.substr(left, len);
-    if (left > 0) out = "... " + out;
-    if (left + len < text.size()) out += " ...";
+    size_t right = std::min(text.size(), left + maxLen);
+    std::string snippet = text.substr(left, right - left);
+    std::vector<bool> mask(snippet.size(), false);
+    auto begin = std::sregex_iterator(snippet.begin(), snippet.end(), re);
+    auto end = std::sregex_iterator();
+    for (auto it = begin; it != end; ++it) {
+        size_t pos = static_cast<size_t>((*it).position());
+        size_t len = static_cast<size_t>((*it).length());
+        if (len == 0) continue;
+        for (size_t i = pos; i < pos + len && i < mask.size(); ++i) {
+            mask[i] = true;
+        }
+    }
+
+    std::string out;
+    if (left > 0) out += "... ";
+    out += buildSnippetMarkup(snippet, mask, snippet.size());
+    if (right < text.size()) out += " ...";
     return out;
+}
+
+std::string buildStrongsSnippet(const std::string& xhtml,
+                                const std::string& strongsQuery,
+                                const std::string& plainFallback,
+                                size_t maxLen = 160) {
+    auto truncateFallback = [maxLen](const std::string& text) {
+        std::string collapsed = trimCopy(text);
+        if (collapsed.size() <= maxLen) return collapsed;
+        return collapsed.substr(0, maxLen) + "...";
+    };
+
+    if (xhtml.empty()) return truncateFallback(plainFallback);
+
+    std::unordered_set<std::string> wanted;
+    for (const auto& token : extractStrongsTokens(strongsQuery)) {
+        wanted.insert(token);
+    }
+    if (wanted.empty()) return truncateFallback(plainFallback);
+
+    std::string plain;
+    std::vector<bool> mask;
+    size_t lastWordStart = 0;
+    size_t lastWordEnd = 0;
+    bool lastWordValid = false;
+
+    for (size_t pos = 0; pos < xhtml.size();) {
+        if (xhtml[pos] != '<') {
+            size_t nextTag = xhtml.find('<', pos);
+            size_t end = (nextTag == std::string::npos) ? xhtml.size() : nextTag;
+            appendVisibleText(xhtml.substr(pos, end - pos),
+                              plain, mask,
+                              lastWordStart, lastWordEnd, lastWordValid);
+            pos = end;
+            continue;
+        }
+
+        size_t tagEnd = xhtml.find('>', pos);
+        if (tagEnd == std::string::npos) break;
+
+        std::string tag = xhtml.substr(pos, tagEnd - pos + 1);
+        std::string lowerTag = lowerCopy(tag);
+
+        if (lowerTag.rfind("<small", 0) == 0) {
+            size_t closePos = xhtml.find("</small>", tagEnd + 1);
+            if (closePos != std::string::npos) {
+                size_t blockEnd = closePos + 8;
+                std::string block = xhtml.substr(pos, blockEnd - pos);
+                if (lastWordValid && containsMatchingStrongs(block, wanted)) {
+                    for (size_t i = lastWordStart;
+                         i < lastWordEnd && i < mask.size(); ++i) {
+                        mask[i] = true;
+                    }
+                }
+                pos = blockEnd;
+                continue;
+            }
+        }
+
+        if (lowerTag.rfind("<w", 0) == 0) {
+            size_t closePos = xhtml.find("</w>", tagEnd + 1);
+            if (closePos != std::string::npos) {
+                std::string inner = xhtml.substr(tagEnd + 1, closePos - (tagEnd + 1));
+                size_t before = plain.size();
+                appendVisibleText(stripTagsSimple(inner),
+                                  plain, mask,
+                                  lastWordStart, lastWordEnd, lastWordValid);
+                if (containsMatchingStrongs(tag, wanted)) {
+                    for (size_t i = before; i < plain.size() && i < mask.size(); ++i) {
+                        mask[i] = true;
+                    }
+                }
+                pos = closePos + 4;
+                continue;
+            }
+        }
+
+        if (lowerTag.rfind("<a", 0) == 0) {
+            size_t closePos = xhtml.find("</a>", tagEnd + 1);
+            if (closePos != std::string::npos) {
+                std::string inner = xhtml.substr(tagEnd + 1, closePos - (tagEnd + 1));
+                std::string innerText = stripTagsSimple(inner);
+                size_t before = plain.size();
+                appendVisibleText(innerText,
+                                  plain, mask,
+                                  lastWordStart, lastWordEnd, lastWordValid);
+                std::string href;
+                if (extractTagAttribute(tag, "href", href) &&
+                    containsMatchingStrongs(href, wanted)) {
+                    for (size_t i = before; i < plain.size() && i < mask.size(); ++i) {
+                        mask[i] = true;
+                    }
+                }
+                pos = closePos + 4;
+                continue;
+            }
+        }
+
+        pos = tagEnd + 1;
+    }
+
+    MaskedText collapsed = collapseWhitespaceWithMask(plain, mask);
+    if (collapsed.text.empty()) {
+        return plainFallback;
+    }
+
+    if (std::find(collapsed.mask.begin(), collapsed.mask.end(), true) ==
+        collapsed.mask.end()) {
+        if (collapsed.text.size() <= maxLen) return collapsed.text;
+        return collapsed.text.substr(0, maxLen) + "...";
+    }
+
+    return buildSnippetMarkup(collapsed.text, collapsed.mask, maxLen);
 }
 
 } // namespace
@@ -521,7 +878,7 @@ std::vector<SearchResult> SearchIndexer::searchWord(
 
     std::string sql =
         "SELECT module_name, key_text, "
-        "snippet(verse_index, 5, '', '', ' ... ', 18) "
+        "snippet(verse_index, 5, '<span class=\"searchhit\">', '</span>', ' ... ', 18) "
         "FROM verse_index "
         "WHERE verse_index MATCH ? AND module_name = ? "
         "ORDER BY bm25(verse_index)";
@@ -569,8 +926,7 @@ std::vector<SearchResult> SearchIndexer::searchStrongs(
     std::lock_guard<std::mutex> lock(dbMutex_);
 
     std::string sql =
-        "SELECT module_name, key_text, "
-        "snippet(verse_index, 5, '', '', ' ... ', 18) "
+        "SELECT module_name, key_text, strongs_text, plain_text "
         "FROM verse_index "
         "WHERE verse_index MATCH ? AND module_name = ? "
         "ORDER BY bm25(verse_index)";
@@ -593,10 +949,13 @@ std::vector<SearchResult> SearchIndexer::searchStrongs(
         SearchResult result;
         const char* module = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 0));
         const char* key = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 1));
-        const char* snippet = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 2));
+        const char* strongs = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 2));
+        const char* plain = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 3));
         result.module = module ? module : moduleName;
         result.key = key ? key : "";
-        result.text = snippet ? snippet : "";
+        result.text = buildStrongsSnippet(strongs ? strongs : "",
+                                          strongsQuery,
+                                          plain ? plain : "");
         results.push_back(std::move(result));
     }
 
@@ -651,7 +1010,7 @@ std::vector<SearchResult> SearchIndexer::searchRegex(
         SearchResult result;
         result.module = module ? module : moduleName;
         result.key = key ? key : "";
-        result.text = buildRegexSnippet(plainText, match);
+        result.text = buildRegexSnippet(plainText, match, re);
         results.push_back(std::move(result));
 
         if (maxResults > 0 && static_cast<int>(results.size()) >= maxResults) {
