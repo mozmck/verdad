@@ -27,6 +27,14 @@ struct ModuleInfo {
     std::string description;    // Full description
     std::string type;           // "Biblical Texts", "Commentaries", "Lexicons / Dictionaries", etc.
     std::string language;       // Language code
+    std::string abbreviation;   // Optional long-form abbreviation/title
+    std::string version;        // Module version from config
+    std::string markup;         // SourceType / markup family
+    std::string category;       // Optional installer/display category
+    std::string aboutHtml;      // Long about text rendered to HTML
+    std::string distributionLicense;
+    std::string textSource;
+    std::vector<std::string> featureLabels;
     bool hasStrongs = false;
     bool hasMorph = false;
 };

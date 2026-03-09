@@ -4,6 +4,7 @@
 #include <FL/Fl_Group.H>
 #include <FL/Fl_Tree.H>
 #include <string>
+#include <unordered_map>
 
 namespace verdad {
 
@@ -21,6 +22,7 @@ public:
 private:
     VerdadApp* app_;
     Fl_Tree* tree_;
+    std::unordered_map<const Fl_Tree_Item*, std::string> itemModuleNames_;
 
     /// Populate the tree with available modules
     void populateTree();

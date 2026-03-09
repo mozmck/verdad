@@ -371,6 +371,55 @@ div.preview-verse-ref > a.preview-verse-link:hover {
     text-decoration: underline;
 }
 
+div.module-preview h3 {
+    margin: 0 0 6px 0;
+    color: #1a5276;
+}
+
+div.module-preview p.module-preview-summary {
+    margin: 0 0 10px 0;
+    font-style: italic;
+}
+
+table.module-preview-meta {
+    border-collapse: collapse;
+    margin: 0 0 10px 0;
+}
+
+table.module-preview-meta td {
+    vertical-align: top;
+    padding: 1px 8px 1px 0;
+}
+
+table.module-preview-meta td.label {
+    font-weight: bold;
+    color: #444;
+    white-space: nowrap;
+}
+
+div.module-preview-section {
+    margin-top: 10px;
+}
+
+div.module-preview-section-title {
+    margin-bottom: 4px;
+    font-weight: bold;
+    color: #1a5276;
+}
+
+div.module-preview-section ul {
+    margin: 0;
+    padding-left: 18px;
+}
+
+div.module-preview-section li {
+    margin: 2px 0;
+}
+
+div.module-preview-about {
+    line-height: 1.3;
+}
+
 div.link-preview .entry-key,
 div.general-book .entry-key {
     font-size: 1.2em;

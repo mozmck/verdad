@@ -8,6 +8,7 @@
 #include <versekey.h>
 #include <listkey.h>
 #include <markupfiltmgr.h>
+#include <rtfhtml.h>
 #include <swbuf.h>
 
 #include <algorithm>
@@ -16,6 +17,7 @@
 #include <sstream>
 #include <cstring>
 #include <cctype>
+#include <cstdlib>
 
 namespace verdad {
 namespace {
@@ -34,6 +36,174 @@ std::string trimCopy(const std::string& s) {
         --end;
     }
     return s.substr(start, end - start);
+}
+
+std::string safeConfigEntry(const char* value) {
+    return value ? std::string(value) : std::string();
+}
+
+std::string moduleMetadataLocaleSuffix() {
+    const char* vars[] = {"LC_ALL", "LC_MESSAGES", "LANG"};
+    for (const char* var : vars) {
+        const char* raw = std::getenv(var);
+        if (!raw || !*raw) continue;
+
+        std::string locale(raw);
+        size_t cut = locale.find_first_of(".@");
+        if (cut != std::string::npos) locale.erase(cut);
+        cut = locale.find_first_of("-_");
+        if (cut != std::string::npos) locale.erase(cut);
+        if (locale.size() < 2) continue;
+        if (!std::isalpha(static_cast<unsigned char>(locale[0])) ||
+            !std::isalpha(static_cast<unsigned char>(locale[1]))) {
+            continue;
+        }
+
+        std::string suffix = locale.substr(0, 2);
+        std::transform(suffix.begin(), suffix.end(), suffix.begin(),
+                       [](unsigned char c) {
+                           return static_cast<char>(std::tolower(c));
+                       });
+        if (suffix == "c" || suffix == "po") continue;
+        return suffix;
+    }
+
+    return "";
+}
+
+std::string moduleConfigEntry(sword::SWModule* mod, const char* key) {
+    if (!mod || !key || !*key) return "";
+    return safeConfigEntry(mod->getConfigEntry(key));
+}
+
+std::string localizedModuleConfigEntry(sword::SWModule* mod, const char* key) {
+    if (!mod || !key || !*key) return "";
+
+    const std::string localeSuffix = moduleMetadataLocaleSuffix();
+    if (!localeSuffix.empty()) {
+        const std::string localizedKey = std::string(key) + "_" + localeSuffix;
+        std::string localizedValue = moduleConfigEntry(mod, localizedKey.c_str());
+        if (!localizedValue.empty()) return localizedValue;
+    }
+
+    return moduleConfigEntry(mod, key);
+}
+
+std::string formattedModuleConfigEntryHtml(sword::SWModule* mod, const char* key) {
+    const std::string raw = localizedModuleConfigEntry(mod, key);
+    if (raw.empty()) return "";
+
+    sword::SWBuf buffer(raw.c_str());
+    sword::RTFHTML filter;
+    filter.processText(buffer, nullptr, nullptr);
+    return std::string(buffer.c_str());
+}
+
+bool moduleHasConfigValue(sword::SWModule* mod,
+                          const char* section,
+                          const char* value) {
+    return mod && section && value && *value &&
+           mod->getConfig().has(section, value);
+}
+
+template <size_t N>
+bool moduleHasAnyGlobalOption(sword::SWModule* mod,
+                              const char* const (&values)[N]) {
+    for (const char* value : values) {
+        if (moduleHasConfigValue(mod, "GlobalOptionFilter", value)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool moduleHasFeature(sword::SWModule* mod, const char* value) {
+    return moduleHasConfigValue(mod, "Feature", value);
+}
+
+void appendFeatureLabel(std::vector<std::string>& labels,
+                        const std::string& label) {
+    if (label.empty()) return;
+    if (std::find(labels.begin(), labels.end(), label) == labels.end()) {
+        labels.push_back(label);
+    }
+}
+
+std::vector<std::string> moduleFeatureLabels(sword::SWModule* mod) {
+    std::vector<std::string> labels;
+
+    static const char* kHeadings[] = {"ThMLHeadings", "OSISHeadings"};
+    static const char* kFootnotes[] = {"GBFFootnotes", "ThMLFootnotes", "OSISFootnotes"};
+    static const char* kCrossRefs[] = {"ThMLScripref", "OSISScripref"};
+    static const char* kStrongs[] = {"GBFStrongs", "ThMLStrongs", "OSISStrongs"};
+    static const char* kMorph[] = {"GBFMorph", "ThMLMorph", "OSISMorph"};
+    static const char* kLemmas[] = {"ThMLLemma", "OSISLemma"};
+    static const char* kRedLetter[] = {"GBFRedLetterWords", "OSISRedLetterWords"};
+    static const char* kGreekAccents[] = {"UTF8GreekAccents"};
+    static const char* kHebrewPoints[] = {"UTF8HebrewPoints"};
+    static const char* kCantillation[] = {"UTF8Cantillation"};
+    static const char* kVariants[] = {"ThMLVariants", "OSISVariants"};
+    static const char* kXlit[] = {"OSISXlit"};
+    static const char* kEnum[] = {"OSISEnum"};
+    static const char* kGlosses[] = {"OSISGlosses", "OSISRuby"};
+    static const char* kMorphemeSeg[] = {"OSISMorphSegmentation"};
+
+    if (moduleHasAnyGlobalOption(mod, kHeadings)) {
+        appendFeatureLabel(labels, "Headings");
+    }
+    if (moduleHasAnyGlobalOption(mod, kFootnotes)) {
+        appendFeatureLabel(labels, "Footnotes");
+    }
+    if (moduleHasAnyGlobalOption(mod, kCrossRefs)) {
+        appendFeatureLabel(labels, "Cross references");
+    }
+    if (moduleHasFeature(mod, "StrongsNumbers") ||
+        moduleHasAnyGlobalOption(mod, kStrongs)) {
+        appendFeatureLabel(labels, "Strong's numbers");
+    }
+    if (moduleHasAnyGlobalOption(mod, kMorph) ||
+        moduleHasFeature(mod, "GreekParse") ||
+        moduleHasFeature(mod, "HebrewParse")) {
+        appendFeatureLabel(labels, "Morphological tags");
+    }
+    if (moduleHasAnyGlobalOption(mod, kLemmas)) {
+        appendFeatureLabel(labels, "Lemmas");
+    }
+    if (moduleHasAnyGlobalOption(mod, kRedLetter)) {
+        appendFeatureLabel(labels, "Words of Christ in red");
+    }
+    if (moduleHasAnyGlobalOption(mod, kGreekAccents)) {
+        appendFeatureLabel(labels, "Greek accents");
+    }
+    if (moduleHasAnyGlobalOption(mod, kHebrewPoints)) {
+        appendFeatureLabel(labels, "Hebrew vowel points");
+    }
+    if (moduleHasAnyGlobalOption(mod, kCantillation)) {
+        appendFeatureLabel(labels, "Hebrew cantillation");
+    }
+    if (moduleHasAnyGlobalOption(mod, kVariants)) {
+        appendFeatureLabel(labels, "Variant readings");
+    }
+    if (moduleHasAnyGlobalOption(mod, kXlit)) {
+        appendFeatureLabel(labels, "Transliteration forms");
+    }
+    if (moduleHasAnyGlobalOption(mod, kEnum)) {
+        appendFeatureLabel(labels, "Enumerations");
+    }
+    if (moduleHasAnyGlobalOption(mod, kGlosses)) {
+        appendFeatureLabel(labels, "Glosses");
+    }
+    if (moduleHasAnyGlobalOption(mod, kMorphemeSeg)) {
+        appendFeatureLabel(labels, "Morpheme segmentation");
+    }
+    if (moduleHasFeature(mod, "GreekDef")) {
+        appendFeatureLabel(labels, "Greek definitions");
+    }
+    if (moduleHasFeature(mod, "HebrewDef")) {
+        appendFeatureLabel(labels, "Hebrew definitions");
+    }
+
+    return labels;
 }
 
 std::string extractChapterHeadingHtml(const std::string& raw) {
@@ -3730,26 +3900,30 @@ std::string SwordManager::postProcessHtml(const std::string& html) const {
 ModuleInfo SwordManager::buildModuleInfo(sword::SWModule* mod) const {
     ModuleInfo info;
     info.name = mod->getName();
-    info.description = mod->getDescription();
+    info.description = localizedModuleConfigEntry(mod, "Description");
+    if (info.description.empty()) {
+        info.description = safeConfigEntry(mod->getDescription());
+    }
     info.type = mod->getType();
 
     auto lang = mod->getLanguage();
     info.language = lang ? lang : "en";
+    info.abbreviation = moduleConfigEntry(mod, "Abbreviation");
+    info.version = moduleConfigEntry(mod, "Version");
+    info.markup = moduleConfigEntry(mod, "SourceType");
+    info.category = moduleConfigEntry(mod, "Category");
+    info.aboutHtml = formattedModuleConfigEntryHtml(mod, "About");
+    info.distributionLicense = moduleConfigEntry(mod, "DistributionLicense");
+    info.textSource = moduleConfigEntry(mod, "TextSource");
+    info.featureLabels = moduleFeatureLabels(mod);
 
-    // Check for Strong's
-    auto feat = mod->getConfigEntry("Feature");
-    if (feat) {
-        std::string features(feat);
-        info.hasStrongs = features.find("StrongsNumbers") != std::string::npos;
-    }
-    auto filter = mod->getConfigEntry("GlobalOptionFilter");
-    if (filter) {
-        std::string filters(filter);
-        if (!info.hasStrongs) {
-            info.hasStrongs = filters.find("Strongs") != std::string::npos;
-        }
-        info.hasMorph = filters.find("Morph") != std::string::npos;
-    }
+    info.hasStrongs = moduleHasFeature(mod, "StrongsNumbers") ||
+                      std::find(info.featureLabels.begin(),
+                                info.featureLabels.end(),
+                                "Strong's numbers") != info.featureLabels.end();
+    info.hasMorph = std::find(info.featureLabels.begin(),
+                              info.featureLabels.end(),
+                              "Morphological tags") != info.featureLabels.end();
 
     return info;
 }
