@@ -1,34 +1,42 @@
 <div class="help-doc">
   <h1>Verdad Help</h1>
-  <p>Use the topic list on the left to jump to any section. The content on the right is loaded from this external file so it can be expanded without rebuilding the application logic.</p>
+  <p>Use the topic list on the left to jump to any section. This help window loads its content from an external file so the documentation can be updated without changing the application logic.</p>
 
   <div class="general-book-toc">
     <div class="general-book-toc-title">Contents</div>
     <ul>
       <li><a href="#layout">Layout and Interaction</a></li>
+      <li><a href="#study-tabs">Study Tabs and Session Restore</a></li>
       <li><a href="#search-basics">Search Basics</a></li>
       <li><a href="#regex">Regex Search</a></li>
       <li><a href="#study-tools">Study Tools</a></li>
-      <li><a href="#general-books">General Books</a></li>
+      <li><a href="#right-pane">Commentary, Dictionary, and General Books</a></li>
+      <li><a href="#documents">Documents and Editable Commentary</a></li>
       <li><a href="#tags">Tags</a></li>
-      <li><a href="#tips">Practical Tips</a></li>
+      <li><a href="#modules-settings">Modules and Settings</a></li>
+      <li><a href="#tips">Shortcuts and Practical Tips</a></li>
     </ul>
   </div>
 
   <h2 id="layout">Layout and Interaction</h2>
-  <p>The left pane contains the always-visible search box, module list, search results, tags, and the preview pane at the bottom. The center pane shows Bible text for the active study tab. The right pane shows commentary, general books, dictionaries, and editable documents.</p>
-  <p>Single-clicking a search result updates the preview pane. Double-clicking a result opens it in the active study tab. Middle-clicking opens it in a new study tab. Hovering a Bible word can populate the lower-left MAG preview with Strong's and morphology details.</p>
-  <p>Verse numbers are clickable in the Bible and commentary panes. Clicking a commentary gutter verse number syncs the Bible pane to that verse. Scripture links inside commentary and general books open in the preview pane, and multi-verse links can populate the search results list. Internal table-of-contents links scroll within the current document.</p>
+  <p>The left pane contains the always-visible search box, the Modules/Search/Tags tabs, and the preview pane at the bottom. The center pane shows Bible text for the active study tab. The right pane shows commentary, general books, documents, and the always-available dictionary pane at the bottom.</p>
+  <p>The preview pane is shared by search previews, module metadata, MAG hover output, and link previews from the Bible, commentary, and general-book panes. In the Modules tab, selecting a module previews its metadata before you activate it.</p>
+  <p>Single-clicking a search result updates the preview pane. Double-clicking a result opens it in the active study tab. Middle-clicking opens it in a new study tab. Verse numbers are clickable in the Bible and commentary panes, and internal links either scroll in place, update the preview, or populate the Search tab with linked verses.</p>
+
+  <h2 id="study-tabs">Study Tabs and Session Restore</h2>
+  <p>Each study tab keeps its own Bible module, reference, paragraph or parallel mode, parallel module list, Bible scroll position, commentary module and scroll position, dictionary lookup, general-book selection, and splitter sizes. Use the <code>+</code> button or <code>Ctrl+T</code> to duplicate the current study tab.</p>
+  <p>When Verdad closes, it saves the main window size and position, the left preview height, the active study tab, all restored study tabs, and the currently opened document path. The Documents tab is global, not per-study-tab, so every study tab shares the same open document.</p>
 
   <h2 id="search-basics">Search Basics</h2>
-  <p>The Search tab module chooser controls which Bible text is searched. When a search starts from a Bible word context menu, Verdad automatically uses the module for the word that was clicked.</p>
-  <p><b>Multi-word</b> finds verses containing the search words, regardless of order. Example: <code>faith hope charity</code>.</p>
+  <p>The Search tab module chooser controls which Bible is searched. When a search starts from a Bible word context menu, Verdad automatically uses the module for the word that was clicked.</p>
+  <p><b>Multi-word</b> finds verses containing the search words in any order. Example: <code>faith hope charity</code>.</p>
   <p><b>Exact phrase</b> matches the words together in order. Example: <code>in the beginning</code>.</p>
-  <p><b>Strong's / lemma</b> searches indexed Strong's data. You can enter <code>G3588</code>, <code>H7225</code>, <code>strongs:G3588</code>, or <code>lemma:H7225</code>. Right-clicking a Bible word also exposes Strong's search actions.</p>
-  <p>Search results are sorted canonically by book, chapter, and verse. The preview pane shows the rendered verse, including working note and cross-reference markers when the source module provides them.</p>
+  <p><b>Regex</b> searches the indexed plain-text Bible content. Regex search waits for the selected module to finish indexing before it can return matches.</p>
+  <p><b>Strong's / lemma</b> searches indexed Strong's data. You can enter <code>G3588</code>, <code>H7225</code>, <code>strongs:G3588</code>, or <code>lemma:H7225</code>. Right-clicking a Bible word also exposes Strong's search and dictionary actions.</p>
+  <p>Search results are sorted canonically by book, chapter, and verse. Single-click a result to preview it, double-click it to navigate the current study tab, or middle-click it to open the verse in a new study tab.</p>
 
   <h2 id="regex">Regex Search</h2>
-  <p>Regex search uses ECMAScript syntax and is case-insensitive. It runs against the indexed plain-text Bible content. If a module has not finished indexing yet, regex search waits for that index before it can return matches.</p>
+  <p>Regex search uses ECMAScript syntax and is case-insensitive. It runs against the indexed plain-text Bible content rather than the rendered XHTML.</p>
   <p>Useful building blocks:</p>
   <p><code>.</code> matches any single character except a newline.</p>
   <p><code>*</code>, <code>+</code>, and <code>?</code> repeat the previous token. Examples: <code>grac(e|es)</code>, <code>king(dom)?</code>.</p>
@@ -45,20 +53,32 @@
   <p>If a regex produces too many results, narrow it with anchors, explicit word boundaries, or more precise alternatives.</p>
 
   <h2 id="study-tools">Study Tools</h2>
-  <p>The Bible toolbar lets you switch modules, move between chapters, jump to a reference, toggle paragraph mode, and enable parallel columns. Additional toggle buttons control whether inline study markers are shown for Strong's data, morphology, note markers, and cross references.</p>
-  <p>Right-clicking a Bible word opens the study context menu. From there you can copy the word, search for the word, search Strong's numbers behind the word, look the word up in a dictionary, or add a tag for the current verse.</p>
-  <p>The dictionary pane at the bottom of the right side is always available for lexicon and dictionary lookups. It follows Strong's and plain-word lookups without leaving the current study tab.</p>
+  <p>The Bible toolbar lets you switch modules, move between chapters, jump to a reference, toggle paragraph mode, and enable parallel columns. Parallel view supports up to seven Bible columns, and the first column remains the master module for navigation and search.</p>
+  <p>Additional toggle buttons control whether inline study markers are shown for Strong's data, morphology, footnotes, and cross references. Hiding those markers does not disable hover lookups or the Bible word context menu.</p>
+  <p>Hovering a Bible word can populate the lower-left MAG preview after the configured delay. Right-clicking a word opens the study context menu, where you can copy the word or verse reference, search for the word, search Strong's numbers behind the word, look the word up in a dictionary, or add a tag for the current verse.</p>
 
-  <h2 id="general-books">General Books</h2>
-  <p>The General Books tab now uses the module's table of contents directly. The first chooser selects the module and the second chooser selects a TOC entry. When you choose an entry that has children, Verdad renders that entry and its descendants together so you can scroll continuously through the section.</p>
-  <p>The page also includes an inline contents list that jumps to sections already loaded in the current view. Scripture references inside general books open in the preview pane, and note links can populate the preview pane when the module exposes note data.</p>
+  <h2 id="right-pane">Commentary, Dictionary, and General Books</h2>
+  <p>The commentary tab follows the selected Bible verse. Clicking a commentary gutter verse number syncs the Bible pane to that verse. Commentary links can open linked verses in the Search tab or preview related content in the lower-left preview pane.</p>
+  <p>The dictionary pane at the bottom of the right side is always available for lexicon and dictionary lookups. It follows Strong's and plain-word lookups without leaving the current study tab, and its default modules come from the Settings dialog.</p>
+  <p>The General Books tab uses the module's table of contents directly. The first chooser selects the module and the second chooser selects a TOC entry. When you choose an entry that has children, Verdad renders that entry and its descendants together so you can scroll continuously through the section.</p>
+  <p>The page also includes an inline contents list that jumps to sections already loaded in the current view. Scripture references inside general books can populate the Search tab with linked verses, while note links and single references can update the preview pane.</p>
+
+  <h2 id="documents">Documents and Editable Commentary</h2>
+  <p>The Documents tab is a lightweight HTML note editor. You can create, open, save, and close HTML files from the File menu or from the buttons inside the tab. The editor supports bold, italic, lists, text sizing, and horizontal rules.</p>
+  <p>Verse references typed into a document are turned into clickable links in the saved HTML. Verdad restores the last opened document path when the session is restored.</p>
+  <p>The Commentary tab also exposes an <b>Edit</b> button when the current module is writable. Editing changes the raw entry for the current commentary reference and writes it back through SWORD when you save.</p>
 
   <h2 id="tags">Tags</h2>
-  <p>Tags are verse-based and stored separately from the search index. Open the Tags tab in the left pane to browse tags, filter them, rename them, remove verses, and preview tagged verses.</p>
-  <p>Tagged verses in the Bible pane now end with a single marker instead of one marker per tag. Hover the marker to see every tag attached to that verse, and click it to open the tag list for that verse.</p>
+  <p>Tags are verse-based and stored separately from the search index. Open the Tags tab in the left pane to browse tags, filter them by tag name or verse reference, rename them, delete them, remove verses from them, and preview tagged verses.</p>
+  <p>Tagged verses in the Bible pane end with a single marker instead of one marker per tag. Hover the marker to see every tag attached to that verse, and click it to open the tag list for that verse.</p>
+  <p>Inside the Tags tab, double-clicking a verse opens it in the active study tab. Middle-clicking opens it in a new study tab.</p>
+
+  <h2 id="modules-settings">Modules and Settings</h2>
+  <p><code>File &gt; Module Manager...</code> opens the built-in SWORD module manager. It can add local sources, add remote sources, refresh source content, and install or update modules. Remote sources can reveal network activity, so use local sources when that matters for your situation.</p>
+  <p><code>View &gt; Settings...</code> controls the application font, text font, text size, hover delay, default Greek and Hebrew Strong's dictionaries, and language-specific word dictionaries. <code>F1</code> opens this help window.</p>
 
   <h2 id="tips">Practical Tips</h2>
+  <p><code>Ctrl+G</code> opens Go to Verse, <code>Ctrl+P</code> toggles parallel Bibles, <code>Ctrl+T</code> duplicates the current study tab, <code>Ctrl+N/O/S/W</code> control the Documents tab, and <code>Ctrl+Q</code> quits.</p>
   <p>If a search result or verse preview shows note markers, click them in the preview pane to read the footnote or cross-reference content without losing your place in the result list.</p>
-  <p>If you want to compare translations, enable parallel view and keep the first module as the “master” module for searching and navigation.</p>
-  <p>If the right pane feels crowded, resize the splitters. Verdad remembers pane sizes, open study tabs, and the active document between sessions.</p>
+  <p>If you want to compare translations, enable parallel view and keep the first module as the master module for searching and navigation. If the right pane feels crowded, resize the splitters. Verdad remembers pane sizes, study tabs, and the active document path between sessions.</p>
 </div>

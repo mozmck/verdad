@@ -1,180 +1,80 @@
 # Verdad Bible Study
 
-A desktop Bible study application built with C++17, featuring:
-
-- **FLTK** (statically linked) for the user interface
-- **litehtml** for XHTML rendering of Bible text
-- **SWORD** (CrossWire) library for Bible module access with FMT_XHTML rendering
+Verdad is a desktop Bible study application for CrossWire SWORD modules. It keeps Bible reading, commentary, dictionaries, general books, search, tags, and notes in one window.
 
 ## Features
 
-### Three-Pane Layout
+- Multiple study tabs. Duplicate the current workspace, keep multiple passages open, and restore your tab set on the next launch.
+- Three-pane study layout. The left pane handles modules, search, tags, and preview; the center pane shows Bible text; the right pane shows commentary, dictionaries, general books, and documents.
+- Fast Bible search. Search by multi-word query, exact phrase, regex, or Strong's/lemma references, with canonical result ordering and a live preview pane.
+- Search results workflow. Single-click a result to preview it, double-click to navigate the current study tab, or middle-click to open it in a new study tab.
+- Bible reading tools. Jump by book, chapter, or typed reference; move chapter to chapter; switch between verse and paragraph mode; and compare up to seven Bible modules in parallel columns.
+- Study marker controls. Toggle visible Strong's, morphology, footnote, and cross-reference markers without losing the underlying hover and context-menu data.
+- Word study actions. Hovering a Bible word fills the lower-left MAG preview, and right-clicking exposes word search, Strong's search, dictionary lookup, copy, and tagging actions.
+- Synced right pane. Commentary follows the selected verse, the dictionary pane stays available at the bottom, and general books use the module TOC directly.
+- General books support. Pick a TOC entry from the chooser, render parent sections with descendants for continuous scrolling, and follow internal links without leaving the pane.
+- Verse tagging. Create tags, rename or delete them, filter tags by name or verse reference, browse all tagged verses, and jump from a tag entry back into the Bible.
+- Notes and editable content. The Documents tab opens and saves HTML study notes with lightweight rich-text editing, and writable commentary modules can be edited in place.
+- Session persistence. Verdad remembers window geometry, splitter sizes, active study tab, Bible state, right-pane selections, open document path, and scroll positions.
+- Built-in module management. Add local or remote SWORD sources, refresh them, and install or update modules from inside the app.
+- Appearance and dictionary preferences. Choose UI font, text font and size, hover delay, default Greek and Hebrew Strong's dictionaries, and language-specific word dictionaries.
 
-- **Left Pane** — Tabs for:
-  - **Modules**: Tree view of all installed SWORD modules (Bibles, commentaries, dictionaries)
-  - **Search**: Full-text search with multi-word, phrase, and regex modes; results list with preview
-  - **Tags**: User-defined verse tags with verse lists per tag
-  - Always-visible search box at top
-  - Preview area at bottom for displaying selected search result text
+## Everyday workflow
 
-- **Center Pane** — Bible text display:
-  - Navigation bar with book/chapter selectors and reference input
-  - Tabbed browsing of multiple Bible modules
-  - Parallel Bible view (side-by-side columns)
-  - Previous/next chapter navigation
+The left pane combines the always-visible search box with three tabs: `Modules`, `Search`, and `Tags`. The preview area at the bottom is shared by search results, module metadata, MAG hover output, and link previews from Bible, commentary, and general-book panes.
 
-- **Right Pane** — Commentary and dictionary:
-  - Commentary tab with module selector
-  - Dictionary/lexicon tab with module selector
-  - Auto-updates commentary when navigating Bible text
+The center pane is the active Bible workspace. The right pane keeps commentary, general books, and the global Documents editor in top tabs, with the dictionary or lexicon pane docked below them. Scripture links inside commentary and general books can populate the preview pane or the Search tab, depending on whether a link resolves to one verse or many.
 
-### Additional Features
+## SWORD modules and local data
 
-- **Word Hover Tooltip**: Hovering over words shows Strong's numbers, definitions, and morphology in a preview widget in the left pane
-- **Right-Click Context Menu**:
-  - Search for underlying Strong's number
-  - Look up word in dictionary/lexicon
-  - Add/remove verse tags
-  - Copy verse reference or word
-- **Parallel Bible View**: Display multiple Bible translations side-by-side
-- **Verse Tagging**: Create custom tags, apply to any verse, browse all verses by tag
+Verdad is useful only after SWORD modules are installed. You can install them with your normal SWORD tooling or from `File > Module Manager...`. The module manager supports local sources and remote sources. Remote sources can reveal network activity, so use local sources when that matters for your situation.
 
-## Dependencies
+Verdad stores user state in `~/.config/verdad/` on Linux:
 
-### Required Libraries
+- `preferences.conf` for appearance, layout, and restored session state
+- `module_index.db` for the background SQLite search index
+- `tags.db` for verse tags
 
-| Library | Purpose | Notes |
-|---------|---------|-------|
-| [FLTK](https://www.fltk.org/) ≥ 1.4 | GUI toolkit | Linked statically |
-| [litehtml](https://github.com/litehtml/litehtml) | HTML/CSS renderer | |
-| [SWORD](https://crosswire.org/sword/) ≥ 1.8 | Bible module access | |
-| X11 / Xft / fontconfig | Display (Linux) | |
+## Build and run
 
-### Installing Dependencies
-
-**Debian/Ubuntu:**
-```bash
-sudo apt-get install -y \
-    libfltk1.3-dev \
-    libsword-dev \
-    libx11-dev libxft-dev libxrender-dev libfontconfig1-dev \
-    libxinerama-dev libxcursor-dev libxfixes-dev \
-    libpng-dev libjpeg-dev zlib1g-dev \
-    cmake g++ pkg-config
-```
-
-For litehtml, you may need to build from source:
-```bash
-git clone https://github.com/nicehash/nicehash-litehtml.git
-cd nicehash-litehtml
-mkdir build && cd build
-cmake .. -DCMAKE_INSTALL_PREFIX=/usr/local
-make && sudo make install
-```
-
-**Fedora:**
-```bash
-sudo dnf install -y \
-    fltk-devel fltk-static \
-    sword-devel \
-    libX11-devel libXft-devel libXrender-devel fontconfig-devel \
-    libXinerama-devel libXcursor-devel libXfixes-devel \
-    libpng-devel libjpeg-devel zlib-devel \
-    cmake gcc-c++ pkgconfig
-```
-
-### Installing SWORD Modules
-
-After installing the SWORD library, install Bible modules:
-```bash
-# Install the module manager
-sudo apt-get install -y libsword-utils
-
-# List available modules
-installmgr -s          # List sources
-installmgr -r          # Refresh remote sources
-installmgr -l          # List available modules
-
-# Install modules (examples)
-installmgr -i KJV      # King James Version
-installmgr -i ESV2011  # English Standard Version
-installmgr -i MHC      # Matthew Henry Commentary
-installmgr -i StrongsGreek
-installmgr -i StrongsHebrew
-installmgr -i Robinson # Robinson morphology codes
-```
-
-## Building
+Verdad currently builds as a C++17 desktop application with CMake.
 
 ```bash
-mkdir build && cd build
-cmake .. -DCMAKE_BUILD_TYPE=Release
-make -j$(nproc)
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug
+cmake --build build -j$(nproc)
+./build/verdad
 ```
 
-### Build Options
+For a release build:
 
 ```bash
-# Debug build
-cmake .. -DCMAKE_BUILD_TYPE=Debug
-
-# Custom install prefix
-cmake .. -DCMAKE_INSTALL_PREFIX=/usr/local
-
-# Specify FLTK path if not found automatically
-cmake .. -DFLTK_DIR=/path/to/fltk
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build -j$(nproc)
 ```
 
-### Install
+You need a C++17 compiler, `fltk-config`, the CrossWire SWORD development files, SQLite3, and the usual X11/Xft/fontconfig dependencies on Linux. `litehtml` is vendored under `libs/litehtml`, so it is built with the project instead of being installed separately. `data/master.css` and `data/help.html` are copied into `build/data/` automatically during the build.
 
-```bash
-sudo make install
-```
+There is no dedicated automated test suite yet. Validation is currently a successful build plus manual UI smoke testing in the running application.
 
-## Running
+## Technical overview
 
-```bash
-./verdad
-```
+- UI: FLTK
+- HTML rendering: `litehtml`
+- Module access and XHTML generation: CrossWire SWORD
+- Search indexing: SQLite FTS5 over Bible modules
+- Tag storage: separate SQLite database from the search index
+- Runtime styling and help content: [`data/master.css`](data/master.css) and [`data/help.html`](data/help.html)
 
-The application will:
-1. Initialize the SWORD library and detect installed modules
-2. Load user preferences and tags from `~/.config/verdad/`
-3. Display the main three-pane window
+Project layout:
 
-## Project Structure
-
-```
-verdad/
-├── CMakeLists.txt              # Build configuration
-├── cmake/
-│   └── FindSWORD.cmake         # CMake module to find SWORD library
-├── data/
-│   └── master.css              # Default CSS for Bible text rendering
-└── src/
-    ├── main.cpp                # Application entry point
-    ├── app/
-    │   ├── VerdadApp.h         # Main application class
-    │   └── VerdadApp.cpp
-    ├── sword/
-    │   ├── SwordManager.h      # SWORD library wrapper
-    │   └── SwordManager.cpp
-    ├── tags/
-    │   ├── TagManager.h        # Verse tagging system
-    │   └── TagManager.cpp
-    └── ui/
-        ├── MainWindow.h/cpp    # Main window with three-pane layout
-        ├── HtmlWidget.h/cpp    # FLTK widget using litehtml for XHTML
-        ├── LeftPane.h/cpp      # Left pane (modules/search/tags)
-        ├── BiblePane.h/cpp     # Center pane (Bible text with tabs)
-        ├── RightPane.h/cpp     # Right pane (commentary/dictionary)
-        ├── SearchPanel.h/cpp   # Search results panel
-        ├── ModulePanel.h/cpp   # Module tree panel
-        ├── TagPanel.h/cpp      # Tag management panel
-        ├── ToolTipWindow.h/cpp # Floating tooltip for word info
-        └── VerseContext.h/cpp  # Right-click context menu
-```
+- `src/app/` application startup, preferences, and session restore
+- `src/ui/` FLTK panes, widgets, dialogs, and editors
+- `src/sword/` SWORD integration, markup normalization, and rendered HTML generation
+- `src/search/` SQLite-backed indexing and search
+- `src/tags/` verse tagging and persistence
+- `cmake/` custom CMake find modules
+- `libs/litehtml/` vendored rendering dependency
 
 ## License
 
-See [LICENSE](LICENSE) for details.
+See [LICENSE](LICENSE).

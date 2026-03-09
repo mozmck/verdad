@@ -1,39 +1,68 @@
-Create a desktop Bible study app similar to Xihpos in C++ using:
-- FLTK linked STATICALLY (use fltk-config)
-- litehtml for XHTML rendering - add this as a submodule
-- CrossWire SWORD for module access/rendering (FMT_XHTML)
+Verdad current program summary
 
-Here is the basic layout and features:
-- Left Pane with tabs for sword modules, search results, tags.
-    - There should be a search box at the top that is visible all the time.
-    - There should be a pane at the bottom for displaying the currently selected search result.
-    - Search by word, strongs/lemma, multiple word, will search the bible in the current tab.  If parallel bibles are shown the first is the master and is the one searched.
-        - Search functionality should use SQLite FTS5
-        - Do background indexing of modules into a single db, but don't put anything else in that db.
-    - Search results show book of the bible, chapter and verse.
-        - Clicking on a result shows verse in preview pane at bottom.
-        - Double-click on a result shows selected verse in bible pane (commentary should change also).
-        - Middle-click (and option in right-click) will open verse in a new tab in Right Pane.
-- Right Pane for Bibles/Commentaries/Books.
-    - There will be a tabbed dual-pane window in the Right Pane. The tabs at the top will display the bible version and key (book/chapter/verse)
-        - On the left is a pane for bible display
-            - Bible text should be displayed in verse-per-line style, with an option for paragraph style.
-            - There should be a button to toggle displaying strongs/morph/notes tags in the text. The tags are used however for the hover MAG viewer mentioned later and must be available even if not displayed.
-            - At the bottom is a pane for strongs/morph/notes display.
-            - A verse can be selected by arrow keys or by clicking on the verse number.
-            - Bible text should be buffered for continuous scrolling instead of stopping at each chapter.
-            - A method to select and show up to 8 bibles in parallel beside each other in the bible pane.
-                - The text of each parallel bible should be in a separate column in the bible pane.
-        - On the right is a pane for Commentary/Book display
-            - Commentary should link to the currently selected verse from the bible pane.  When a verse is selected the commentary should show the section for that verse.
-            - Verse links should show 
-        - Selecting a tab in the Right Pane will change the bible pane and commentary/book pane to the bible version/book/chapter/verse and commentary/book that were last active in that tab.
+User-facing overview
+- Desktop Bible study application for CrossWire SWORD modules.
+- Left pane: always-visible search box, module browser, search results, tags, and shared preview area.
+- Center pane: Bible reader with book/chapter/module controls, typed reference entry, verse selection, paragraph mode, and parallel Bible columns.
+- Right pane: commentary, general books, and a global Documents tab across the top, with the dictionary or lexicon pane docked below.
 
-Other features desired are:
-- Desired default Strong's dictionaries are StrongRealGreek/StrongsRealHebrew, with fallback to StrongsGreek/StrongsHebrew.
-- Method of selecting default Lexicons and Dictionaries.
-- Hovering over a word in the bible pane shows the greek/hebrew/morph in a box just like the MAG viewer in Bibletime
-- An entry in the right-click menu over a word in the bible pane to search for the underlying strongs number.
-- A way to tag verses, show a list of tags in the left pane, and when a tag is selected display all the verses with that tag in the same pane.
-    - If we use SQLite for the tags, use a separate DB from the module index.
-- Save user settings using fltk preferences: window size/position, all pane sizes, Right Pane tab structures (bible/book/chapter/verse, commentary, book), and etc.
+Implemented features
+- Multiple study tabs with restore-on-startup behavior.
+- Search modes for multi-word, exact phrase, regex, and Strong's or lemma queries.
+- Background SQLite FTS5 indexing for Bible modules, with progress feedback in the Search tab.
+- Search result behavior:
+  - Single-click updates the preview pane.
+  - Double-click navigates the active study tab.
+  - Middle-click opens the verse in a new study tab.
+- Bible display tools:
+  - Verse-by-verse display or paragraph mode.
+  - Up to seven parallel Bible columns.
+  - Toggleable visible markers for Strong's, morphology, footnotes, and cross references.
+  - Word hover MAG preview plus right-click actions for search, Strong's search, dictionary lookup, copy, and tagging.
+- Commentary and reference tools:
+  - Commentary follows the selected verse.
+  - Commentary verse gutter links sync the Bible pane.
+  - Linked verses and notes from commentary or general books can update the preview pane or populate the Search tab.
+- General books:
+  - Module TOC chooser.
+  - Parent entries can render together with descendants for continuous scrolling.
+  - Inline contents links scroll inside the current rendered section.
+- Documents and editing:
+  - Lightweight HTML document editor with bold, italic, lists, text sizing, and horizontal rules.
+  - Verse references in saved documents become clickable `sword://` links.
+  - Writable commentary modules can be edited in place from the Commentary tab.
+- Tags:
+  - Verse-based tags with create, rename, delete, filter, and remove-verse actions.
+  - Tagged verses show a single marker in the Bible pane.
+  - Tags are stored separately from the search index.
+- Module and app management:
+  - Built-in Module Manager for local and remote SWORD sources.
+  - Settings dialog for UI font, text font and size, hover delay, default Strong's dictionaries, and language-specific word dictionaries.
+
+Persistent local files
+- `~/.config/verdad/preferences.conf`
+  - Window geometry, splitters, study tabs, restored session state, appearance, and dictionary preferences.
+- `~/.config/verdad/module_index.db`
+  - Search index database for Bible modules only.
+- `~/.config/verdad/tags.db`
+  - Verse tags in a separate SQLite database.
+
+Technical summary
+- Language and build system: C++17 with CMake.
+- UI toolkit: FLTK.
+- HTML renderer: vendored `litehtml`.
+- Module access and XHTML generation: CrossWire SWORD.
+- Runtime assets:
+  - `data/master.css` for rendered Bible/commentary/dictionary/general-book styling.
+  - `data/help.html` for the in-app help window.
+- Major source areas:
+  - `src/app/` application startup, preferences, session restore.
+  - `src/ui/` panes, dialogs, widgets, and editors.
+  - `src/sword/` module access, link resolution, HTML generation, markup cleanup.
+  - `src/search/` indexing and search.
+  - `src/tags/` tag management and persistence.
+
+Current limits
+- No dedicated automated test suite yet; validation is build plus manual UI checks.
+- Search indexing currently targets Bible modules.
+- Commentary editing only works for writable SWORD modules.
