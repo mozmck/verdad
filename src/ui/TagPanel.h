@@ -35,6 +35,7 @@ private:
     VerdadApp* app_;
 
     Fl_Input* filterInput_;
+    Fl_Button* clearFilterButton_;
 
     // Tag list at top
     Fl_Browser* tagBrowser_;
@@ -56,6 +57,7 @@ private:
     std::string activeBibleModule() const;
     void updateVersePreview(const std::string& verseKey);
     void activateVerseLine(int line, int mouseButton, bool isDoubleClick);
+    void updateFilterControls();
 
     /// Populate tag list
     void populateTags();
@@ -65,6 +67,7 @@ private:
 
     // Callbacks
     static void onFilterChange(Fl_Widget* w, void* data);
+    static void onClearFilter(Fl_Widget* w, void* data);
     static void onTagSelect(Fl_Widget* w, void* data);
     static void onVerseSelect(Fl_Widget* w, void* data);
     static void onNewTag(Fl_Widget* w, void* data);

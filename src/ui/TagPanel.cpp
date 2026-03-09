@@ -309,6 +309,7 @@ TagPanel::TagPanel(VerdadApp* app, int X, int Y, int W, int H)
     : Fl_Group(X, Y, W, H)
     , app_(app)
     , filterInput_(nullptr)
+    , clearFilterButton_(nullptr)
     , tagBrowser_(nullptr)
     , verseBrowser_(nullptr)
     , newTagButton_(nullptr)
@@ -321,6 +322,10 @@ TagPanel::TagPanel(VerdadApp* app, int X, int Y, int W, int H)
     filterInput_->when(FL_WHEN_CHANGED);
     filterInput_->callback(onFilterChange, this);
     filterInput_->tooltip("Filter tags by name or by verse reference");
+
+    clearFilterButton_ = new Fl_Button(X, Y, 10, 10, "X");
+    clearFilterButton_->callback(onClearFilter, this);
+    clearFilterButton_->tooltip("Clear the tag filter");
 
     tagBrowser_ = new Fl_Hold_Browser(X, Y, W, H);
     tagBrowser_->type(FL_HOLD_BROWSER);
@@ -346,6 +351,7 @@ TagPanel::TagPanel(VerdadApp* app, int X, int Y, int W, int H)
 
     resizable(verseBrowser_);
     layoutChildren();
+    updateFilterControls();
     populateTags();
 }
 
@@ -377,11 +383,12 @@ void TagPanel::showTagsForVerse(const std::string& verseKey) {
     if (!filterInput_) return;
     filterInput_->value(verseKey.c_str());
     selectedVerseKey_ = verseKey;
+    updateFilterControls();
     populateTags();
 }
 
 void TagPanel::layoutChildren() {
-    if (!filterInput_ || !tagBrowser_ || !verseBrowser_ ||
+    if (!filterInput_ || !clearFilterButton_ || !tagBrowser_ || !verseBrowser_ ||
         !newTagButton_ || !renameTagButton_ || !deleteTagButton_ ||
         !removeVerseButton_) {
         return;
@@ -390,13 +397,18 @@ void TagPanel::layoutChildren() {
     const int padding = 2;
     const int topInset = 12;
     const int filterH = 26;
+    const int clearButtonW = 52;
     const int buttonH = 25;
     const int innerX = x() + padding;
     const int innerW = std::max(20, w() - 2 * padding);
     const int bottomY = y() + h() - padding;
 
     int cy = y() + topInset;
-    filterInput_->resize(innerX, cy, innerW, filterH);
+    int actualClearButtonW = std::min(clearButtonW, std::max(0, innerW - 20 - padding));
+    int filterInputW = std::max(20, innerW - actualClearButtonW - padding);
+    filterInput_->resize(innerX, cy, filterInputW, filterH);
+    clearFilterButton_->resize(innerX + filterInputW + padding, cy,
+                               std::max(0, innerW - filterInputW - padding), filterH);
     cy += filterH + padding;
 
     int listAreaH = std::max(50, bottomY - cy - (2 * buttonH) - (3 * padding));
@@ -417,6 +429,17 @@ void TagPanel::layoutChildren() {
     cy += verseH + padding;
 
     removeVerseButton_->resize(innerX, std::min(cy, bottomY - buttonH), innerW, buttonH);
+}
+
+void TagPanel::updateFilterControls() {
+    if (!filterInput_ || !clearFilterButton_) return;
+
+    const char* value = filterInput_->value();
+    if (value && value[0]) {
+        clearFilterButton_->activate();
+    } else {
+        clearFilterButton_->deactivate();
+    }
 }
 
 void TagPanel::refreshBiblePane() {
@@ -557,7 +580,19 @@ void TagPanel::activateVerseLine(int line, int mouseButton, bool isDoubleClick) 
 void TagPanel::onFilterChange(Fl_Widget* /*w*/, void* data) {
     auto* self = static_cast<TagPanel*>(data);
     if (!self) return;
+    self->updateFilterControls();
     self->populateTags();
+}
+
+void TagPanel::onClearFilter(Fl_Widget* /*w*/, void* data) {
+    auto* self = static_cast<TagPanel*>(data);
+    if (!self || !self->filterInput_) return;
+
+    self->filterInput_->value("");
+    self->selectedVerseKey_.clear();
+    self->updateFilterControls();
+    self->populateTags();
+    self->filterInput_->take_focus();
 }
 
 void TagPanel::onTagSelect(Fl_Widget* /*w*/, void* data) {
