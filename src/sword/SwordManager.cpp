@@ -943,6 +943,248 @@ std::string normalizeLinkedVerseRef(const std::string& rawRef) {
     return trimCopy(out.str());
 }
 
+std::string normalizeBookLookupKey(const std::string& text) {
+    std::string out;
+    out.reserve(text.size());
+    for (char c : text) {
+        unsigned char uc = static_cast<unsigned char>(c);
+        if (std::isalnum(uc)) {
+            out.push_back(static_cast<char>(std::tolower(uc)));
+        }
+    }
+    return out;
+}
+
+const sword::VersificationMgr::System* versificationSystemForName(
+        const std::string& versificationName) {
+    sword::VersificationMgr* mgr =
+        sword::VersificationMgr::getSystemVersificationMgr();
+    if (!mgr) return nullptr;
+
+    std::string name = trimCopy(versificationName);
+    if (!name.empty()) {
+        if (const auto* system = mgr->getVersificationSystem(name.c_str())) {
+            return system;
+        }
+    }
+    return mgr->getVersificationSystem("KJV");
+}
+
+template <typename Callback>
+void forEachBookAlias(const sword::VersificationMgr::System* system,
+                      Callback&& callback) {
+    if (!system) return;
+
+    const int bookCount = system->getBookCount();
+    for (int bookNumber = 1; bookNumber <= bookCount; ++bookNumber) {
+        const sword::VersificationMgr::Book* book = system->getBook(bookNumber);
+        if (!book) continue;
+
+        const char* aliases[] = {
+            book->getLongName(),
+            book->getOSISName(),
+            book->getPreferredAbbreviation()
+        };
+        for (const char* alias : aliases) {
+            if (!alias || !*alias) continue;
+            callback(bookNumber, alias, book);
+        }
+    }
+}
+
+int resolveBookNumberExact(const std::string& bookName,
+                           const sword::VersificationMgr::System* system) {
+    const std::string wanted = normalizeBookLookupKey(bookName);
+    if (wanted.empty()) return -1;
+
+    int resolvedBook = -1;
+    forEachBookAlias(system,
+                     [&](int bookNumber, const char* alias,
+                         const sword::VersificationMgr::Book* /*book*/) {
+        if (resolvedBook >= 0) return;
+        if (normalizeBookLookupKey(alias) == wanted) {
+            resolvedBook = bookNumber;
+        }
+    });
+    return resolvedBook;
+}
+
+int boundedLevenshteinDistance(const std::string& lhs,
+                               const std::string& rhs,
+                               int maxDistance) {
+    if (lhs == rhs) return 0;
+    const int lhsLen = static_cast<int>(lhs.size());
+    const int rhsLen = static_cast<int>(rhs.size());
+    if (std::abs(lhsLen - rhsLen) > maxDistance) {
+        return maxDistance + 1;
+    }
+
+    std::vector<int> prev(rhsLen + 1);
+    std::vector<int> cur(rhsLen + 1);
+    for (int j = 0; j <= rhsLen; ++j) prev[j] = j;
+
+    for (int i = 1; i <= lhsLen; ++i) {
+        cur[0] = i;
+        int rowBest = cur[0];
+        for (int j = 1; j <= rhsLen; ++j) {
+            int cost = (lhs[i - 1] == rhs[j - 1]) ? 0 : 1;
+            cur[j] = std::min({
+                prev[j] + 1,
+                cur[j - 1] + 1,
+                prev[j - 1] + cost
+            });
+            rowBest = std::min(rowBest, cur[j]);
+        }
+        if (rowBest > maxDistance) return maxDistance + 1;
+        prev.swap(cur);
+    }
+
+    return prev[rhsLen];
+}
+
+std::string leadingDigits(const std::string& text) {
+    size_t pos = 0;
+    while (pos < text.size() &&
+           std::isdigit(static_cast<unsigned char>(text[pos]))) {
+        ++pos;
+    }
+    return text.substr(0, pos);
+}
+
+std::string canonicalBookTokenForNumber(
+        int bookNumber,
+        const sword::VersificationMgr::System* system) {
+    if (!system || bookNumber <= 0) return "";
+    const sword::VersificationMgr::Book* book = system->getBook(bookNumber);
+    if (!book) return "";
+
+    const char* candidates[] = {
+        book->getOSISName(),
+        book->getPreferredAbbreviation(),
+        book->getLongName()
+    };
+    for (const char* candidate : candidates) {
+        if (candidate && *candidate) return candidate;
+    }
+    return "";
+}
+
+std::string repairSingleLinkedVerseRef(const std::string& rawRef,
+                                       const std::string& versificationName) {
+    std::string ref = normalizeSingleLinkedVerseRef(rawRef);
+    size_t lastSpace = ref.rfind(' ');
+    if (lastSpace == std::string::npos) return ref;
+
+    std::string bookPart = trimCopy(ref.substr(0, lastSpace));
+    std::string tail = trimCopy(ref.substr(lastSpace + 1));
+    if (bookPart.empty() || tail.empty()) return ref;
+
+    SwordManager::VerseRef parsed;
+    try {
+        parsed = SwordManager::parseVerseRef(ref);
+    } catch (...) {
+        return ref;
+    }
+    if (parsed.book.empty() || parsed.chapter <= 0) return ref;
+
+    const auto* system = versificationSystemForName(versificationName);
+    if (!system) return ref;
+    if (resolveBookNumberExact(parsed.book, system) >= 0) return ref;
+
+    const std::string wanted = normalizeBookLookupKey(parsed.book);
+    if (wanted.empty()) return ref;
+
+    const std::string wantedDigits = leadingDigits(wanted);
+    const int maxDistance =
+        (wanted.size() <= 5) ? 1 : (wanted.size() <= 9 ? 2 : 3);
+
+    int bestBook = -1;
+    int bestDistance = maxDistance + 1;
+    bool ambiguous = false;
+
+    forEachBookAlias(system,
+                     [&](int bookNumber, const char* alias,
+                         const sword::VersificationMgr::Book* /*book*/) {
+        std::string aliasKey = normalizeBookLookupKey(alias);
+        if (aliasKey.empty()) return;
+        if (!wantedDigits.empty() && leadingDigits(aliasKey) != wantedDigits) {
+            return;
+        }
+
+        int distance = boundedLevenshteinDistance(wanted, aliasKey, maxDistance);
+        if (distance > maxDistance) return;
+
+        if (distance < bestDistance) {
+            bestDistance = distance;
+            bestBook = bookNumber;
+            ambiguous = false;
+            return;
+        }
+        if (distance == bestDistance && bookNumber != bestBook) {
+            ambiguous = true;
+        }
+    });
+
+    if (bestBook <= 0 || ambiguous) return ref;
+
+    std::string repairedBook = canonicalBookTokenForNumber(bestBook, system);
+    if (repairedBook.empty()) return ref;
+    return normalizeSingleLinkedVerseRef(repairedBook + " " + tail);
+}
+
+std::string repairLinkedVerseRef(const std::string& rawRef,
+                                 const std::string& versificationName) {
+    std::vector<std::string> parts = splitList(rawRef, '-');
+    if (parts.size() <= 1) {
+        return repairSingleLinkedVerseRef(rawRef, versificationName);
+    }
+
+    std::ostringstream out;
+    for (size_t i = 0; i < parts.size(); ++i) {
+        if (i) out << '-';
+        out << repairSingleLinkedVerseRef(parts[i], versificationName);
+    }
+    return trimCopy(out.str());
+}
+
+bool resolvedRefsMatchExpected(const std::vector<std::string>& resolvedRefs,
+                               const std::string& expectedRef,
+                               const std::string& versificationName) {
+    if (resolvedRefs.empty()) return false;
+
+    std::string expected = trimCopy(expectedRef);
+    if (expected.empty()) return true;
+
+    std::vector<std::string> rangeParts = splitList(expected, '-');
+    if (!rangeParts.empty()) expected = rangeParts.front();
+
+    SwordManager::VerseRef wanted;
+    SwordManager::VerseRef got;
+    try {
+        wanted = SwordManager::parseVerseRef(expected);
+        got = SwordManager::parseVerseRef(resolvedRefs.front());
+    } catch (...) {
+        return true;
+    }
+
+    if (wanted.book.empty() || wanted.chapter <= 0) return true;
+    if (got.book.empty() || got.chapter <= 0) return false;
+    if (got.chapter != wanted.chapter) return false;
+    if (wanted.verse > 0 && got.verse != wanted.verse) return false;
+
+    const auto* system = versificationSystemForName(versificationName);
+    if (!system) return true;
+
+    int wantedBook = resolveBookNumberExact(wanted.book, system);
+    int gotBook = resolveBookNumberExact(got.book, system);
+    if (wantedBook >= 0 && gotBook >= 0) {
+        return wantedBook == gotBook;
+    }
+
+    return normalizeBookLookupKey(wanted.book) ==
+           normalizeBookLookupKey(got.book);
+}
+
 std::string sanitizeHtmlId(const std::string& text) {
     std::string out;
     out.reserve(text.size() + 8);
@@ -2990,37 +3232,63 @@ std::vector<std::string> SwordManager::verseReferencesFromLink(
     vk.setAutoNormalize(true);
 
     std::string verseModule = trimCopy(verseModuleForRefs);
+    std::string versificationName;
     if (!verseModule.empty()) {
         std::lock_guard<std::mutex> lock(mutex_);
         sword::SWModule* mod = getModule(verseModule);
         if (mod) {
             const char* v11n = mod->getConfigEntry("Versification");
             if (v11n && *v11n) {
+                versificationName = v11n;
                 vk.setVersificationSystem(v11n);
             }
         }
     }
 
     std::string defaultRef = trimCopy(defaultKey);
-    sword::ListKey refs = vk.parseVerseList(
-        rawRefs.c_str(),
-        defaultRef.empty() ? nullptr : defaultRef.c_str(),
-        true);
+    auto parseRefs = [&](const std::string& refText) {
+        std::vector<std::string> parsed;
+        sword::ListKey refs = vk.parseVerseList(
+            refText.c_str(),
+            defaultRef.empty() ? nullptr : defaultRef.c_str(),
+            true);
+        for (refs = sword::TOP; !refs.popError(); refs++) {
+            const char* current = refs.getText();
+            if (!current || !*current) continue;
+            std::string normalized = trimCopy(current);
+            if (!normalized.empty()) parsed.push_back(std::move(normalized));
+        }
+        return parsed;
+    };
 
-    std::vector<std::string> out;
-    for (refs = sword::TOP; !refs.popError(); refs++) {
-        const char* refText = refs.getText();
-        if (!refText || !*refText) continue;
-        std::string normalized = trimCopy(refText);
-        if (!normalized.empty()) out.push_back(std::move(normalized));
+    std::string normalizedRawRefs = normalizeLinkedVerseRef(rawRefs);
+    std::string repairedRefs =
+        repairLinkedVerseRef(normalizedRawRefs, versificationName);
+
+    std::vector<std::string> out = parseRefs(rawRefs);
+    if (!out.empty() &&
+        resolvedRefsMatchExpected(out, repairedRefs, versificationName)) {
+        return out;
     }
 
-    if (out.empty()) {
-        std::string normalized = normalizeLinkedVerseRef(rawRefs);
-        if (!normalized.empty()) out.push_back(std::move(normalized));
+    if (!repairedRefs.empty() && repairedRefs != rawRefs) {
+        std::vector<std::string> repairedOut = parseRefs(repairedRefs);
+        if (!repairedOut.empty() &&
+            resolvedRefsMatchExpected(repairedOut,
+                                      repairedRefs,
+                                      versificationName)) {
+            return repairedOut;
+        }
     }
 
-    return out;
+    if (!repairedRefs.empty()) {
+        return {repairedRefs};
+    }
+    if (!normalizedRawRefs.empty()) {
+        return {normalizedRawRefs};
+    }
+
+    return {};
 }
 
 std::string SwordManager::buildLinkPreviewHtml(const std::string& sourceModule,
