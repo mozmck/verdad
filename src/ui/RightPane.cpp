@@ -15,13 +15,19 @@
 #include <FL/fl_ask.H>
 
 #include <algorithm>
+#include <chrono>
 #include <cctype>
+#include <cstdlib>
+#include <filesystem>
 #include <fstream>
 #include <functional>
 #include <sstream>
+#include <system_error>
 
 namespace verdad {
 namespace {
+
+namespace fs = std::filesystem;
 
 std::string composeCss(const std::string& base, const std::string& extra) {
     if (base.empty()) return extra;
@@ -192,6 +198,114 @@ std::string pathLeaf(const std::string& path) {
     return path.substr(slash + 1);
 }
 
+bool endsWithIgnoreCase(const std::string& text, const std::string& suffix) {
+    if (suffix.size() > text.size()) return false;
+    size_t offset = text.size() - suffix.size();
+    for (size_t i = 0; i < suffix.size(); ++i) {
+        unsigned char a = static_cast<unsigned char>(text[offset + i]);
+        unsigned char b = static_cast<unsigned char>(suffix[i]);
+        if (std::tolower(a) != std::tolower(b)) return false;
+    }
+    return true;
+}
+
+std::string pathWithExtension(const std::string& path, const std::string& extension) {
+    if (path.empty()) return path;
+    fs::path result(path);
+    result.replace_extension(extension);
+    return result.string();
+}
+
+std::string shellQuote(const std::string& text) {
+#ifdef _WIN32
+    std::string escaped = "\"";
+    for (char c : text) {
+        if (c == '"') escaped += "\\\"";
+        else escaped += c;
+    }
+    escaped += '"';
+    return escaped;
+#else
+    std::string escaped = "'";
+    for (char c : text) {
+        if (c == '\'') escaped += "'\\''";
+        else escaped += c;
+    }
+    escaped += "'";
+    return escaped;
+#endif
+}
+
+std::string fileUriForPath(const std::string& path) {
+    std::string normalized = path;
+    std::replace(normalized.begin(), normalized.end(), '\\', '/');
+#ifdef _WIN32
+    if (!normalized.empty() && normalized[0] != '/') normalized.insert(normalized.begin(), '/');
+#endif
+    return "file://" + normalized;
+}
+
+std::string makeUniqueTempDir(const std::string& prefix) {
+    fs::path baseDir;
+    try {
+        baseDir = fs::temp_directory_path();
+    } catch (...) {
+#ifdef _WIN32
+        baseDir = ".";
+#else
+        baseDir = "/tmp";
+#endif
+    }
+
+    auto seed = std::chrono::steady_clock::now().time_since_epoch().count();
+    for (int attempt = 0; attempt < 128; ++attempt) {
+        fs::path candidate = baseDir / (prefix + std::to_string(seed + attempt));
+        std::error_code ec;
+        if (fs::create_directory(candidate, ec)) {
+            return candidate.string();
+        }
+    }
+
+    return "";
+}
+
+bool writeTextFile(const std::string& path, const std::string& text) {
+    std::ofstream out(path);
+    if (!out.is_open()) return false;
+    out << text;
+    return static_cast<bool>(out);
+}
+
+bool copyBinaryFile(const std::string& fromPath, const std::string& toPath) {
+    std::ifstream in(fromPath, std::ios::binary);
+    if (!in.is_open()) return false;
+
+    std::ofstream out(toPath, std::ios::binary | std::ios::trunc);
+    if (!out.is_open()) return false;
+
+    out << in.rdbuf();
+    return static_cast<bool>(in) && static_cast<bool>(out);
+}
+
+bool runLibreOfficeOdtExport(const std::string& inputHtmlPath,
+                             const std::string& outputDir,
+                             const std::string& profileDir) {
+    std::string profileUri = fileUriForPath(profileDir);
+    for (const char* command : {"libreoffice", "soffice"}) {
+        std::string cmd = std::string(command) +
+                          " -env:UserInstallation=" + shellQuote(profileUri) +
+                          " --headless --convert-to odt --outdir " + shellQuote(outputDir) +
+                          " " + shellQuote(inputHtmlPath);
+#ifdef _WIN32
+        cmd += " >NUL 2>NUL";
+#else
+        cmd += " >/dev/null 2>&1";
+#endif
+        if (std::system(cmd.c_str()) == 0) return true;
+    }
+    return false;
+}
+
 int findGeneralBookTocIndex(
     const std::vector<GeneralBookTocEntry>& toc,
     const std::string& key) {
@@ -235,6 +349,7 @@ RightPane::RightPane(VerdadApp* app, int X, int Y, int W, int H)
     , documentNewButton_(nullptr)
     , documentOpenButton_(nullptr)
     , documentSaveButton_(nullptr)
+    , documentExportButton_(nullptr)
     , documentCloseButton_(nullptr)
     , documentPathLabel_(nullptr)
     , documentsEditor_(nullptr)
@@ -291,6 +406,7 @@ RightPane::RightPane(VerdadApp* app, int X, int Y, int W, int H)
                                              tileW - 4,
                                              panelH - choiceH - 6);
     commentaryEditor_->setMode(HtmlEditorWidget::Mode::Commentary);
+    commentaryEditor_->setIndentWidth(app_ ? app_->appearanceSettings().editorIndentWidth : 4);
     commentaryEditor_->setChangeCallback([this]() { updateCommentaryEditorChrome(); });
     commentaryEditor_->hide();
     commentaryGroup_->end();
@@ -323,15 +439,18 @@ RightPane::RightPane(VerdadApp* app, int X, int Y, int W, int H)
     documentOpenButton_->callback(onDocumentOpen, this);
     documentSaveButton_ = new Fl_Button(tileX + 106, panelY + 2, 52, choiceH, "Save");
     documentSaveButton_->callback(onDocumentSave, this);
-    documentCloseButton_ = new Fl_Button(tileX + 160, panelY + 2, 52, choiceH, "Close");
+    documentExportButton_ = new Fl_Button(tileX + 160, panelY + 2, 60, choiceH, "Export");
+    documentExportButton_->callback(onDocumentExportOdt, this);
+    documentCloseButton_ = new Fl_Button(tileX + 222, panelY + 2, 52, choiceH, "Close");
     documentCloseButton_->callback(onDocumentClose, this);
-    documentPathLabel_ = new Fl_Box(tileX + 216, panelY + 2, tileW - 218, choiceH);
+    documentPathLabel_ = new Fl_Box(tileX + 278, panelY + 2, tileW - 280, choiceH);
     documentPathLabel_->align(FL_ALIGN_LEFT | FL_ALIGN_INSIDE);
     documentsEditor_ = new HtmlEditorWidget(tileX + 2,
                                             panelY + choiceH + 4,
                                             tileW - 4,
                                             panelH - choiceH - 6);
     documentsEditor_->setMode(HtmlEditorWidget::Mode::Document);
+    documentsEditor_->setIndentWidth(app_ ? app_->appearanceSettings().editorIndentWidth : 4);
     documentsEditor_->setChangeCallback([this]() { updateDocumentChrome(); });
     documentsGroup_->end();
     documentsGroup_->resizable(documentsEditor_);
@@ -422,7 +541,7 @@ void RightPane::layoutTopTabContents(int tabsX, int tabsY, int tabsW, int tabsH)
         !commentaryEditor_ || !generalBooksGroup_ || !generalBookChoice_ ||
         !generalBookTocChoice_ || !generalBookHtml_ ||
         !documentsGroup_ || !documentNewButton_ || !documentOpenButton_ ||
-        !documentSaveButton_ || !documentCloseButton_ || !documentPathLabel_ ||
+        !documentSaveButton_ || !documentExportButton_ || !documentCloseButton_ || !documentPathLabel_ ||
         !documentsEditor_) {
         return;
     }
@@ -474,8 +593,8 @@ void RightPane::layoutTopTabContents(int tabsX, int tabsY, int tabsW, int tabsH)
                              std::max(10, panelH - (rowH * 2) - 8));
 
     int docsButtonsW = documentNewButton_->w() + documentOpenButton_->w() +
-                       documentSaveButton_->w() + documentCloseButton_->w() +
-                       (buttonGap * 3);
+                       documentSaveButton_->w() + documentExportButton_->w() +
+                       documentCloseButton_->w() + (buttonGap * 4);
     int pathX = contentX + docsButtonsW + buttonGap;
     documentNewButton_->resize(contentX, panelY + 2, documentNewButton_->w(), rowH);
     documentOpenButton_->resize(documentNewButton_->x() + documentNewButton_->w() + buttonGap,
@@ -486,7 +605,11 @@ void RightPane::layoutTopTabContents(int tabsX, int tabsY, int tabsW, int tabsH)
                                 panelY + 2,
                                 documentSaveButton_->w(),
                                 rowH);
-    documentCloseButton_->resize(documentSaveButton_->x() + documentSaveButton_->w() + buttonGap,
+    documentExportButton_->resize(documentSaveButton_->x() + documentSaveButton_->w() + buttonGap,
+                                  panelY + 2,
+                                  documentExportButton_->w(),
+                                  rowH);
+    documentCloseButton_->resize(documentExportButton_->x() + documentExportButton_->w() + buttonGap,
                                  panelY + 2,
                                  documentCloseButton_->w(),
                                  rowH);
@@ -1115,6 +1238,7 @@ void RightPane::redrawChrome() {
     if (documentNewButton_) documentNewButton_->redraw();
     if (documentOpenButton_) documentOpenButton_->redraw();
     if (documentSaveButton_) documentSaveButton_->redraw();
+    if (documentExportButton_) documentExportButton_->redraw();
     if (documentCloseButton_) documentCloseButton_->redraw();
     if (documentPathLabel_) documentPathLabel_->redraw();
     redraw();
@@ -1229,6 +1353,11 @@ void RightPane::setHtmlStyleOverride(const std::string& css) {
     applyCommentaryStyleOverride();
     if (dictionaryHtml_) dictionaryHtml_->setStyleOverrideCss(css);
     if (generalBookHtml_) generalBookHtml_->setStyleOverrideCss(css);
+}
+
+void RightPane::setEditorIndentWidth(int width) {
+    if (commentaryEditor_) commentaryEditor_->setIndentWidth(width);
+    if (documentsEditor_) documentsEditor_->setIndentWidth(width);
 }
 
 void RightPane::populateCommentaryModules() {
@@ -1371,14 +1500,18 @@ void RightPane::updateDocumentChrome() {
         documentPathLabel_->copy_label(label.c_str());
     }
 
+    bool hasContent = documentsEditor_ &&
+                      (documentsEditor_->isModified() ||
+                       !documentsEditor_->html().empty() ||
+                       !currentDocumentPath_.empty());
     if (documentSaveButton_) documentSaveButton_->activate();
     if (documentNewButton_) documentNewButton_->activate();
     if (documentOpenButton_) documentOpenButton_->activate();
+    if (documentExportButton_) {
+        if (hasContent) documentExportButton_->activate();
+        else documentExportButton_->deactivate();
+    }
     if (documentCloseButton_) {
-        bool hasContent = documentsEditor_ &&
-                          (documentsEditor_->isModified() ||
-                           !documentsEditor_->html().empty() ||
-                           !currentDocumentPath_.empty());
         if (hasContent) documentCloseButton_->activate();
         else documentCloseButton_->deactivate();
     }
@@ -1517,10 +1650,99 @@ bool RightPane::saveDocumentAs() {
 
     std::string path = chooser.filename() ? chooser.filename() : "";
     if (path.empty()) return false;
-    if (path.find('.') == std::string::npos) {
-        path += ".html";
+    if (!endsWithIgnoreCase(path, ".html") && !endsWithIgnoreCase(path, ".htm")) {
+        path = pathWithExtension(path, ".html");
     }
     return saveDocumentToPath(path);
+}
+
+bool RightPane::exportDocumentToOdtPath(const std::string& path) {
+    if (!documentsEditor_ || path.empty()) return false;
+
+    std::string tempDir = makeUniqueTempDir("verdad-odt-export-");
+    if (tempDir.empty()) {
+        fl_alert("Failed to create a temporary export directory.");
+        return false;
+    }
+
+    auto cleanup = [&]() {
+        std::error_code ec;
+        fs::remove_all(tempDir, ec);
+    };
+
+    fs::path exportDir(tempDir);
+    fs::path inputPath = exportDir / fs::path(path).filename();
+    inputPath.replace_extension(".html");
+    fs::path outputPath = inputPath;
+    outputPath.replace_extension(".odt");
+    fs::path profileDir = exportDir / "lo-profile";
+
+    std::error_code fsError;
+    fs::create_directory(profileDir, fsError);
+    if (fsError) {
+        cleanup();
+        fl_alert("Failed to prepare the LibreOffice export profile.");
+        return false;
+    }
+
+    if (!writeTextFile(inputPath.string(), documentsEditor_->html())) {
+        cleanup();
+        fl_alert("Failed to write the temporary HTML export.");
+        return false;
+    }
+
+    if (!runLibreOfficeOdtExport(inputPath.string(),
+                                 exportDir.string(),
+                                 profileDir.string()) ||
+        !fs::exists(outputPath)) {
+        cleanup();
+        fl_alert("LibreOffice could not export this document to ODT.\n"
+                 "Make sure libreoffice or soffice is installed and available in PATH.");
+        return false;
+    }
+
+    if (!copyBinaryFile(outputPath.string(), path)) {
+        cleanup();
+        fl_alert("Failed to write the ODT file:\n%s", path.c_str());
+        return false;
+    }
+
+    cleanup();
+    if (app_ && app_->mainWindow()) {
+        app_->mainWindow()->showTransientStatus("Exported " + pathLeaf(path), 2.8);
+    }
+    return true;
+}
+
+bool RightPane::exportDocumentToOdt() {
+    if (!documentsEditor_) return false;
+
+    Fl_Native_File_Chooser chooser;
+    chooser.title("Export Document to ODT");
+    chooser.type(Fl_Native_File_Chooser::BROWSE_SAVE_FILE);
+    chooser.filter("ODT Files\t*.odt\nAll Files\t*");
+
+    if (!currentDocumentPath_.empty()) {
+        std::string suggested = pathWithExtension(currentDocumentPath_, ".odt");
+        chooser.preset_file(suggested.c_str());
+    } else {
+        chooser.preset_file("notes.odt");
+    }
+
+    int result = chooser.show();
+    if (result != 0) {
+        if (result < 0) {
+            fl_alert("Unable to open the file chooser.");
+        }
+        return false;
+    }
+
+    std::string path = chooser.filename() ? chooser.filename() : "";
+    if (path.empty()) return false;
+    if (!endsWithIgnoreCase(path, ".odt")) {
+        path = pathWithExtension(path, ".odt");
+    }
+    return exportDocumentToOdtPath(path);
 }
 
 bool RightPane::newDocument() {
@@ -1825,6 +2047,12 @@ void RightPane::onDocumentSave(Fl_Widget* /*w*/, void* data) {
     auto* self = static_cast<RightPane*>(data);
     if (!self) return;
     self->saveDocument();
+}
+
+void RightPane::onDocumentExportOdt(Fl_Widget* /*w*/, void* data) {
+    auto* self = static_cast<RightPane*>(data);
+    if (!self) return;
+    self->exportDocumentToOdt();
 }
 
 void RightPane::onDocumentClose(Fl_Widget* /*w*/, void* data) {

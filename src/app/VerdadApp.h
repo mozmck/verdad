@@ -23,6 +23,7 @@ public:
         std::string textFontFamily = "DejaVu Serif";
         int textFontSize = 14;
         int hoverDelayMs = 1000;
+        int editorIndentWidth = 4;
     };
 
     struct PreviewDictionarySettings {

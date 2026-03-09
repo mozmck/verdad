@@ -64,7 +64,7 @@
   <p>The page also includes an inline contents list that jumps to sections already loaded in the current view. Scripture references inside general books can populate the Search tab with linked verses, while note links and single references can update the preview pane.</p>
 
   <h2 id="documents">Documents and Editable Commentary</h2>
-  <p>The Documents tab is a lightweight HTML note editor. You can create, open, save, and close HTML files from the File menu or from the buttons inside the tab. The editor supports bold, italic, lists, text sizing, and horizontal rules.</p>
+  <p>The Documents tab is a lightweight HTML note editor. You can create, open, save, close, and export documents from the File menu or from the buttons inside the tab. Documents save as HTML, and the export command writes OpenDocument Text (<code>.odt</code>) through LibreOffice when it is available in your <code>PATH</code>. The editor supports bold, italic, lists, text sizing, and horizontal rules.</p>
   <p>Verse references typed into a document are turned into clickable links in the saved HTML. Verdad restores the last opened document path when the session is restored.</p>
   <p>The Commentary tab also exposes an <b>Edit</b> button when the current module is writable. Editing changes the raw entry for the current commentary reference and writes it back through SWORD when you save.</p>
 
@@ -75,10 +75,11 @@
 
   <h2 id="modules-settings">Modules and Settings</h2>
   <p><code>File &gt; Module Manager...</code> opens the built-in SWORD module manager. It can add local sources, add remote sources, refresh source content, and install or update modules. Remote sources can reveal network activity, so use local sources when that matters for your situation.</p>
-  <p><code>View &gt; Settings...</code> controls the application font, text font, text size, hover delay, default Greek and Hebrew Strong's dictionaries, and language-specific word dictionaries. <code>F1</code> opens this help window.</p>
+  <p><code>View &gt; Settings...</code> controls the application font, text font, text size, hover delay, editor tab width, default Greek and Hebrew Strong's dictionaries, and language-specific word dictionaries. <code>F1</code> opens this help window.</p>
 
   <h2 id="tips">Practical Tips</h2>
   <p><code>Ctrl+G</code> opens Go to Verse, <code>Ctrl+P</code> toggles parallel Bibles, <code>Ctrl+T</code> duplicates the current study tab, <code>Ctrl+N/O/S/W</code> control the Documents tab, and <code>Ctrl+Q</code> quits.</p>
   <p>If a search result or verse preview shows note markers, click them in the preview pane to read the footnote or cross-reference content without losing your place in the result list.</p>
+  <p>Inside the document editor, <code>Enter</code> continues the current indent or list item, and <code>Tab</code>/<code>Shift+Tab</code> indent or outdent one tab level using the configured editor tab width.</p>
   <p>If you want to compare translations, enable parallel view and keep the first module as the master module for searching and navigation. If the right pane feels crowded, resize the splitters. Verdad remembers pane sizes, study tabs, and the active document path between sessions.</p>
 </div>

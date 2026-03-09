@@ -294,6 +294,7 @@ private:
     static void onFileNewDocument(Fl_Widget* w, void* data);
     static void onFileOpenDocument(Fl_Widget* w, void* data);
     static void onFileSaveDocument(Fl_Widget* w, void* data);
+    static void onFileExportDocumentOdt(Fl_Widget* w, void* data);
     static void onFileCloseDocument(Fl_Widget* w, void* data);
     static void onNavigateGo(Fl_Widget* w, void* data);
     static void onViewParallel(Fl_Widget* w, void* data);

@@ -115,6 +115,7 @@ public:
     bool openDocument();
     bool openDocument(const std::string& path, bool activateTab);
     bool saveDocument();
+    bool exportDocumentToOdt();
     bool closeDocument();
 
     /// Legacy naming kept for session compatibility.
@@ -162,6 +163,7 @@ public:
 
     /// Apply runtime HTML style overrides to all right-pane HTML widgets.
     void setHtmlStyleOverride(const std::string& css);
+    void setEditorIndentWidth(int width);
 
 protected:
     void resize(int X, int Y, int W, int H) override;
@@ -225,6 +227,7 @@ private:
     Fl_Button* documentNewButton_;
     Fl_Button* documentOpenButton_;
     Fl_Button* documentSaveButton_;
+    Fl_Button* documentExportButton_;
     Fl_Button* documentCloseButton_;
     Fl_Box* documentPathLabel_;
     HtmlEditorWidget* documentsEditor_;
@@ -262,6 +265,7 @@ private:
     bool maybeSaveDocumentChanges();
     bool saveDocumentAs();
     bool saveDocumentToPath(const std::string& path);
+    bool exportDocumentToOdtPath(const std::string& path);
     void loadCommentaryEditorForCurrentEntry();
     void applyCommentaryStyleOverride();
     void updateCommentarySelection(int verse);
@@ -281,6 +285,7 @@ private:
     static void onDocumentNew(Fl_Widget* w, void* data);
     static void onDocumentOpen(Fl_Widget* w, void* data);
     static void onDocumentSave(Fl_Widget* w, void* data);
+    static void onDocumentExportOdt(Fl_Widget* w, void* data);
     static void onDocumentClose(Fl_Widget* w, void* data);
 };
 

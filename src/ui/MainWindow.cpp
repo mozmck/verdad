@@ -1491,6 +1491,9 @@ void MainWindow::applyAppearanceSettings(Fl_Font appFont,
         if (rightPane_) rightPane_->setHtmlStyleOverride(textCssOverride);
         if (searchHelpHtml_) searchHelpHtml_->setStyleOverrideCss(textCssOverride);
     }
+    if (rightPane_ && app_) {
+        rightPane_->setEditorIndentWidth(app_->appearanceSettings().editorIndentWidth);
+    }
     if (biblePane_) biblePane_->syncOptionButtons();
 
     // Only drop inactive tab buffers when text rendering style actually changed.
@@ -1821,6 +1824,7 @@ void MainWindow::buildMenu() {
     menuBar_->add("&File/&New Document", FL_CTRL + 'n', onFileNewDocument, this);
     menuBar_->add("&File/&Open Document...", FL_CTRL + 'o', onFileOpenDocument, this);
     menuBar_->add("&File/&Save Document", FL_CTRL + 's', onFileSaveDocument, this);
+    menuBar_->add("&File/&Export Document to ODT...", 0, onFileExportDocumentOdt, this);
     menuBar_->add("&File/&Close Document", FL_CTRL + 'w', onFileCloseDocument, this);
     menuBar_->add("&File/&Module Manager...", 0, onFileModuleManager, this);
     menuBar_->add("&File/&Quit", FL_CTRL + 'q', onFileQuit, this);
@@ -1863,6 +1867,12 @@ void MainWindow::onFileSaveDocument(Fl_Widget* /*w*/, void* data) {
     self->rightPane_->saveDocument();
 }
 
+void MainWindow::onFileExportDocumentOdt(Fl_Widget* /*w*/, void* data) {
+    auto* self = static_cast<MainWindow*>(data);
+    if (!self || !self->rightPane_) return;
+    self->rightPane_->exportDocumentToOdt();
+}
+
 void MainWindow::onFileCloseDocument(Fl_Widget* /*w*/, void* data) {
     auto* self = static_cast<MainWindow*>(data);
     if (!self || !self->rightPane_) return;
@@ -1901,77 +1911,110 @@ void MainWindow::onViewSettings(Fl_Widget* /*w*/, void* data) {
     std::vector<std::string> languageCodes =
         dictionaryLanguageCodes(self->app_, currentPreview);
 
-    constexpr int dialogW = 470;
+    constexpr int dialogW = 520;
     constexpr int rowStep = 34;
+    constexpr int tabsX = 12;
+    constexpr int tabsY = 12;
+    constexpr int tabsHeaderH = 28;
+    constexpr int groupPadX = 20;
+    constexpr int groupPadY = 18;
+    constexpr int labelW = 150;
+    constexpr int fieldW = 300;
+    constexpr int fieldXOffset = 180;
+    constexpr int spinnerW = 90;
+
+    int appearanceRowCount = 5;
     int dictionaryRowCount = 2 + static_cast<int>(languageCodes.size());
-    int buttonsY = 198 + (dictionaryRowCount * rowStep) + 5;
-    int dialogH = buttonsY + 50;
+    int editorRowCount = 1;
+    int maxRowCount = std::max({appearanceRowCount, dictionaryRowCount, editorRowCount});
+    int tabsH = tabsHeaderH + (groupPadY * 2) + (maxRowCount * rowStep);
+    int buttonsY = tabsY + tabsH + 12;
+    int dialogH = buttonsY + 44;
 
     Fl_Double_Window* dlg = new Fl_Double_Window(dialogW, dialogH, "Settings");
     dlg->set_modal();
     dlg->begin();
 
-    Fl_Box* appFontLabel = new Fl_Box(20, 20, 140, 24, "Application font:");
-    appFontLabel->align(FL_ALIGN_LEFT | FL_ALIGN_INSIDE);
-    Fl_Choice* appFontChoice = new Fl_Choice(180, 20, 250, 24);
+    Fl_Tabs* tabs = new Fl_Tabs(tabsX, tabsY, dialogW - (tabsX * 2), tabsH);
+    tabs->begin();
+
+    int groupX = tabsX;
+    int groupY = tabsY + tabsHeaderH;
+    int groupW = tabs->w();
+    int groupH = tabsH - tabsHeaderH;
+    int labelX = groupX + groupPadX;
+    int fieldX = groupX + fieldXOffset;
+
     const auto& fonts = self->app_->systemFontFamilies();
-    for (const auto& f : fonts) {
-        // Fl_Choice treats '/' as submenu separator — escape it
-        std::string escaped = f;
-        size_t pos = 0;
-        while ((pos = escaped.find('/', pos)) != std::string::npos) {
-            escaped.replace(pos, 1, "\\/");
-            pos += 2;
+    auto addFontChoices = [&fonts](Fl_Choice* choice) {
+        for (const auto& f : fonts) {
+            std::string escaped = f;
+            size_t pos = 0;
+            while ((pos = escaped.find('/', pos)) != std::string::npos) {
+                escaped.replace(pos, 1, "\\/");
+                pos += 2;
+            }
+            choice->add(escaped.c_str());
         }
-        appFontChoice->add(escaped.c_str());
-    }
+    };
+
+    Fl_Group* appearanceTab =
+        new Fl_Group(groupX, groupY, groupW, groupH, "Appearance");
+    appearanceTab->begin();
+
+    int rowY = groupY + groupPadY;
+    Fl_Box* appFontLabel = new Fl_Box(labelX, rowY, labelW, 24, "Application font:");
+    appFontLabel->align(FL_ALIGN_LEFT | FL_ALIGN_INSIDE);
+    Fl_Choice* appFontChoice = new Fl_Choice(fieldX, rowY, fieldW, 24);
+    addFontChoices(appFontChoice);
     int appFontIdx = findChoiceIndexByLabel(appFontChoice, current.appFontName);
     appFontChoice->value(appFontIdx >= 0 ? appFontIdx : 0);
+    rowY += rowStep;
 
-    Fl_Box* appSizeLabel = new Fl_Box(20, 54, 140, 24, "Application size:");
+    Fl_Box* appSizeLabel = new Fl_Box(labelX, rowY, labelW, 24, "Application size:");
     appSizeLabel->align(FL_ALIGN_LEFT | FL_ALIGN_INSIDE);
-    Fl_Spinner* appSizeSpinner = new Fl_Spinner(180, 54, 80, 24);
+    Fl_Spinner* appSizeSpinner = new Fl_Spinner(fieldX, rowY, spinnerW, 24);
     appSizeSpinner->minimum(8);
     appSizeSpinner->maximum(36);
     appSizeSpinner->step(1);
     appSizeSpinner->value(current.appFontSize);
+    rowY += rowStep;
 
-    Fl_Box* textFontLabel = new Fl_Box(20, 96, 140, 24, "Text font:");
+    Fl_Box* textFontLabel = new Fl_Box(labelX, rowY, labelW, 24, "Text font:");
     textFontLabel->align(FL_ALIGN_LEFT | FL_ALIGN_INSIDE);
-    Fl_Choice* textFontChoice = new Fl_Choice(180, 96, 250, 24);
-    for (const auto& f : fonts) {
-        std::string escaped = f;
-        size_t pos = 0;
-        while ((pos = escaped.find('/', pos)) != std::string::npos) {
-            escaped.replace(pos, 1, "\\/");
-            pos += 2;
-        }
-        textFontChoice->add(escaped.c_str());
-    }
+    Fl_Choice* textFontChoice = new Fl_Choice(fieldX, rowY, fieldW, 24);
+    addFontChoices(textFontChoice);
     int textFontIdx = findChoiceIndexByLabel(textFontChoice, current.textFontFamily);
     textFontChoice->value(textFontIdx >= 0 ? textFontIdx : 0);
+    rowY += rowStep;
 
-    Fl_Box* textSizeLabel = new Fl_Box(20, 130, 140, 24, "Text size:");
+    Fl_Box* textSizeLabel = new Fl_Box(labelX, rowY, labelW, 24, "Text size:");
     textSizeLabel->align(FL_ALIGN_LEFT | FL_ALIGN_INSIDE);
-    Fl_Spinner* textSizeSpinner = new Fl_Spinner(180, 130, 80, 24);
+    Fl_Spinner* textSizeSpinner = new Fl_Spinner(fieldX, rowY, spinnerW, 24);
     textSizeSpinner->minimum(8);
     textSizeSpinner->maximum(36);
     textSizeSpinner->step(1);
     textSizeSpinner->value(current.textFontSize);
+    rowY += rowStep;
 
-    Fl_Box* hoverLabel = new Fl_Box(20, 164, 140, 24, "Hover delay (ms):");
+    Fl_Box* hoverLabel = new Fl_Box(labelX, rowY, labelW, 24, "Hover delay (ms):");
     hoverLabel->align(FL_ALIGN_LEFT | FL_ALIGN_INSIDE);
-    Fl_Spinner* hoverDelaySpinner = new Fl_Spinner(180, 164, 90, 24);
+    Fl_Spinner* hoverDelaySpinner = new Fl_Spinner(fieldX, rowY, spinnerW, 24);
     hoverDelaySpinner->minimum(100);
     hoverDelaySpinner->maximum(5000);
     hoverDelaySpinner->step(100);
     hoverDelaySpinner->value(current.hoverDelayMs);
 
-    int rowY = 198;
+    appearanceTab->end();
 
-    Fl_Box* greekDictLabel = new Fl_Box(20, rowY, 150, 24, "Greek Strong's dict:");
+    Fl_Group* dictionariesTab =
+        new Fl_Group(groupX, groupY, groupW, groupH, "Dictionaries");
+    dictionariesTab->begin();
+
+    rowY = groupY + groupPadY;
+    Fl_Box* greekDictLabel = new Fl_Box(labelX, rowY, labelW, 24, "Greek Strong's dict:");
     greekDictLabel->align(FL_ALIGN_LEFT | FL_ALIGN_INSIDE);
-    Fl_Choice* greekDictChoice = new Fl_Choice(180, rowY, 250, 24);
+    Fl_Choice* greekDictChoice = new Fl_Choice(fieldX, rowY, fieldW, 24);
     bool hasGreekPreviewDictionaries = populateChoiceWithItems(
         greekDictChoice,
         greekDictionaryModules,
@@ -1979,9 +2022,9 @@ void MainWindow::onViewSettings(Fl_Widget* /*w*/, void* data) {
         "No Greek dictionaries installed");
     rowY += rowStep;
 
-    Fl_Box* hebrewDictLabel = new Fl_Box(20, rowY, 150, 24, "Hebrew Strong's dict:");
+    Fl_Box* hebrewDictLabel = new Fl_Box(labelX, rowY, labelW, 24, "Hebrew Strong's dict:");
     hebrewDictLabel->align(FL_ALIGN_LEFT | FL_ALIGN_INSIDE);
-    Fl_Choice* hebrewDictChoice = new Fl_Choice(180, rowY, 250, 24);
+    Fl_Choice* hebrewDictChoice = new Fl_Choice(fieldX, rowY, fieldW, 24);
     bool hasHebrewPreviewDictionaries = populateChoiceWithItems(
         hebrewDictChoice,
         hebrewDictionaryModules,
@@ -1999,11 +2042,11 @@ void MainWindow::onViewSettings(Fl_Widget* /*w*/, void* data) {
 
     for (const auto& code : languageCodes) {
         std::string labelText = languageDisplayName(code) + " dictionary:";
-        auto* label = new Fl_Box(20, rowY, 150, 24);
+        auto* label = new Fl_Box(labelX, rowY, labelW, 24);
         label->align(FL_ALIGN_LEFT | FL_ALIGN_INSIDE);
         label->copy_label(labelText.c_str());
 
-        auto* choice = new Fl_Choice(180, rowY, 250, 24);
+        auto* choice = new Fl_Choice(fieldX, rowY, fieldW, 24);
         std::vector<std::string> modules = self->app_->wordDictionaryModules(code);
         std::string emptyLabel = "No " + languageDisplayName(code) +
                                  " dictionaries installed";
@@ -2016,6 +2059,26 @@ void MainWindow::onViewSettings(Fl_Widget* /*w*/, void* data) {
         languageRows.push_back(LanguageRow{code, choice, hasChoices});
         rowY += rowStep;
     }
+
+    dictionariesTab->end();
+
+    Fl_Group* editorTab =
+        new Fl_Group(groupX, groupY, groupW, groupH, "Editor");
+    editorTab->begin();
+
+    rowY = groupY + groupPadY;
+    Fl_Box* indentLabel = new Fl_Box(labelX, rowY, labelW, 24, "Editor tab width:");
+    indentLabel->align(FL_ALIGN_LEFT | FL_ALIGN_INSIDE);
+    Fl_Spinner* indentSpinner = new Fl_Spinner(fieldX, rowY, spinnerW, 24);
+    indentSpinner->minimum(1);
+    indentSpinner->maximum(8);
+    indentSpinner->step(1);
+    indentSpinner->value(current.editorIndentWidth);
+
+    editorTab->end();
+
+    tabs->end();
+    tabs->value(appearanceTab);
 
     Fl_Button* cancelBtn = new Fl_Button(dialogW - 170, buttonsY, 80, 28, "Cancel");
     Fl_Return_Button* applyBtn =
@@ -2065,6 +2128,7 @@ void MainWindow::onViewSettings(Fl_Widget* /*w*/, void* data) {
         }
         updated.textFontSize = static_cast<int>(textSizeSpinner->value());
         updated.hoverDelayMs = static_cast<int>(hoverDelaySpinner->value());
+        updated.editorIndentWidth = static_cast<int>(indentSpinner->value());
 
         const Fl_Menu_Item* greekDictItem = greekDictChoice->mvalue();
         if (hasGreekPreviewDictionaries && greekDictItem && greekDictItem->label()) {

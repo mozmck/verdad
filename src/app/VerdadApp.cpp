@@ -102,6 +102,10 @@ int clampHoverDelayMs(int ms) {
     return std::clamp(ms, 100, 5000);
 }
 
+int clampEditorIndentWidth(int width) {
+    return std::clamp(width, 1, 8);
+}
+
 std::string normalizePreviewDictionaryModule(const std::string& moduleName,
                                              const char* fallback) {
     std::string name = trimCopy(moduleName);
@@ -369,6 +373,9 @@ void VerdadApp::loadPreferences() {
     appearanceSettings_.hoverDelayMs =
         clampHoverDelayMs(parseIntOr(prefs["hover_delay_ms"],
                                      appearanceSettings_.hoverDelayMs));
+    appearanceSettings_.editorIndentWidth =
+        clampEditorIndentWidth(parseIntOr(prefs["editor_indent_width"],
+                                          appearanceSettings_.editorIndentWidth));
     optionDisplaySettings_.showStrongsMarkers =
         parseBoolOr(prefs["show_strongs_markers"],
                     optionDisplaySettings_.showStrongsMarkers);
@@ -483,6 +490,7 @@ void VerdadApp::savePreferences() {
         file << "text_font_family=" << appearanceSettings_.textFontFamily << "\n";
         file << "text_font_size=" << appearanceSettings_.textFontSize << "\n";
         file << "hover_delay_ms=" << appearanceSettings_.hoverDelayMs << "\n";
+        file << "editor_indent_width=" << appearanceSettings_.editorIndentWidth << "\n";
         file << "show_strongs_markers=" << (optionDisplaySettings_.showStrongsMarkers ? 1 : 0) << "\n";
         file << "show_morph_markers=" << (optionDisplaySettings_.showMorphMarkers ? 1 : 0) << "\n";
         file << "show_footnote_markers=" << (optionDisplaySettings_.showFootnoteMarkers ? 1 : 0) << "\n";
@@ -557,6 +565,8 @@ void VerdadApp::setAppearanceSettings(const AppearanceSettings& settings) {
             : trimCopy(settings.textFontFamily);
     appearanceSettings_.textFontSize = clampFontSize(settings.textFontSize);
     appearanceSettings_.hoverDelayMs = clampHoverDelayMs(settings.hoverDelayMs);
+    appearanceSettings_.editorIndentWidth =
+        clampEditorIndentWidth(settings.editorIndentWidth);
 
     if (mainWindow_) {
         mainWindow_->applyAppearanceSettings(

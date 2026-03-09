@@ -51,6 +51,8 @@ public:
 
     void setHtml(const std::string& html);
     std::string html() const;
+    void setIndentWidth(int width);
+    int indentWidth() const { return indentWidth_; }
 
     void clearDocument();
 
@@ -81,6 +83,8 @@ public:
     // Internal editor hooks used by the embedded text area.
     void prepareForUserEdit();
     void finalizeUserEditAttempt();
+    bool handleEnterKey();
+    bool handleTabKey(bool outdent);
 
 protected:
     void resize(int X, int Y, int W, int H) override;
@@ -107,6 +111,7 @@ private:
     bool pendingUserEditValid_ = false;
     bool suppressCallbacks_ = false;
     bool modified_ = false;
+    int indentWidth_ = 4;
     std::function<void()> changeCallback_;
 
     void buildToolbar();
@@ -114,6 +119,7 @@ private:
     void rebuildStyleBuffer();
     void refreshToolbarState();
     void emitChanged();
+    void renumberOrderedListBlocks();
 
     Snapshot captureSnapshot() const;
     void restoreSnapshot(const Snapshot& snapshot);
