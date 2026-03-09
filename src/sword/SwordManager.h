@@ -265,6 +265,12 @@ private:
     mutable std::list<std::string> verseHtmlLru_;
     static constexpr size_t kVerseHtmlCacheLimit = 2048;
 
+    /// Get rendered chapter heading for the requested chapter.
+    /// Caller must hold mutex_.
+    std::string renderedChapterHeadingLocked(sword::SWModule* mod,
+                                             const std::string& book,
+                                             int chapter) const;
+
     /// Get a SWORD module by name (returns nullptr if not found)
     sword::SWModule* getModule(const std::string& name) const;
 

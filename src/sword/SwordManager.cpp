@@ -36,6 +36,30 @@ std::string trimCopy(const std::string& s) {
     return s.substr(start, end - start);
 }
 
+std::string extractChapterHeadingHtml(const std::string& raw) {
+    static const std::regex chapterTitleRe(
+        R"(<title\b[^>]*\btype\s*=\s*["']chapter["'][^>]*>([\s\S]*?)</title>)",
+        std::regex::icase);
+    static const std::regex anyTitleRe(
+        R"(<title\b[^>]*>([\s\S]*?)</title>)",
+        std::regex::icase);
+    static const std::regex chapterAttrRe(
+        R"chapter(<chapter\b[^>]*\bchapterTitle\s*=\s*"([^"]+)")chapter",
+        std::regex::icase);
+
+    std::smatch match;
+    if (std::regex_search(raw, match, chapterTitleRe)) {
+        return trimCopy(match[1].str());
+    }
+    if (std::regex_search(raw, match, anyTitleRe)) {
+        return trimCopy(match[1].str());
+    }
+    if (std::regex_search(raw, match, chapterAttrRe)) {
+        return htmlEscapeAttr(trimCopy(match[1].str()));
+    }
+    return "";
+}
+
 bool decodeNextUtf8(const std::string& s, size_t& i, uint32_t& cp) {
     if (i >= s.size()) return false;
     unsigned char c0 = static_cast<unsigned char>(s[i]);
@@ -2217,7 +2241,17 @@ std::string SwordManager::getChapterText(const std::string& moduleName,
     std::string ref = book + " " + std::to_string(chapter) + ":1";
     vk->setText(ref.c_str());
 
+    std::string chapterHeadingHtml =
+        renderedChapterHeadingLocked(mod, book, chapter);
+    vk->setText(ref.c_str());
+
     int currentChapter = vk->getChapter();
+    if (chapterHeadingHtml.empty()) {
+        html << "<div class=\"chapter-heading\">CHAPTER "
+             << chapter << ".</div>\n";
+    } else {
+        html << chapterHeadingHtml;
+    }
 
     // Choose element tag based on display mode:
     // verse-per-line (default) uses <div>, paragraph mode uses <span>
@@ -2365,6 +2399,20 @@ std::string SwordManager::getParallelText(
 
     std::ostringstream html;
     html << "<div class=\"parallel\">\n";
+
+    std::string chapterHeadingHtml;
+    for (const auto& modName : moduleNames) {
+        sword::SWModule* mod = getModule(modName);
+        if (!mod) continue;
+        chapterHeadingHtml = renderedChapterHeadingLocked(mod, book, chapter);
+        if (!chapterHeadingHtml.empty()) break;
+    }
+    if (chapterHeadingHtml.empty()) {
+        html << "<div class=\"chapter-heading\">CHAPTER "
+             << chapter << ".</div>\n";
+    } else {
+        html << chapterHeadingHtml;
+    }
 
     auto tryGetVerseHtmlCache =
         [this](const std::string& key, std::string& valueOut) -> bool {
@@ -3407,6 +3455,43 @@ SwordManager::getEntryAttributes(const std::string& moduleName) {
     }
 
     return result;
+}
+
+std::string SwordManager::renderedChapterHeadingLocked(sword::SWModule* mod,
+                                                       const std::string& book,
+                                                       int chapter) const {
+    if (!mod || book.empty() || chapter <= 0) return "";
+
+    sword::VerseKey* vk = dynamic_cast<sword::VerseKey*>(mod->getKey());
+    if (!vk) {
+        sword::VerseKey tempKey;
+        mod->setKey(tempKey);
+        vk = dynamic_cast<sword::VerseKey*>(mod->getKey());
+    }
+    if (!vk) return "";
+
+    const std::string oldKey = mod->getKeyText();
+    const bool oldIntros = vk->isIntros();
+    const bool oldProcessAttrs = mod->isProcessEntryAttributes();
+
+    vk->setIntros(true);
+    mod->setProcessEntryAttributes(true);
+
+    std::ostringstream introKey;
+    introKey << book << " " << chapter << ":0";
+    vk->setText(introKey.str().c_str());
+    std::string raw = std::string(mod->renderText().c_str());
+
+    mod->setProcessEntryAttributes(oldProcessAttrs);
+    vk->setIntros(oldIntros);
+    if (!oldKey.empty()) {
+        vk->setText(oldKey.c_str());
+    }
+
+    std::string heading = extractChapterHeadingHtml(raw);
+    if (trimCopy(stripTags(heading)).empty()) return "";
+
+    return "<div class=\"chapter-heading\">" + postProcessHtml(heading) + "</div>\n";
 }
 
 sword::SWModule* SwordManager::getModule(const std::string& name) const {

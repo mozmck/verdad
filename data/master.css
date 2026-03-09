@@ -39,6 +39,14 @@ span.chapnum {
     line-height: 1.0;
 }
 
+div.chapter-heading {
+    font-size: 1.18em;
+    font-weight: bold;
+    font-style: italic;
+    color: #2c2c2c;
+    margin: 8px 0 10px 0;
+}
+
 /* Words of Christ in red */
 span.wordsofchrist, .jesusWords {
     color: #cc0000;
