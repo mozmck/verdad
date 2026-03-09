@@ -461,6 +461,114 @@ HtmlWidget::SelectionPoint HtmlWidget::hitTestSelectionPoint(int screenX,
     return best;
 }
 
+bool HtmlWidget::hitTextFragmentAtPoint(int screenX, int screenY,
+                                        int& fragmentIndex,
+                                        int& charIndex) const {
+    fragmentIndex = -1;
+    charIndex = -1;
+    if (textFragments_.empty()) return false;
+
+    long bestArea = std::numeric_limits<long>::max();
+    for (size_t i = 0; i < textFragments_.size(); ++i) {
+        const TextFragment& fragment = textFragments_[i];
+        if (fragment.byteOffsets.size() < 2 || fragment.xOffsets.size() < 2) {
+            continue;
+        }
+
+        int left = static_cast<int>(fragment.pos.x);
+        int right = static_cast<int>(fragment.pos.x + fragment.pos.width);
+        int top = static_cast<int>(fragment.pos.y);
+        int bottom = static_cast<int>(fragment.pos.y + fragment.pos.height);
+        if (screenX < left || screenX >= right ||
+            screenY < top || screenY >= bottom) {
+            continue;
+        }
+
+        int localX = screenX - left;
+        int chars = static_cast<int>(fragment.byteOffsets.size()) - 1;
+        int hitChar = -1;
+        for (int ch = 0; ch < chars; ++ch) {
+            int startX = fragment.xOffsets[ch];
+            int endX = fragment.xOffsets[ch + 1];
+            if (localX >= startX && localX < endX) {
+                hitChar = ch;
+                break;
+            }
+        }
+        if (hitChar < 0 && chars > 0 && localX == fragment.xOffsets.back()) {
+            hitChar = chars - 1;
+        }
+        if (hitChar < 0) continue;
+
+        long area = static_cast<long>(std::max(1, right - left)) *
+                    static_cast<long>(std::max(1, bottom - top));
+        if (area >= bestArea) continue;
+
+        bestArea = area;
+        fragmentIndex = static_cast<int>(i);
+        charIndex = hitChar;
+    }
+
+    return fragmentIndex >= 0 && charIndex >= 0;
+}
+
+std::string HtmlWidget::fragmentWordAt(int fragmentIndex, int charIndex) const {
+    if (fragmentIndex < 0 ||
+        fragmentIndex >= static_cast<int>(textFragments_.size())) {
+        return "";
+    }
+
+    const TextFragment& fragment = textFragments_[fragmentIndex];
+    int charCount = static_cast<int>(fragment.byteOffsets.size()) - 1;
+    if (charIndex < 0 || charIndex >= charCount) return "";
+
+    auto isWordCharAt = [&](int index) -> bool {
+        if (index < 0 || index >= charCount) return false;
+        int byteStart = fragment.byteOffsets[index];
+        int byteEnd = fragment.byteOffsets[index + 1];
+        if (byteEnd <= byteStart ||
+            byteStart < 0 ||
+            byteEnd > static_cast<int>(fragment.text.size())) {
+            return false;
+        }
+
+        unsigned char first =
+            static_cast<unsigned char>(fragment.text[byteStart]);
+        return first >= 0x80 ||
+               std::isalnum(first) ||
+               first == '\'' ||
+               first == '-';
+    };
+
+    if (!isWordCharAt(charIndex)) return "";
+
+    int startChar = charIndex;
+    while (startChar > 0 && isWordCharAt(startChar - 1)) {
+        --startChar;
+    }
+
+    int endChar = charIndex + 1;
+    while (endChar < charCount && isWordCharAt(endChar)) {
+        ++endChar;
+    }
+
+    int byteStart = fragment.byteOffsets[startChar];
+    int byteEnd = fragment.byteOffsets[endChar];
+    if (byteEnd <= byteStart) return "";
+
+    return stripWordEdgePunct(
+        fragment.text.substr(byteStart, byteEnd - byteStart));
+}
+
+std::string HtmlWidget::wordAtScreenPoint(int screenX, int screenY) const {
+    int fragmentIndex = -1;
+    int charIndex = -1;
+    if (!hitTextFragmentAtPoint(screenX, screenY, fragmentIndex, charIndex)) {
+        return "";
+    }
+    return fragmentWordAt(fragmentIndex, charIndex);
+}
+
 bool HtmlWidget::fragmentSelectionRange(int fragmentIndex,
                                         int& startChar,
                                         int& endChar) const {
@@ -966,24 +1074,27 @@ int HtmlWidget::handle(int event) {
 
                 std::string word, href, strong, morph, module, title;
                 if (el) {
+                    word = wordAtScreenPoint(Fl::event_x(), Fl::event_y());
                     HitElement hit = findDeepestElementAtPoint(el, docX, docY);
                     if (hit.element) el = hit.element;
 
-                    auto fontIt = fonts_.find(el->css().get_font());
-                    if (fontIt != fonts_.end()) {
-                        fl_font(fontIt->second.flFont, fontIt->second.size);
-                    } else {
-                        fl_font(FL_TIMES, static_cast<int>(get_default_font_size()));
-                    }
+                    if (word.empty()) {
+                        auto fontIt = fonts_.find(el->css().get_font());
+                        if (fontIt != fonts_.end()) {
+                            fl_font(fontIt->second.flFont, fontIt->second.size);
+                        } else {
+                            fl_font(FL_TIMES, static_cast<int>(get_default_font_size()));
+                        }
 
-                    litehtml::string elText;
-                    el->get_text(elText);
-                    word = elText;
-                    if (hit.hasBox) {
-                        word = normalizeHitWord(word, &hit.box, docX);
-                    } else {
-                        litehtml::position hitPlacement = el->get_placement();
-                        word = normalizeHitWord(word, &hitPlacement, docX);
+                        litehtml::string elText;
+                        el->get_text(elText);
+                        word = elText;
+                        if (hit.hasBox) {
+                            word = normalizeHitWord(word, &hit.box, docX);
+                        } else {
+                            litehtml::position hitPlacement = el->get_placement();
+                            word = normalizeHitWord(word, &hitPlacement, docX);
+                        }
                     }
 
                     // Walk up parent chain for link and Strong's/morph attributes.
@@ -1116,31 +1227,33 @@ int HtmlWidget::handle(int event) {
 
                 std::string word, href, strong, morph, module, title;
                 if (el) {
-                    // Get text content of the element under the cursor
-                    litehtml::string elText;
-                    el->get_text(elText);
+                    word = wordAtScreenPoint(Fl::event_x(), Fl::event_y());
+                    if (word.empty()) {
+                        // Get text content of the element under the cursor.
+                        litehtml::string elText;
+                        el->get_text(elText);
 
-                    // Check if element (or a close ancestor) is a span.w
-                    // word wrapper — if so, use text directly.  Otherwise
-                    // extract the single word at the cursor position.
-                    bool isWordSpan = false;
-                    {
-                        auto probe = el;
-                        for (int d = 0; probe && d < 3; ++d) {
-                            auto cls = probe->get_attr("class");
-                            if (cls && std::string(cls).find("w") !=
-                                           std::string::npos) {
-                                isWordSpan = true;
-                                break;
+                        // Fall back to the older element-based heuristic if we
+                        // do not have an exact text-fragment hit.
+                        bool isWordSpan = false;
+                        {
+                            auto probe = el;
+                            for (int d = 0; probe && d < 3; ++d) {
+                                auto cls = probe->get_attr("class");
+                                if (cls && std::string(cls).find("w") !=
+                                               std::string::npos) {
+                                    isWordSpan = true;
+                                    break;
+                                }
+                                probe = probe->parent();
                             }
-                            probe = probe->parent();
                         }
-                    }
-                    if (isWordSpan) {
-                        word = elText;
-                    } else {
-                        int cursorDocX = Fl::event_x() - x();
-                        word = extractWordAtCursor(elText, cursorDocX, el);
+                        if (isWordSpan) {
+                            word = elText;
+                        } else {
+                            int cursorDocX = Fl::event_x() - x();
+                            word = extractWordAtCursor(elText, cursorDocX, el);
+                        }
                     }
 
                     // Walk up parent chain (max 5 levels) to find data-strong,

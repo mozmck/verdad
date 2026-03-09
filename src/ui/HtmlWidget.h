@@ -274,6 +274,10 @@ private:
     SelectionPoint hitTestSelectionPoint(int screenX, int screenY) const;
     bool fragmentSelectionRange(int fragmentIndex, int& startChar, int& endChar) const;
     bool selectionPointLess(const SelectionPoint& lhs, const SelectionPoint& rhs) const;
+    bool hitTextFragmentAtPoint(int screenX, int screenY,
+                                int& fragmentIndex, int& charIndex) const;
+    std::string fragmentWordAt(int fragmentIndex, int charIndex) const;
+    std::string wordAtScreenPoint(int screenX, int screenY) const;
     std::string selectedText() const;
 };
 
