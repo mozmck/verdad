@@ -1050,24 +1050,32 @@ bool setButtonDown(Fl_Button* button, bool down) {
     return down;
 }
 
+bool isUtf8ContinuationByte(unsigned char c) {
+    return (c & 0xC0U) == 0x80U;
+}
+
 } // namespace
 
 int nextUtf8Boundary(std::string_view text, int pos) {
     pos = std::clamp(pos, 0, static_cast<int>(text.size()));
     if (pos >= static_cast<int>(text.size())) return static_cast<int>(text.size());
-    int len = fl_utf8len1(text[static_cast<size_t>(pos)]);
-    if (len < 1) len = 1;
-    return std::min(static_cast<int>(text.size()), pos + len);
+    ++pos;
+    while (pos < static_cast<int>(text.size()) &&
+           isUtf8ContinuationByte(static_cast<unsigned char>(text[static_cast<size_t>(pos)]))) {
+        ++pos;
+    }
+    return pos;
 }
 
 int prevUtf8Boundary(std::string_view text, int pos) {
     pos = std::clamp(pos, 0, static_cast<int>(text.size()));
     if (pos <= 0) return 0;
-    const char* start = text.data();
-    const char* here = start + pos;
-    const char* prev = fl_utf8back(here, start, start + text.size());
-    if (!prev) return std::max(0, pos - 1);
-    return static_cast<int>(prev - start);
+    --pos;
+    while (pos > 0 &&
+           isUtf8ContinuationByte(static_cast<unsigned char>(text[static_cast<size_t>(pos)]))) {
+        --pos;
+    }
+    return pos;
 }
 
 bool isPrintableUtf8Text(const char* text, int len) {
@@ -1095,6 +1103,7 @@ public:
         vscroll_ = new Fl_Scrollbar(0, 0, 1, 1);
         vscroll_->type(FL_VERTICAL);
         vscroll_->callback(scrollbar_cb, this);
+        vscroll_->clear_visible_focus();
         vscroll_->hide();
         end();
     }
@@ -1214,8 +1223,7 @@ private:
 };
 
 int HtmlEditorTextArea::handle(int event) {
-    if (Fl_Group::handle(event)) return 1;
-    if (!owner_) return 0;
+    if (!owner_) return Fl_Group::handle(event);
 
     switch (event) {
     case FL_FOCUS:
@@ -1224,6 +1232,9 @@ int HtmlEditorTextArea::handle(int event) {
         owner_->syncToolbarState();
         return 1;
     case FL_PUSH: {
+        if (vscroll_ && vscroll_->visible() && Fl::event_inside(vscroll_)) {
+            return Fl_Group::handle(event);
+        }
         if (Fl::event_button() != FL_LEFT_MOUSE) return 0;
         take_focus();
         int pos = positionForPoint(Fl::event_x(), Fl::event_y());
@@ -1250,16 +1261,24 @@ int HtmlEditorTextArea::handle(int event) {
         return 1;
     }
     case FL_DRAG:
-        if (!dragging_) return 0;
+        if (!dragging_) {
+            return Fl_Group::handle(event);
+        }
         moveCursor(positionForPoint(Fl::event_x(), Fl::event_y()), true);
         preferredX_ = -1;
         owner_->syncToolbarState();
         return 1;
     case FL_RELEASE:
+        if (!dragging_) {
+            return Fl_Group::handle(event);
+        }
         dragging_ = false;
         owner_->syncToolbarState();
         return 1;
     case FL_MOUSEWHEEL:
+        if (vscroll_ && vscroll_->visible() && Fl::event_inside(vscroll_)) {
+            return Fl_Group::handle(event);
+        }
         scrollBy(Fl::event_dy() * std::max(24, owner_->textSize_));
         return 1;
     case FL_KEYBOARD:
@@ -1268,16 +1287,16 @@ int HtmlEditorTextArea::handle(int event) {
             owner_->syncToolbarState();
             return 1;
         }
-        return 0;
+        return Fl_Group::handle(event);
     case FL_PASTE:
         if (Fl::event_length() > 0) {
             insertText(Fl::event_text(), Fl::event_length());
             owner_->syncToolbarState();
             return 1;
         }
-        return 0;
+        return Fl_Group::handle(event);
     default:
-        return 0;
+        return Fl_Group::handle(event);
     }
 }
 
@@ -1370,7 +1389,11 @@ int HtmlEditorTextArea::clampPosition(int pos) const {
     std::string text = currentText();
     pos = std::clamp(pos, 0, static_cast<int>(text.size()));
     if (pos == 0 || pos == static_cast<int>(text.size())) return pos;
-    return nextUtf8Boundary(text, prevUtf8Boundary(text, pos));
+    while (pos > 0 && pos < static_cast<int>(text.size()) &&
+           isUtf8ContinuationByte(static_cast<unsigned char>(text[static_cast<size_t>(pos)]))) {
+        --pos;
+    }
+    return pos;
 }
 
 bool HtmlEditorTextArea::selectionRange(int& start, int& end) const {
@@ -1828,6 +1851,9 @@ void HtmlEditorTextArea::drawSelection() const {
 
 void HtmlEditorTextArea::drawText() const {
     if (!owner_) return;
+    int selStart = 0;
+    int selEnd = 0;
+    bool hasSelection = selectionRange(selStart, selEnd);
     int top = scrollY();
     for (const VisualLine& line : lines_) {
         int lineTop = textAreaY_ + line.y - top;
@@ -1838,6 +1864,7 @@ void HtmlEditorTextArea::drawText() const {
         for (const Glyph& glyph : line.glyphs) {
             if (glyph.whitespace) continue;
 
+            bool selected = hasSelection && glyph.end > selStart && glyph.start < selEnd;
             CharFormat fmt = formatAt(owner_->formats_, glyph.start);
             fmt.displayPad = false;
             Fl_Font font = glyph.rule ? owner_->textFont_ : owner_->fontForFormat(fmt);
@@ -1845,8 +1872,10 @@ void HtmlEditorTextArea::drawText() const {
                 ? std::max(6, owner_->displayFontSizeForFormat(CharFormat{}) - 1)
                 : owner_->displayFontSizeForFormat(fmt);
             fl_font(font, size);
-            fl_color(glyph.link ? FL_BLUE :
-                     (glyph.rule ? fl_rgb_color(120, 120, 120) : FL_FOREGROUND_COLOR));
+            Fl_Color glyphColor = glyph.link ? FL_BLUE :
+                                  (glyph.rule ? fl_rgb_color(120, 120, 120) : FL_FOREGROUND_COLOR);
+            if (selected) glyphColor = FL_WHITE;
+            fl_color(glyphColor);
             fl_draw(cachedText_.data() + glyph.start,
                     glyph.end - glyph.start,
                     textAreaX_ + line.drawX + glyph.x,
@@ -1854,6 +1883,7 @@ void HtmlEditorTextArea::drawText() const {
 
             if (glyph.link) {
                 int underlineY = baseline + 1;
+                fl_color(selected ? FL_WHITE : FL_BLUE);
                 fl_line(textAreaX_ + line.drawX + glyph.x,
                         underlineY,
                         textAreaX_ + line.drawX + glyph.x + glyph.width,

@@ -2,6 +2,10 @@
 
 ## Project Structure & Module Organization
 `src/` contains the application code. Major areas are `src/app/` for app startup and preferences, `src/ui/` for FLTK panes and widgets, `src/sword/` for SWORD integration and HTML generation, `src/search/` for SQLite-backed search, and `src/tags/` for verse tagging. Runtime styling lives in `data/master.css`. Reference notes and screenshots live in `doc/`. `cmake/` holds custom find modules, and `libs/litehtml/` is a vendored dependency that should only be changed when the issue is clearly inside litehtml.
+FLTK source can be found at /home/moses/Projects/CandCNC/software/fltk-1.4.3
+Xiphos source at ../xiphos
+Bibletime source at ../bibletime
+Sword source at ../sword
 
 ## Build, Test, and Development Commands
 Configure a local build with:
