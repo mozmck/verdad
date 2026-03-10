@@ -72,6 +72,33 @@ std::string buildStudypadOdtHtml(VerdadApp* app, const std::string& bodyHtml) {
     return html.str();
 }
 
+std::string buildStudypadVerseInsertHtml(VerdadApp* app,
+                                         const std::string& verseReference) {
+    if (!app || !app->mainWindow() || !app->mainWindow()->biblePane()) return "";
+
+    std::string module = module_choice::trimCopy(
+        app->mainWindow()->biblePane()->currentModule());
+    if (module.empty()) return "";
+
+    std::vector<std::string> refs = app->swordManager().verseReferencesFromLink(
+        "sword://" + verseReference, "", module);
+    if (refs.empty()) {
+        refs.push_back(verseReference);
+    }
+
+    std::ostringstream html;
+    bool first = true;
+    for (const auto& ref : refs) {
+        std::string verseHtml = app->swordManager().getVerseInsertText(module, ref);
+        if (verseHtml.empty()) continue;
+        if (!first) html << "<br>";
+        html << verseHtml;
+        first = false;
+    }
+
+    return html.str();
+}
+
 std::string commentarySelectionCss(int verse) {
     if (verse <= 0) return "";
 
@@ -692,6 +719,10 @@ RightPane::RightPane(VerdadApp* app, int X, int Y, int W, int H)
             app_->appearanceSettings().textFontSize);
     }
     documentsEditor_->setChangeCallback([this]() { updateDocumentChrome(); });
+    documentsEditor_->setVerseTextProvider(
+        [this](const std::string& verseReference) {
+            return buildStudypadVerseInsertHtml(app_, verseReference);
+        });
     documentsGroup_->end();
     documentsGroup_->resizable(documentsEditor_);
 
@@ -1758,7 +1789,13 @@ void RightPane::updateDocumentChrome() {
         std::error_code ec;
         canDelete = fs::exists(fs::path(currentDocumentPath_), ec) && !ec;
     }
-    if (documentSaveButton_) documentSaveButton_->activate();
+    if (documentSaveButton_) {
+        if (documentsEditor_ && documentsEditor_->isModified()) {
+            documentSaveButton_->activate();
+        } else {
+            documentSaveButton_->deactivate();
+        }
+    }
     if (documentNewButton_) documentNewButton_->activate();
     if (documentExportButton_) {
         if (hasContent) documentExportButton_->activate();

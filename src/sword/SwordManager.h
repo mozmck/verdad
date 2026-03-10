@@ -106,6 +106,11 @@ public:
     std::string getVersePlainText(const std::string& moduleName,
                                   const std::string& key);
 
+    /// Get rendered XHTML for inserting verse text into the editor while
+    /// preserving inline styling but omitting Strong's, morph, note, and cross-ref markers.
+    std::string getVerseInsertText(const std::string& moduleName,
+                                   const std::string& key);
+
     /// Get rendered XHTML for an entire chapter
     /// @param moduleName    Module to use
     /// @param book          Book name (e.g. "Genesis")

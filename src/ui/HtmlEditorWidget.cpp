@@ -6,6 +6,7 @@
 #include <FL/Fl_Button.H>
 #include <FL/Fl_Choice.H>
 #include <FL/Fl_Device.H>
+#include <FL/Fl_Menu_Button.H>
 #include <FL/Fl_Scrollbar.H>
 #include <FL/Fl_Text_Buffer.H>
 #include <FL/fl_draw.H>
@@ -647,6 +648,27 @@ std::vector<std::pair<int, int>> verseReferenceRanges(const std::string& text) {
     return ranges;
 }
 
+std::string verseReferenceAtPosition(const std::string& text,
+                                     int pos,
+                                     int* startOut = nullptr,
+                                     int* endOut = nullptr) {
+    if (startOut) *startOut = 0;
+    if (endOut) *endOut = 0;
+    if (text.empty()) return "";
+
+    pos = std::clamp(pos, 0, static_cast<int>(text.size()));
+    for (const auto& range : verseReferenceRanges(text)) {
+        bool inside = (pos >= range.first && pos < range.second);
+        bool onRightEdge = (pos > 0 && (pos - 1) >= range.first && (pos - 1) < range.second);
+        if (!inside && !onRightEdge) continue;
+        if (startOut) *startOut = range.first;
+        if (endOut) *endOut = range.second;
+        return text.substr(static_cast<size_t>(range.first),
+                           static_cast<size_t>(range.second - range.first));
+    }
+    return "";
+}
+
 std::string escapeAndAutoLink(const std::string& text) {
     static const std::regex refRe(
         R"(((?:[1-3]\s+)?[A-Za-z]+(?:\s+[A-Za-z]+)*\s+\d+:\d+(?:-\d+)?))");
@@ -1193,6 +1215,7 @@ private:
     int lineAdvanceForHeights(int maxHeight) const;
 
     void moveCursor(int pos, bool extendSelection);
+    void showContextMenuForPosition(int pos, int screenX, int screenY);
     void setSelection(int start, int end);
     void clearSelection();
     bool selectionRange(int& start, int& end) const;
@@ -1234,6 +1257,23 @@ int HtmlEditorTextArea::handle(int event) {
     case FL_PUSH: {
         if (vscroll_ && vscroll_->visible() && Fl::event_inside(vscroll_)) {
             return Fl_Group::handle(event);
+        }
+        if (Fl::event_button() == FL_RIGHT_MOUSE) {
+            take_focus();
+            int pos = positionForPoint(Fl::event_x(), Fl::event_y());
+            int selStart = 0;
+            int selEnd = 0;
+            bool insideSelection =
+                selectionRange(selStart, selEnd) &&
+                ((pos >= selStart && pos < selEnd) ||
+                 (pos > 0 && (pos - 1) >= selStart && (pos - 1) < selEnd));
+            if (!insideSelection) {
+                moveCursor(pos, false);
+            }
+            preferredX_ = -1;
+            showContextMenuForPosition(pos, Fl::event_x(), Fl::event_y());
+            owner_->syncToolbarState();
+            return 1;
         }
         if (Fl::event_button() != FL_LEFT_MOUSE) return 0;
         take_focus();
@@ -1427,6 +1467,58 @@ void HtmlEditorTextArea::moveCursor(int pos, bool extendSelection) {
         clearSelection();
     }
     show_insert_position();
+}
+
+void HtmlEditorTextArea::showContextMenuForPosition(int pos, int screenX, int screenY) {
+    if (!owner_) return;
+
+    int selStart = 0;
+    int selEnd = 0;
+    bool hasSelection = selectionRange(selStart, selEnd);
+
+    std::string text = currentText();
+    int refStart = 0;
+    int refEnd = 0;
+    std::string verseRef = verseReferenceAtPosition(text, pos, &refStart, &refEnd);
+    bool canInsertVerse = !verseRef.empty() && static_cast<bool>(owner_->verseTextProvider_);
+
+    Fl_Menu_Button menu(screenX, screenY, 0, 0);
+    if (hasSelection) {
+        menu.add("Copy");
+        menu.add("Cut");
+    }
+    menu.add("Paste");
+    if (canInsertVerse) {
+        menu.add("Insert Verse Text Before Reference");
+        menu.add("Insert Verse Text After Reference");
+    }
+
+    const Fl_Menu_Item* picked = menu.popup();
+    if (!picked || !picked->label()) return;
+
+    std::string label = picked->label();
+    if (label == "Copy") {
+        owner_->copy();
+        return;
+    }
+    if (label == "Cut") {
+        owner_->cut();
+        return;
+    }
+    if (label == "Paste") {
+        owner_->paste();
+        return;
+    }
+    if (!canInsertVerse) return;
+
+    std::string verseHtml = owner_->verseTextProvider_(verseRef);
+    if (verseHtml.empty()) return;
+
+    if (label == "Insert Verse Text Before Reference") {
+        owner_->insertHtmlFragmentAt(refStart, refStart, verseHtml + "<br>");
+    } else if (label == "Insert Verse Text After Reference") {
+        owner_->insertHtmlFragmentAt(refEnd, refEnd, "<br>" + verseHtml);
+    }
 }
 
 void HtmlEditorTextArea::selectAll() {
@@ -2407,6 +2499,46 @@ void HtmlEditorWidget::discardPendingUserEdit() {
     pendingUserEdit_ = Snapshot{};
 }
 
+bool HtmlEditorWidget::insertHtmlFragmentAt(int start, int end, const std::string& html) {
+    if (!textBuffer_ || !editor_ || html.empty()) return false;
+
+    std::string fragmentText;
+    std::vector<CharFormat> fragmentFormats;
+    parseHtmlToEditorContent(html, fragmentText, fragmentFormats);
+    if (fragmentText.empty()) return false;
+    if (fragmentFormats.size() < fragmentText.size()) {
+        fragmentFormats.resize(fragmentText.size());
+    } else if (fragmentFormats.size() > fragmentText.size()) {
+        fragmentFormats.resize(fragmentText.size());
+    }
+
+    std::string text = bufferText();
+    start = std::clamp(start, 0, static_cast<int>(text.size()));
+    end = std::clamp(end, start, static_cast<int>(text.size()));
+
+    std::vector<CharFormat> formats = formats_;
+    if (formats.size() < text.size()) {
+        formats.resize(text.size());
+    } else if (formats.size() > text.size()) {
+        formats.resize(text.size());
+    }
+
+    discardPendingUserEdit();
+    pushUndoSnapshot(captureSnapshot());
+
+    text.erase(static_cast<size_t>(start), static_cast<size_t>(end - start));
+    formats.erase(formats.begin() + start, formats.begin() + end);
+    text.insert(static_cast<size_t>(start), fragmentText);
+    formats.insert(formats.begin() + start, fragmentFormats.begin(), fragmentFormats.end());
+
+    replaceAll(text, formats, true);
+    editor_->insert_position(start + static_cast<int>(fragmentText.size()));
+    if (textBuffer_) textBuffer_->unselect();
+    editor_->show_insert_position();
+    emitChanged();
+    return true;
+}
+
 void HtmlEditorWidget::finalizeUserEditAttempt() {
     if (!pendingUserEditValid_) return;
     if (bufferText() == pendingUserEdit_.text) {
@@ -2793,6 +2925,7 @@ bool HtmlEditorWidget::redo() {
 void HtmlEditorWidget::copy() {
     std::string text = selectionText(textBuffer_);
     if (!text.empty()) {
+        Fl::copy(text.c_str(), static_cast<int>(text.size()), 0);
         Fl::copy(text.c_str(), static_cast<int>(text.size()), 1);
     }
 }

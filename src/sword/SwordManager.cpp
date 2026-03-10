@@ -121,6 +121,41 @@ bool moduleHasFeature(sword::SWModule* mod, const char* value) {
     return moduleHasConfigValue(mod, "Feature", value);
 }
 
+class ScopedGlobalOptionOverride {
+public:
+    ScopedGlobalOptionOverride(sword::SWMgr* mgr,
+                               std::initializer_list<std::pair<const char*, const char*>> values)
+        : mgr_(mgr) {
+        if (!mgr_) return;
+        overrides_.reserve(values.size());
+        for (const auto& entry : values) {
+            if (!entry.first || !entry.second) continue;
+            const char* current = mgr_->getGlobalOption(entry.first);
+            overrides_.push_back(OptionState{
+                entry.first,
+                current ? std::string(current) : std::string()
+            });
+            mgr_->setGlobalOption(entry.first, entry.second);
+        }
+    }
+
+    ~ScopedGlobalOptionOverride() {
+        if (!mgr_) return;
+        for (auto it = overrides_.rbegin(); it != overrides_.rend(); ++it) {
+            mgr_->setGlobalOption(it->name.c_str(), it->value.c_str());
+        }
+    }
+
+private:
+    struct OptionState {
+        std::string name;
+        std::string value;
+    };
+
+    sword::SWMgr* mgr_ = nullptr;
+    std::vector<OptionState> overrides_;
+};
+
 void appendFeatureLabel(std::vector<std::string>& labels,
                         const std::string& label) {
     if (label.empty()) return;
@@ -2607,24 +2642,56 @@ std::string SwordManager::getVersePlainText(const std::string& moduleName,
     mod->setKey(key.c_str());
     if (mod->popError()) return "";
 
-    mgr_->setGlobalOption("Strong's Numbers", "Off");
-    mgr_->setGlobalOption("Morphological Tags", "Off");
-    mgr_->setGlobalOption("Lemmas", "Off");
-    mgr_->setGlobalOption("Footnotes", "Off");
-    mgr_->setGlobalOption("Cross-references", "Off");
-    mgr_->setGlobalOption("Headings", "Off");
+    ScopedGlobalOptionOverride options(mgr_.get(), {
+        {"Strong's Numbers", "Off"},
+        {"Morphological Tags", "Off"},
+        {"Lemmas", "Off"},
+        {"Footnotes", "Off"},
+        {"Cross-references", "Off"},
+        {"Headings", "Off"},
+    });
 
     const char* plainRaw = mod->stripText();
     std::string plain = plainRaw ? plainRaw : "";
 
-    mgr_->setGlobalOption("Strong's Numbers", "On");
-    mgr_->setGlobalOption("Morphological Tags", "On");
-    mgr_->setGlobalOption("Lemmas", "On");
-    mgr_->setGlobalOption("Footnotes", "On");
-    mgr_->setGlobalOption("Cross-references", "On");
-    mgr_->setGlobalOption("Headings", "On");
-
     return plain;
+}
+
+std::string SwordManager::getVerseInsertText(const std::string& moduleName,
+                                             const std::string& key) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    sword::SWModule* mod = getModule(moduleName);
+    if (!mod || !mgr_) return "";
+
+    mod->setKey(key.c_str());
+    if (mod->popError()) return "";
+
+    ScopedGlobalOptionOverride options(mgr_.get(), {
+        {"Strong's Numbers", "Off"},
+        {"Morphological Tags", "Off"},
+        {"Lemmas", "Off"},
+        {"Footnotes", "Off"},
+        {"Cross-references", "Off"},
+        {"Headings", "Off"},
+    });
+
+    std::string text = std::string(mod->renderText().c_str());
+    if (text.empty()) return "";
+    text = postProcessHtml(text);
+
+    VerseRef ref;
+    try {
+        ref = parseVerseRef(key);
+    } catch (...) {
+        ref = VerseRef{};
+    }
+
+    std::ostringstream html;
+    if (ref.verse > 0) {
+        html << "<small><strong>" << ref.verse << "</strong></small> ";
+    }
+    html << text;
+    return html.str();
 }
 
 std::string SwordManager::getChapterText(const std::string& moduleName,

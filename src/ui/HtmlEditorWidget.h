@@ -25,6 +25,8 @@ public:
         Document,
     };
 
+    using VerseTextProvider = std::function<std::string(const std::string&)>;
+
     struct CharFormat {
         bool bold = false;
         bool italic = false;
@@ -87,6 +89,9 @@ public:
     void insertHorizontalRule();
 
     void focusEditor();
+    void setVerseTextProvider(VerseTextProvider provider) {
+        verseTextProvider_ = std::move(provider);
+    }
 
     void setChangeCallback(std::function<void()> cb) {
         changeCallback_ = std::move(cb);
@@ -133,6 +138,7 @@ private:
     Fl_Font boldItalicTextFont_ = FL_HELVETICA_BOLD_ITALIC;
     int textSize_ = 14;
     std::function<void()> changeCallback_;
+    VerseTextProvider verseTextProvider_;
 
     void buildToolbar();
     void layoutChildren();
@@ -148,6 +154,7 @@ private:
     void clearHistory();
     void pushUndoSnapshot(const Snapshot& snapshot);
     void discardPendingUserEdit();
+    bool insertHtmlFragmentAt(int start, int end, const std::string& html);
 
     std::string bufferText() const;
     void setBufferText(const std::string& text);
