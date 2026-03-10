@@ -116,6 +116,7 @@ public:
     bool openDocument(const std::string& path, bool activateTab);
     bool saveDocument();
     bool exportDocumentToOdt();
+    bool maybeSaveDocumentChanges();
 
     /// Legacy naming kept for session compatibility.
     /// Select visible tab: true = General Books, false = Commentary.
@@ -163,6 +164,7 @@ public:
     /// Apply runtime HTML style overrides to all right-pane HTML widgets.
     void setHtmlStyleOverride(const std::string& css);
     void setEditorIndentWidth(int width);
+    void setEditorLineHeight(double lineHeight);
     void setEditorTextFont(Fl_Font regularFont, Fl_Font boldFont, int size);
 
 protected:
@@ -264,7 +266,6 @@ private:
     bool beginCommentaryEdit();
     bool saveCommentaryEdit(bool exitEditMode);
     void cancelCommentaryEdit();
-    bool maybeSaveDocumentChanges();
     bool deleteCurrentDocument();
     bool saveDocumentAs();
     bool saveDocumentToPath(const std::string& path);

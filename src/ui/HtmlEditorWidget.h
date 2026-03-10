@@ -2,20 +2,20 @@
 #define VERDAD_HTML_EDITOR_WIDGET_H
 
 #include <FL/Fl_Group.H>
-#include <FL/Fl_Text_Display.H>
 #include <FL/Enumerations.H>
 
-#include <array>
 #include <functional>
 #include <memory>
 #include <string>
 #include <vector>
 
 class Fl_Button;
+class Fl_Choice;
 class Fl_Text_Buffer;
-class Fl_Text_Editor;
 
 namespace verdad {
+
+class HtmlEditorTextArea;
 
 /// Lightweight rich-text editor backed by a constrained HTML subset.
 class HtmlEditorWidget : public Fl_Group {
@@ -28,12 +28,16 @@ public:
     struct CharFormat {
         bool bold = false;
         bool italic = false;
-        unsigned char size = 1; // 0=small, 1=normal, 2=large
+        unsigned char size = 3; // relative size level, 3=default
+        unsigned char align = 0; // 0=left, 1=center
+        bool displayPad = false; // internal-only leading spaces for centered display
 
         bool operator==(const CharFormat& other) const {
             return bold == other.bold &&
                    italic == other.italic &&
-                   size == other.size;
+                   size == other.size &&
+                   align == other.align &&
+                   displayPad == other.displayPad;
         }
     };
 
@@ -54,9 +58,12 @@ public:
 
     void setHtml(const std::string& html);
     std::string html() const;
+    std::string odtHtml() const;
     void setIndentWidth(int width);
+    void setLineHeight(double lineHeight);
     void setTextFont(Fl_Font regularFont, Fl_Font boldFont, int size);
     int indentWidth() const { return indentWidth_; }
+    double lineHeight() const { return lineHeight_; }
 
     void clearDocument();
 
@@ -72,6 +79,7 @@ public:
 
     void toggleBold();
     void toggleItalic();
+    void toggleCenterAlignment();
     void increaseTextSize();
     void decreaseTextSize();
     void toggleUnorderedList();
@@ -89,25 +97,27 @@ public:
     void finalizeUserEditAttempt();
     bool handleEnterKey();
     bool handleTabKey(bool outdent);
+    void syncToolbarState();
 
 protected:
     void resize(int X, int Y, int W, int H) override;
 
 private:
+    friend class HtmlEditorTextArea;
+
     Mode mode_ = Mode::Commentary;
     Fl_Group* toolbar_ = nullptr;
     Fl_Button* undoButton_ = nullptr;
     Fl_Button* redoButton_ = nullptr;
     Fl_Button* boldButton_ = nullptr;
     Fl_Button* italicButton_ = nullptr;
-    Fl_Button* smallerButton_ = nullptr;
-    Fl_Button* largerButton_ = nullptr;
+    Fl_Choice* sizeChoice_ = nullptr;
+    Fl_Button* centerButton_ = nullptr;
     Fl_Button* unorderedListButton_ = nullptr;
     Fl_Button* orderedListButton_ = nullptr;
     Fl_Button* ruleButton_ = nullptr;
-    Fl_Text_Editor* editor_ = nullptr;
+    HtmlEditorTextArea* editor_ = nullptr;
     Fl_Text_Buffer* textBuffer_ = nullptr;
-    Fl_Text_Buffer* styleBuffer_ = nullptr;
     std::vector<CharFormat> formats_;
     std::vector<Snapshot> undoStack_;
     std::vector<Snapshot> redoStack_;
@@ -116,16 +126,20 @@ private:
     bool suppressCallbacks_ = false;
     bool modified_ = false;
     int indentWidth_ = 4;
+    double lineHeight_ = 1.2;
     Fl_Font textFont_ = FL_HELVETICA;
     Fl_Font boldTextFont_ = FL_HELVETICA_BOLD;
+    Fl_Font italicTextFont_ = FL_HELVETICA_ITALIC;
+    Fl_Font boldItalicTextFont_ = FL_HELVETICA_BOLD_ITALIC;
     int textSize_ = 14;
-    std::array<Fl_Text_Display::Style_Table_Entry, 25> styleTable_{};
     std::function<void()> changeCallback_;
 
     void buildToolbar();
     void layoutChildren();
     void rebuildStyleBuffer();
     void refreshToolbarState();
+    void populateSizeChoice();
+    void normalizeCenteredDisplay();
     void emitChanged();
     void renumberOrderedListBlocks();
 
@@ -137,12 +151,19 @@ private:
 
     std::string bufferText() const;
     void setBufferText(const std::string& text);
+    Fl_Font fontForFormat(const CharFormat& format) const;
+    int displayFontSizeForFormat(const CharFormat& format) const;
+    int editorLineAdvance() const;
+    int minimumSafeLineAdvance() const;
+    double measureStyledRangeWidth(const std::string& text, int start, int end) const;
+    double spaceWidthForFormat(const CharFormat& format) const;
     void replaceAll(const std::string& text,
                     const std::vector<CharFormat>& formats,
                     bool markModified);
 
     bool selectionRange(int& start, int& end) const;
     bool selectionOrWordRange(int& start, int& end) const;
+    void setTextSizeLevel(unsigned char level);
     void applyInlineTransform(const std::function<void(CharFormat&)>& transform);
     void applyLinePrefixes(const std::function<std::string(const std::string&, int)>& formatter,
                            bool removeMatching,

@@ -593,6 +593,7 @@ MainWindow::MainWindow(VerdadApp* app, int W, int H, const char* title)
 
     resizable(mainTile_);
     end();
+    callback(onWindowClose, this);
 
     addStudyTab("", "Genesis", 1, 1);
     layoutStudyTabHeader();
@@ -1613,6 +1614,7 @@ void MainWindow::applyAppearanceSettings(Fl_Font appFont,
     }
     if (rightPane_ && app_) {
         rightPane_->setEditorIndentWidth(app_->appearanceSettings().editorIndentWidth);
+        rightPane_->setEditorLineHeight(app_->appearanceSettings().editorLineHeight);
         rightPane_->setEditorTextFont(
             app_->textEditorFont(),
             app_->boldTextEditorFont(),
@@ -2168,6 +2170,12 @@ bool MainWindow::importSettingsArchive(const std::string& archivePath,
     return true;
 }
 
+bool MainWindow::requestClose() {
+    if (rightPane_ && !rightPane_->maybeSaveDocumentChanges()) return false;
+    Fl_Double_Window::hide();
+    return true;
+}
+
 void MainWindow::buildMenu() {
     menuBar_->add("&File/&New Studypad", FL_CTRL + 'n', onFileNewDocument, this);
     menuBar_->add("&File/&Save Studypad", FL_CTRL + 's', onFileSaveDocument, this);
@@ -2181,9 +2189,16 @@ void MainWindow::buildMenu() {
     menuBar_->add("&Help/&About Verdad", 0, onHelpAbout, this);
 }
 
+void MainWindow::onWindowClose(Fl_Widget* /*w*/, void* data) {
+    auto* self = static_cast<MainWindow*>(data);
+    if (!self) return;
+    self->requestClose();
+}
+
 void MainWindow::onFileQuit(Fl_Widget* /*w*/, void* data) {
     auto* self = static_cast<MainWindow*>(data);
-    self->hide();
+    if (!self) return;
+    self->requestClose();
 }
 
 void MainWindow::onFileModuleManager(Fl_Widget* /*w*/, void* data) {
@@ -2322,9 +2337,9 @@ void MainWindow::onViewSettings(Fl_Widget* /*w*/, void* data) {
     constexpr int fieldXOffset = 180;
     constexpr int spinnerW = 90;
 
-    int appearanceRowCount = 5;
+    int appearanceRowCount = 6;
     int dictionaryRowCount = 2 + static_cast<int>(languageCodes.size());
-    int editorRowCount = 1;
+    int editorRowCount = 2;
     int maxRowCount = std::max({appearanceRowCount, dictionaryRowCount, editorRowCount});
     int tabsH = tabsHeaderH + (groupPadY * 2) + (maxRowCount * rowStep);
     int buttonsY = tabsY + tabsH + 12;
@@ -2394,6 +2409,16 @@ void MainWindow::onViewSettings(Fl_Widget* /*w*/, void* data) {
     textSizeSpinner->maximum(36);
     textSizeSpinner->step(1);
     textSizeSpinner->value(current.textFontSize);
+    rowY += rowStep;
+
+    Fl_Box* textLineHeightLabel =
+        new Fl_Box(labelX, rowY, labelW, 24, "Pane line height:");
+    textLineHeightLabel->align(FL_ALIGN_LEFT | FL_ALIGN_INSIDE);
+    Fl_Spinner* textLineHeightSpinner = new Fl_Spinner(fieldX, rowY, spinnerW, 24);
+    textLineHeightSpinner->minimum(1.0);
+    textLineHeightSpinner->maximum(2.0);
+    textLineHeightSpinner->step(0.05);
+    textLineHeightSpinner->value(current.textLineHeight);
     rowY += rowStep;
 
     Fl_Box* hoverLabel = new Fl_Box(labelX, rowY, labelW, 24, "Hover delay (ms):");
@@ -2473,6 +2498,17 @@ void MainWindow::onViewSettings(Fl_Widget* /*w*/, void* data) {
     indentSpinner->maximum(8);
     indentSpinner->step(1);
     indentSpinner->value(current.editorIndentWidth);
+    rowY += rowStep;
+
+    Fl_Box* editorLineHeightLabel =
+        new Fl_Box(labelX, rowY, labelW, 24, "Studypad line height:");
+    editorLineHeightLabel->align(FL_ALIGN_LEFT | FL_ALIGN_INSIDE);
+    Fl_Spinner* editorLineHeightSpinner =
+        new Fl_Spinner(fieldX, rowY, spinnerW, 24);
+    editorLineHeightSpinner->minimum(1.0);
+    editorLineHeightSpinner->maximum(2.0);
+    editorLineHeightSpinner->step(0.05);
+    editorLineHeightSpinner->value(current.editorLineHeight);
 
     editorTab->end();
 
@@ -2526,8 +2562,10 @@ void MainWindow::onViewSettings(Fl_Widget* /*w*/, void* data) {
             updated.textFontFamily = textFontItem->label();
         }
         updated.textFontSize = static_cast<int>(textSizeSpinner->value());
+        updated.textLineHeight = textLineHeightSpinner->value();
         updated.hoverDelayMs = static_cast<int>(hoverDelaySpinner->value());
         updated.editorIndentWidth = static_cast<int>(indentSpinner->value());
+        updated.editorLineHeight = editorLineHeightSpinner->value();
 
         const Fl_Menu_Item* greekDictItem = greekDictChoice->mvalue();
         if (hasGreekPreviewDictionaries && greekDictItem && greekDictItem->label()) {

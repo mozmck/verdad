@@ -16,6 +16,7 @@
 #include <limits>
 #include <memory>
 #include <sstream>
+#include <string_view>
 #include <vector>
 
 namespace verdad {
@@ -37,6 +38,124 @@ std::string trimCopy(const std::string& text) {
     }
 
     return text.substr(start, end - start);
+}
+
+std::string toLowerAscii(std::string text) {
+    std::transform(text.begin(), text.end(), text.begin(),
+                   [](unsigned char c) {
+                       return static_cast<char>(std::tolower(c));
+                   });
+    return text;
+}
+
+bool endsWith(std::string_view text, std::string_view suffix) {
+    return text.size() >= suffix.size() &&
+           text.substr(text.size() - suffix.size()) == suffix;
+}
+
+std::string normalizeFontVariantFamily(const char* name, bool stripRegularSuffixes) {
+    std::string lower = toLowerAscii(name ? name : "");
+    static constexpr std::string_view styleSuffixes[] = {
+        " bold italic",
+        " bold oblique",
+        " demi bold italic",
+        " demi bold oblique",
+        " italic",
+        " oblique",
+        " bold",
+        " demi bold",
+    };
+    static constexpr std::string_view regularSuffixes[] = {
+        " regular",
+        " medium",
+        " book",
+        " roman",
+    };
+
+    bool stripped = true;
+    while (stripped) {
+        stripped = false;
+        for (std::string_view suffix : styleSuffixes) {
+            if (endsWith(lower, suffix)) {
+                lower.erase(lower.size() - suffix.size());
+                lower = trimCopy(lower);
+                stripped = true;
+                break;
+            }
+        }
+        if (!stripped && stripRegularSuffixes) {
+            for (std::string_view suffix : regularSuffixes) {
+                if (endsWith(lower, suffix)) {
+                    lower.erase(lower.size() - suffix.size());
+                    lower = trimCopy(lower);
+                    stripped = true;
+                    break;
+                }
+            }
+        }
+    }
+
+    return trimCopy(lower);
+}
+
+Fl_Font findFontVariant(Fl_Font baseFont, int targetAttrs) {
+    constexpr Fl_Font kInvalidFont = static_cast<Fl_Font>(-1);
+
+    int baseAttrs = 0;
+    const char* baseName = Fl::get_font_name(baseFont, &baseAttrs);
+    if (!baseName || !baseName[0]) return kInvalidFont;
+
+    Fl_Font count = Fl::set_fonts("-*");
+    for (bool stripRegularSuffixes : {false, true}) {
+        std::string familyKey = normalizeFontVariantFamily(baseName, stripRegularSuffixes);
+        for (Fl_Font f = 0; f < count; ++f) {
+            int attrs = 0;
+            const char* name = Fl::get_font_name(f, &attrs);
+            if (!name || !name[0] || attrs != targetAttrs) continue;
+            if (normalizeFontVariantFamily(name, stripRegularSuffixes) == familyKey) {
+                return f;
+            }
+        }
+    }
+
+    return kInvalidFont;
+}
+
+bool isBuiltinStyledFamilyBase(Fl_Font base) {
+    return base == FL_HELVETICA || base == FL_COURIER || base == FL_TIMES;
+}
+
+Fl_Font styledFontVariant(Fl_Font base, int weight, bool italic) {
+    const bool bold = weight >= 700;
+    if (!bold && !italic) return base;
+
+    constexpr Fl_Font kInvalidFont = static_cast<Fl_Font>(-1);
+    int targetAttrs = (bold ? FL_BOLD : 0) | (italic ? FL_ITALIC : 0);
+
+    Fl_Font combined = findFontVariant(base, targetAttrs);
+    if (combined != kInvalidFont) return combined;
+
+    if (bold) {
+        Fl_Font boldVariant = findFontVariant(base, FL_BOLD);
+        if (italic) {
+            Fl_Font italicVariant = findFontVariant(base, FL_ITALIC);
+            if (boldVariant != kInvalidFont) return boldVariant;
+            if (italicVariant != kInvalidFont) return italicVariant;
+        } else if (boldVariant != kInvalidFont) {
+            return boldVariant;
+        }
+    } else if (italic) {
+        Fl_Font italicVariant = findFontVariant(base, FL_ITALIC);
+        if (italicVariant != kInvalidFont) return italicVariant;
+    }
+
+    if (isBuiltinStyledFamilyBase(base)) {
+        if (bold && italic) return base + FL_BOLD_ITALIC;
+        if (bold) return base + FL_BOLD;
+        if (italic) return base + FL_ITALIC;
+    }
+
+    return base;
 }
 
 bool containsWhitespace(const std::string& text) {
@@ -1981,14 +2100,7 @@ Fl_Font HtmlWidget::mapFont(const char* faceName, int weight, bool italic) {
     }
 
 apply_modifiers:
-    if (weight >= 700 && italic) {
-        return base + FL_BOLD_ITALIC;
-    } else if (weight >= 700) {
-        return base + FL_BOLD;
-    } else if (italic) {
-        return base + FL_ITALIC;
-    }
-    return base;
+    return styledFontVariant(base, weight, italic);
 }
 
 } // namespace verdad

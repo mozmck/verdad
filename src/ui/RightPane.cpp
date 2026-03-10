@@ -41,6 +41,37 @@ std::string composeCss(const std::string& base, const std::string& extra) {
     return base + "\n" + extra;
 }
 
+std::string escapeCssString(const std::string& text) {
+    std::string out;
+    out.reserve(text.size() + 8);
+    for (char c : text) {
+        if (c == '\\' || c == '"') out.push_back('\\');
+        out.push_back(c);
+    }
+    return out;
+}
+
+std::string buildStudypadOdtHtml(VerdadApp* app, const std::string& bodyHtml) {
+    std::string family = app ? app->appearanceSettings().textFontFamily : "Serif";
+    int size = app ? app->appearanceSettings().textFontSize : 14;
+    double lineHeight = app ? app->appearanceSettings().editorLineHeight : 1.2;
+
+    std::ostringstream html;
+    html << "<!DOCTYPE html>\n"
+         << "<html>\n<head>\n"
+         << "<meta charset=\"utf-8\" />\n"
+         << "<style>\n"
+         << "body { font-family: \"" << escapeCssString(family) << "\"; font-size: "
+         << size << "pt; line-height: " << lineHeight << "; margin: 0.4in; }\n"
+         << "p { margin: 0 0 0.65em 0; line-height: inherit; }\n"
+         << "hr { border: 0; border-top: 1px solid #777; margin: 0.8em 0; }\n"
+         << "</style>\n"
+         << "</head>\n<body>\n"
+         << bodyHtml
+         << "\n</body>\n</html>\n";
+    return html.str();
+}
+
 std::string commentarySelectionCss(int verse) {
     if (verse <= 0) return "";
 
@@ -577,6 +608,7 @@ RightPane::RightPane(VerdadApp* app, int X, int Y, int W, int H)
     commentaryEditor_->setMode(HtmlEditorWidget::Mode::Commentary);
     commentaryEditor_->setIndentWidth(app_ ? app_->appearanceSettings().editorIndentWidth : 4);
     if (app_) {
+        commentaryEditor_->setLineHeight(app_->appearanceSettings().editorLineHeight);
         commentaryEditor_->setTextFont(
             app_->textEditorFont(),
             app_->boldTextEditorFont(),
@@ -653,6 +685,7 @@ RightPane::RightPane(VerdadApp* app, int X, int Y, int W, int H)
     documentsEditor_->setMode(HtmlEditorWidget::Mode::Document);
     documentsEditor_->setIndentWidth(app_ ? app_->appearanceSettings().editorIndentWidth : 4);
     if (app_) {
+        documentsEditor_->setLineHeight(app_->appearanceSettings().editorLineHeight);
         documentsEditor_->setTextFont(
             app_->textEditorFont(),
             app_->boldTextEditorFont(),
@@ -1566,6 +1599,11 @@ void RightPane::setEditorIndentWidth(int width) {
     if (documentsEditor_) documentsEditor_->setIndentWidth(width);
 }
 
+void RightPane::setEditorLineHeight(double lineHeight) {
+    if (commentaryEditor_) commentaryEditor_->setLineHeight(lineHeight);
+    if (documentsEditor_) documentsEditor_->setLineHeight(lineHeight);
+}
+
 void RightPane::setEditorTextFont(Fl_Font regularFont, Fl_Font boldFont, int size) {
     if (commentaryEditor_) commentaryEditor_->setTextFont(regularFont, boldFont, size);
     if (documentsEditor_) documentsEditor_->setTextFont(regularFont, boldFont, size);
@@ -2055,7 +2093,8 @@ bool RightPane::exportDocumentToOdtPath(const std::string& path) {
         return false;
     }
 
-    if (!writeTextFile(inputPath.string(), documentsEditor_->html())) {
+    if (!writeTextFile(inputPath.string(),
+                       buildStudypadOdtHtml(app_, documentsEditor_->odtHtml()))) {
         cleanup();
         fl_alert("Failed to write the temporary HTML export.");
         return false;

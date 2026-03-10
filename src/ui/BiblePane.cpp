@@ -48,9 +48,9 @@ std::string buildVerseTagMarkersHtml(VerdadApp* app, const std::string& verseRef
 
     const std::string escapedVerseRef = htmlEscape(verseRef);
     std::ostringstream tooltip;
-    tooltip << "Tagged: ";
+    //tooltip << "Tags: ";
     for (size_t i = 0; i < tags.size(); ++i) {
-        if (i) tooltip << ", ";
+        if (i) tooltip << "\n";
         tooltip << tags[i].name;
     }
 

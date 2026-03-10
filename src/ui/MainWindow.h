@@ -288,6 +288,7 @@ private:
 
     /// Build the menu bar
     void buildMenu();
+    bool requestClose();
     bool exportSettingsArchive(const std::string& archivePath,
                                std::string& errorMessage);
     bool importSettingsArchive(const std::string& archivePath,
@@ -297,6 +298,7 @@ private:
     void restoreDeferredDocumentSession();
 
     // Menu callbacks
+    static void onWindowClose(Fl_Widget* w, void* data);
     static void onFileQuit(Fl_Widget* w, void* data);
     static void onFileModuleManager(Fl_Widget* w, void* data);
     static void onFileNewDocument(Fl_Widget* w, void* data);
