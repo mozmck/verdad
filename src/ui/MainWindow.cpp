@@ -104,6 +104,7 @@ const char* kFallbackHelpHtml = R"(
   <p>Regex uses ECMAScript syntax and is case-insensitive. Use <code>\\b</code> for word boundaries and <code>.*</code> to span text between terms.</p>
   <h2 id="features">Features</h2>
   <p>Use the Bible toolbar to switch modules, toggle paragraph mode, manage parallel columns, and show or hide study markers such as Strong's, morphology, notes, and cross references.</p>
+  <p>Right-clicking in the Bible pane can copy verses or selections with the reference first or last, and the Studypad editor supports copy, cut, paste, and verse-link insertion from the current Bible module.</p>
 </div>
 )";
 
