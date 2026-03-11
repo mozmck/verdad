@@ -63,3 +63,5 @@ build/
 # Screenshot images
 doc/*.png
 doc/*.jpg
+
+ref/
