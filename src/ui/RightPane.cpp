@@ -26,6 +26,7 @@
 #include <functional>
 #include <sstream>
 #include <system_error>
+#include <unordered_set>
 
 namespace verdad {
 namespace {
@@ -566,9 +567,21 @@ bool runLibreOfficeOdtExport(const std::string& inputHtmlPath,
 int findGeneralBookTocIndex(
     const std::vector<GeneralBookTocEntry>& toc,
     const std::string& key) {
-    if (key.empty()) return -1;
+    std::string wanted = module_choice::trimCopy(key);
+    if (wanted.empty()) return -1;
     for (size_t i = 0; i < toc.size(); ++i) {
-        if (toc[i].key == key) return static_cast<int>(i);
+        if (toc[i].key == wanted) return static_cast<int>(i);
+    }
+    for (size_t i = 0; i < toc.size(); ++i) {
+        if (module_choice::equalsIgnoreCaseAscii(toc[i].label, wanted)) {
+            return static_cast<int>(i);
+        }
+    }
+    const std::string wantedPrefix = wanted + "/";
+    for (size_t i = 0; i < toc.size(); ++i) {
+        if (toc[i].key.rfind(wantedPrefix, 0) == 0) {
+            return static_cast<int>(i);
+        }
     }
     return -1;
 }
@@ -1353,6 +1366,10 @@ void RightPane::showGeneralBookEntry(const std::string& moduleName,
                                      const std::string& key) {
     bool moduleChanged = (moduleName != currentGeneralBook_);
     currentGeneralBook_ = moduleName;
+    module_choice::applyChoiceValue(generalBookChoice_,
+                                    generalBookChoiceModules_,
+                                    generalBookChoiceLabels_,
+                                    currentGeneralBook_);
     if (moduleChanged || generalBookToc_.empty()) {
         populateGeneralBookToc();
     }
@@ -1652,7 +1669,6 @@ void RightPane::rebuildGeneralBookTocTree() {
         generalBookTreeItemIndices_[item] = static_cast<int>(i);
 
         if (entry.depth <= 0) {
-            generalBookTocTree_->open(item, 0);
             depthItems.assign(1, item);
         } else {
             if (static_cast<int>(depthItems.size()) <= entry.depth) {
@@ -1679,12 +1695,26 @@ void RightPane::syncGeneralBookTreeSelection() {
     }
     if (!selected) return;
 
+    std::unordered_set<const Fl_Tree_Item*> openPath;
+    openPath.reserve(static_cast<size_t>(selected->depth() + 2));
+    for (Fl_Tree_Item* item = selected; item; item = item->parent()) {
+        openPath.insert(item);
+    }
+
     generalBookTreeSyncing_ = true;
-    for (Fl_Tree_Item* parent = selected->parent(); parent; parent = parent->parent()) {
-        generalBookTocTree_->open(parent, 0);
+    for (const auto& [item, index] : generalBookTreeItemIndices_) {
+        (void)index;
+        auto* treeItem = const_cast<Fl_Tree_Item*>(item);
+        if (!treeItem || treeItem->children() <= 0) continue;
+
+        if (openPath.find(treeItem) != openPath.end()) {
+            generalBookTocTree_->open(treeItem, 0);
+        } else {
+            generalBookTocTree_->close(treeItem, 0);
+        }
     }
     generalBookTocTree_->select_only(selected, 0);
-    generalBookTocTree_->show_item(selected);
+    generalBookTocTree_->show_item_middle(selected);
     generalBookTreeSyncing_ = false;
 }
 
@@ -1810,10 +1840,7 @@ void RightPane::setDictionaryPaneHeight(int height) {
 void RightPane::setStudyState(const std::string& commentaryModule,
                               const std::string& commentaryReference,
                               const std::string& dictionaryModule,
-                              const std::string& dictionaryKey,
-                              const std::string& generalBookModule,
-                              const std::string& generalBookKey,
-                              bool dictionaryActive) {
+                              const std::string& dictionaryKey) {
     perf::ScopeTimer timer("RightPane::setStudyState");
     showGeneralBookTocOverlay(false);
     if (!commentaryModule.empty()) {
@@ -1823,16 +1850,11 @@ void RightPane::setStudyState(const std::string& commentaryModule,
     if (!dictionaryModule.empty()) {
         setDictionaryModule(dictionaryModule, false);
     }
-    if (!generalBookModule.empty()) {
-        setGeneralBookModule(generalBookModule, true);
-    }
 
     currentCommentaryRef_ = commentaryReference;
-    currentGeneralBookKey_ = generalBookKey;
     if (dictionaryModule.empty() && dictionaryKeyInput_) {
         dictionaryKeyInput_->setDisplayedValue(currentDictKey_);
     }
-    setDictionaryTabActive(dictionaryActive);
     updateCommentaryEditorChrome();
 }
 
@@ -1859,17 +1881,6 @@ RightPane::DisplayBuffer RightPane::captureDisplayBuffer() const {
         buf.dictionary.renderWidth = snap.renderWidth;
         buf.dictionary.scrollbarVisible = snap.scrollbarVisible;
         buf.dictionary.valid = snap.valid;
-    }
-    if (generalBookHtml_) {
-        HtmlWidget::Snapshot snap = generalBookHtml_->captureSnapshot();
-        buf.generalBook.doc = snap.doc;
-        buf.generalBook.html = std::move(snap.html);
-        buf.generalBook.baseUrl = std::move(snap.baseUrl);
-        buf.generalBook.scrollY = snap.scrollY;
-        buf.generalBook.contentHeight = snap.contentHeight;
-        buf.generalBook.renderWidth = snap.renderWidth;
-        buf.generalBook.scrollbarVisible = snap.scrollbarVisible;
-        buf.generalBook.valid = snap.valid;
     }
     return buf;
 }
@@ -1898,21 +1909,10 @@ RightPane::DisplayBuffer RightPane::takeDisplayBuffer() {
         buf.dictionary.scrollbarVisible = snap.scrollbarVisible;
         buf.dictionary.valid = snap.valid;
     }
-    if (generalBookHtml_) {
-        HtmlWidget::Snapshot snap = generalBookHtml_->takeSnapshot();
-        buf.generalBook.doc = std::move(snap.doc);
-        buf.generalBook.html = std::move(snap.html);
-        buf.generalBook.baseUrl = std::move(snap.baseUrl);
-        buf.generalBook.scrollY = snap.scrollY;
-        buf.generalBook.contentHeight = snap.contentHeight;
-        buf.generalBook.renderWidth = snap.renderWidth;
-        buf.generalBook.scrollbarVisible = snap.scrollbarVisible;
-        buf.generalBook.valid = snap.valid;
-    }
     return buf;
 }
 
-void RightPane::restoreDisplayBuffer(const DisplayBuffer& buffer, bool dictionaryActive) {
+void RightPane::restoreDisplayBuffer(const DisplayBuffer& buffer) {
     perf::ScopeTimer timer("RightPane::restoreDisplayBuffer(copy)");
     if (commentaryHtml_ && buffer.commentary.valid) {
         HtmlWidget::Snapshot snap;
@@ -1938,26 +1938,9 @@ void RightPane::restoreDisplayBuffer(const DisplayBuffer& buffer, bool dictionar
         snap.valid = buffer.dictionary.valid;
         dictionaryHtml_->restoreSnapshot(snap);
     }
-    if (generalBookHtml_ && buffer.generalBook.valid) {
-        if (generalBookToc_.empty() && !currentGeneralBook_.empty()) {
-            populateGeneralBookToc();
-        }
-        HtmlWidget::Snapshot snap;
-        snap.doc = buffer.generalBook.doc;
-        snap.html = buffer.generalBook.html;
-        snap.baseUrl = buffer.generalBook.baseUrl;
-        snap.scrollY = buffer.generalBook.scrollY;
-        snap.contentHeight = buffer.generalBook.contentHeight;
-        snap.renderWidth = buffer.generalBook.renderWidth;
-        snap.scrollbarVisible = buffer.generalBook.scrollbarVisible;
-        snap.valid = buffer.generalBook.valid;
-        generalBookHtml_->restoreSnapshot(snap);
-        restoreGeneralBookLoadedRangeFromHtml(buffer.generalBook.html);
-    }
-    setDictionaryTabActive(dictionaryActive);
 }
 
-void RightPane::restoreDisplayBuffer(DisplayBuffer&& buffer, bool dictionaryActive) {
+void RightPane::restoreDisplayBuffer(DisplayBuffer&& buffer) {
     perf::ScopeTimer timer("RightPane::restoreDisplayBuffer(move)");
     if (commentaryHtml_ && buffer.commentary.valid) {
         HtmlWidget::Snapshot snap;
@@ -1985,25 +1968,6 @@ void RightPane::restoreDisplayBuffer(DisplayBuffer&& buffer, bool dictionaryActi
         buffer.dictionary.valid = false;
         dictionaryHtml_->restoreSnapshot(std::move(snap));
     }
-    if (generalBookHtml_ && buffer.generalBook.valid) {
-        if (generalBookToc_.empty() && !currentGeneralBook_.empty()) {
-            populateGeneralBookToc();
-        }
-        HtmlWidget::Snapshot snap;
-        snap.doc = std::move(buffer.generalBook.doc);
-        snap.html = std::move(buffer.generalBook.html);
-        snap.baseUrl = std::move(buffer.generalBook.baseUrl);
-        snap.scrollY = buffer.generalBook.scrollY;
-        snap.contentHeight = buffer.generalBook.contentHeight;
-        snap.renderWidth = buffer.generalBook.renderWidth;
-        snap.scrollbarVisible = buffer.generalBook.scrollbarVisible;
-        snap.valid = buffer.generalBook.valid;
-        buffer.generalBook.valid = false;
-        std::string snapshotHtml = snap.html;
-        generalBookHtml_->restoreSnapshot(std::move(snap));
-        restoreGeneralBookLoadedRangeFromHtml(snapshotHtml);
-    }
-    setDictionaryTabActive(dictionaryActive);
 }
 
 void RightPane::redrawChrome() {
@@ -2303,7 +2267,18 @@ void RightPane::populateGeneralBookModules(bool eagerLoad) {
                                   generalBookChoiceLabels_);
 
     if (generalBookChoice_->size() > 0) {
-        currentGeneralBook_ = generalBookChoiceModules_.front();
+        std::string selectedModule = currentGeneralBook_;
+        if (!module_choice::applyChoiceValue(generalBookChoice_,
+                                            generalBookChoiceModules_,
+                                            generalBookChoiceLabels_,
+                                            selectedModule)) {
+            selectedModule = generalBookChoiceModules_.front();
+            module_choice::applyChoiceValue(generalBookChoice_,
+                                            generalBookChoiceModules_,
+                                            generalBookChoiceLabels_,
+                                            selectedModule);
+        }
+        currentGeneralBook_ = selectedModule;
         if (eagerLoad) {
             populateGeneralBookToc();
             showGeneralBookEntry(currentGeneralBook_, currentGeneralBookKey_);
@@ -3107,6 +3082,12 @@ void RightPane::onGeneralBookContents(Fl_Widget* /*w*/, void* data) {
 void RightPane::onGeneralBookTreeSelect(Fl_Widget* /*w*/, void* data) {
     auto* self = static_cast<RightPane*>(data);
     if (!self || self->generalBookTreeSyncing_ || !self->generalBookTocTree_) return;
+
+    Fl_Tree_Reason reason = self->generalBookTocTree_->callback_reason();
+    if (reason != FL_TREE_REASON_SELECTED &&
+        reason != FL_TREE_REASON_RESELECTED) {
+        return;
+    }
 
     Fl_Tree_Item* item = self->generalBookTocTree_->callback_item();
     if (!item) return;

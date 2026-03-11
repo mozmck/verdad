@@ -265,8 +265,19 @@ MainWindow::SessionState sessionStateFromPreferences(const PreferenceMap& prefs)
     state.leftPaneWidth = parseIntOr(lookup("left_pane_w"), 300);
     state.leftPanePreviewHeight = parseIntOr(lookup("left_pane_preview_h"), 150);
     state.activeStudyTab = parseIntOr(lookup("active_study_tab"), 0);
+    state.generalBooksTabActive = parseBoolOr(lookup("general_book_active"), false);
+    state.generalBookModule = lookup("general_book_module");
+    state.generalBookKey = lookup("general_book_key");
     state.documentsTabActive = parseBoolOr(lookup("documents_tab_active"), false);
     state.documentPath = lookup("document_path");
+
+    std::string activeLegacyGeneralBookModule;
+    std::string activeLegacyGeneralBookKey;
+    bool activeLegacyGeneralBooksTabActive = false;
+    std::string firstActiveLegacyGeneralBookModule;
+    std::string firstActiveLegacyGeneralBookKey;
+    std::string firstLegacyGeneralBookModule;
+    std::string firstLegacyGeneralBookKey;
 
     int tabCount = std::max(0, parseIntOr(lookup("study_tab_count"), 0));
     tabCount = std::min(tabCount, 64);
@@ -292,13 +303,45 @@ MainWindow::SessionState sessionStateFromPreferences(const PreferenceMap& prefs)
         tab.commentaryScrollY = parseIntOr(lookup("commentary_scroll_y"), -1);
         tab.dictionaryModule = lookup("dictionary_module");
         tab.dictionaryKey = lookup("dictionary_key");
-        tab.generalBookModule = lookup("general_book_module");
-        tab.generalBookKey = lookup("general_book_key");
         tab.dictionaryPaneHeight = parseIntOr(lookup("dictionary_pane_h"), 0);
-        std::string activeRaw = lookup("general_book_active");
-        if (activeRaw.empty()) activeRaw = lookup("dictionary_active");
-        tab.dictionaryActive = parseBoolOr(activeRaw, false);
+        std::string legacyGeneralBookModule = lookup("general_book_module");
+        std::string legacyGeneralBookKey = lookup("general_book_key");
+        std::string legacyActiveRaw = lookup("general_book_active");
+        if (legacyActiveRaw.empty()) legacyActiveRaw = lookup("dictionary_active");
+        bool legacyGeneralBooksTabActive = parseBoolOr(legacyActiveRaw, false);
+
+        if (i == state.activeStudyTab) {
+            activeLegacyGeneralBookModule = legacyGeneralBookModule;
+            activeLegacyGeneralBookKey = legacyGeneralBookKey;
+            activeLegacyGeneralBooksTabActive = legacyGeneralBooksTabActive;
+        }
+        if (firstActiveLegacyGeneralBookModule.empty() &&
+            legacyGeneralBooksTabActive &&
+            !legacyGeneralBookModule.empty()) {
+            firstActiveLegacyGeneralBookModule = legacyGeneralBookModule;
+            firstActiveLegacyGeneralBookKey = legacyGeneralBookKey;
+        }
+        if (firstLegacyGeneralBookModule.empty() && !legacyGeneralBookModule.empty()) {
+            firstLegacyGeneralBookModule = legacyGeneralBookModule;
+            firstLegacyGeneralBookKey = legacyGeneralBookKey;
+        }
+
         state.studyTabs.push_back(std::move(tab));
+    }
+
+    if (state.generalBookModule.empty()) {
+        if (!activeLegacyGeneralBookModule.empty()) {
+            state.generalBookModule = activeLegacyGeneralBookModule;
+            state.generalBookKey = activeLegacyGeneralBookKey;
+            state.generalBooksTabActive = activeLegacyGeneralBooksTabActive;
+        } else if (!firstActiveLegacyGeneralBookModule.empty()) {
+            state.generalBookModule = firstActiveLegacyGeneralBookModule;
+            state.generalBookKey = firstActiveLegacyGeneralBookKey;
+            state.generalBooksTabActive = true;
+        } else if (!firstLegacyGeneralBookModule.empty()) {
+            state.generalBookModule = firstLegacyGeneralBookModule;
+            state.generalBookKey = firstLegacyGeneralBookKey;
+        }
     }
 
     return state;
@@ -611,6 +654,9 @@ void VerdadApp::savePreferences() {
         file << "left_pane_w=" << state.leftPaneWidth << "\n";
         file << "left_pane_preview_h=" << state.leftPanePreviewHeight << "\n";
         file << "active_study_tab=" << state.activeStudyTab << "\n";
+        file << "general_book_active=" << (state.generalBooksTabActive ? 1 : 0) << "\n";
+        file << "general_book_module=" << state.generalBookModule << "\n";
+        file << "general_book_key=" << state.generalBookKey << "\n";
         file << "documents_tab_active=" << (state.documentsTabActive ? 1 : 0) << "\n";
         file << "document_path=" << state.documentPath << "\n";
         file << "study_tab_count=" << state.studyTabs.size() << "\n";
@@ -632,12 +678,7 @@ void VerdadApp::savePreferences() {
             file << pfx << "commentary_scroll_y=" << t.commentaryScrollY << "\n";
             file << pfx << "dictionary_module=" << t.dictionaryModule << "\n";
             file << pfx << "dictionary_key=" << t.dictionaryKey << "\n";
-            file << pfx << "general_book_module=" << t.generalBookModule << "\n";
-            file << pfx << "general_book_key=" << t.generalBookKey << "\n";
             file << pfx << "dictionary_pane_h=" << t.dictionaryPaneHeight << "\n";
-            file << pfx << "general_book_active=" << (t.dictionaryActive ? 1 : 0) << "\n";
-            // Legacy compatibility for older builds.
-            file << pfx << "dictionary_active=" << (t.dictionaryActive ? 1 : 0) << "\n";
         }
 
         // Also keep legacy keys for backwards compatibility with older builds.

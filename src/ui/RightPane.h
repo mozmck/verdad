@@ -48,7 +48,6 @@ public:
     struct DisplayBuffer {
         HtmlState commentary;
         HtmlState dictionary;
-        HtmlState generalBook;
     };
 
     RightPane(VerdadApp* app, int X, int Y, int W, int H);
@@ -141,10 +140,7 @@ public:
     void setStudyState(const std::string& commentaryModule,
                        const std::string& commentaryReference,
                        const std::string& dictionaryModule,
-                       const std::string& dictionaryKey,
-                       const std::string& generalBookModule,
-                       const std::string& generalBookKey,
-                       bool dictionaryActive);
+                       const std::string& dictionaryKey);
 
     /// Capture currently rendered text/scroll for fast restore.
     DisplayBuffer captureDisplayBuffer() const;
@@ -153,10 +149,10 @@ public:
     DisplayBuffer takeDisplayBuffer();
 
     /// Restore previously captured rendered text/scroll.
-    void restoreDisplayBuffer(const DisplayBuffer& buffer, bool dictionaryActive);
+    void restoreDisplayBuffer(const DisplayBuffer& buffer);
 
     /// Restore previously captured rendered text/scroll (move).
-    void restoreDisplayBuffer(DisplayBuffer&& buffer, bool dictionaryActive);
+    void restoreDisplayBuffer(DisplayBuffer&& buffer);
 
     /// Redraw tabs/chrome during live layout changes.
     void redrawChrome();

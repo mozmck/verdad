@@ -666,16 +666,12 @@ void MainWindow::addStudyTab(const std::string& module,
     if (rightPane_) {
         ctx.state.commentaryModule = rightPane_->currentCommentaryModule();
         ctx.state.dictionaryModule = rightPane_->currentDictionaryModule();
-        ctx.state.generalBookModule = rightPane_->currentGeneralBookModule();
-        ctx.state.generalBookKey = rightPane_->currentGeneralBookKey();
         ctx.state.dictionaryPaneHeight = rightPane_->dictionaryPaneHeight();
     }
     if (!ctx.state.commentaryModule.empty()) {
         ctx.state.commentaryReference = initBook + " " + std::to_string(initChapter) +
                                         ":" + std::to_string(initVerse);
     }
-    ctx.state.dictionaryActive = false;
-
     studyTabsWidget_->begin();
     ctx.tabGroup = new Fl_Group(studyTabsWidget_->x(),
                                 studyTabsWidget_->y() + studyTabsWidget_->h(),
@@ -958,9 +954,6 @@ void MainWindow::captureActiveTabState() {
         ctx.state.commentaryScrollY = rightPane_->commentaryScrollY();
         ctx.state.dictionaryModule = rightPane_->currentDictionaryModule();
         ctx.state.dictionaryKey = rightPane_->currentDictionaryKey();
-        ctx.state.generalBookModule = rightPane_->currentGeneralBookModule();
-        ctx.state.generalBookKey = rightPane_->currentGeneralBookKey();
-        ctx.state.dictionaryActive = rightPane_->isDictionaryTabActive();
         ctx.state.dictionaryPaneHeight = rightPane_->dictionaryPaneHeight();
     }
 }
@@ -1008,24 +1001,13 @@ void MainWindow::captureActiveTabDisplayBuffers() {
         ctx.rightBuffer.dictionary.scrollbarVisible = r.dictionary.scrollbarVisible;
         ctx.rightBuffer.dictionary.valid = r.dictionary.valid;
 
-        ctx.rightBuffer.generalBook.doc = std::move(r.generalBook.doc);
-        ctx.rightBuffer.generalBook.html = std::move(r.generalBook.html);
-        ctx.rightBuffer.generalBook.baseUrl = std::move(r.generalBook.baseUrl);
-        ctx.rightBuffer.generalBook.scrollY = r.generalBook.scrollY;
-        ctx.rightBuffer.generalBook.contentHeight = r.generalBook.contentHeight;
-        ctx.rightBuffer.generalBook.renderWidth = r.generalBook.renderWidth;
-        ctx.rightBuffer.generalBook.scrollbarVisible = r.generalBook.scrollbarVisible;
-        ctx.rightBuffer.generalBook.valid = r.generalBook.valid;
-
         ctx.hasRightBuffer = ctx.rightBuffer.commentary.valid ||
-                             ctx.rightBuffer.dictionary.valid ||
-                             ctx.rightBuffer.generalBook.valid;
-        perf::logf("captureActiveTabDisplayBuffers tab=%d rightPane_->takeDisplayBuffer: %.3f ms (c=%d d=%d g=%d)",
+                             ctx.rightBuffer.dictionary.valid;
+        perf::logf("captureActiveTabDisplayBuffers tab=%d rightPane_->takeDisplayBuffer: %.3f ms (c=%d d=%d)",
                    activeStudyTab_,
                    step.elapsedMs(),
                    ctx.rightBuffer.commentary.valid ? 1 : 0,
-                   ctx.rightBuffer.dictionary.valid ? 1 : 0,
-                   ctx.rightBuffer.generalBook.valid ? 1 : 0);
+                   ctx.rightBuffer.dictionary.valid ? 1 : 0);
     }
 }
 
@@ -1065,7 +1047,6 @@ void MainWindow::evictOldTabSnapshots() {
         if (t.hasRightBuffer) {
             clearDoc(t.rightBuffer.commentary);
             clearDoc(t.rightBuffer.dictionary);
-            clearDoc(t.rightBuffer.generalBook);
             t.hasRightBuffer = false;
         }
         --cached;
@@ -1127,10 +1108,7 @@ void MainWindow::applyTabState(int index) {
         ctx.state.commentaryModule,
         ctx.state.commentaryReference,
         ctx.state.dictionaryModule,
-        ctx.state.dictionaryKey,
-        ctx.state.generalBookModule,
-        ctx.state.generalBookKey,
-        ctx.state.dictionaryActive);
+        ctx.state.dictionaryKey);
     perf::logf("applyTabState tab=%d rightPane_->setStudyState: %.3f ms",
                index, step.elapsedMs());
     step.reset();
@@ -1161,16 +1139,7 @@ void MainWindow::applyTabState(int index) {
         r.dictionary.scrollbarVisible = ctx.rightBuffer.dictionary.scrollbarVisible;
         r.dictionary.valid = ctx.rightBuffer.dictionary.valid;
 
-        r.generalBook.doc = std::move(ctx.rightBuffer.generalBook.doc);
-        r.generalBook.html = std::move(ctx.rightBuffer.generalBook.html);
-        r.generalBook.baseUrl = std::move(ctx.rightBuffer.generalBook.baseUrl);
-        r.generalBook.scrollY = ctx.rightBuffer.generalBook.scrollY;
-        r.generalBook.contentHeight = ctx.rightBuffer.generalBook.contentHeight;
-        r.generalBook.renderWidth = ctx.rightBuffer.generalBook.renderWidth;
-        r.generalBook.scrollbarVisible = ctx.rightBuffer.generalBook.scrollbarVisible;
-        r.generalBook.valid = ctx.rightBuffer.generalBook.valid;
-
-        rightPane_->restoreDisplayBuffer(std::move(r), ctx.state.dictionaryActive);
+        rightPane_->restoreDisplayBuffer(std::move(r));
         ctx.rightBuffer = RightDocBuffers{};
         ctx.hasRightBuffer = false;
         perf::logf("applyTabState tab=%d rightPane_->restoreDisplayBuffer: %.3f ms",
@@ -1178,8 +1147,7 @@ void MainWindow::applyTabState(int index) {
         step.reset();
     } else {
         rightPane_->refresh();
-        rightPane_->setDictionaryTabActive(ctx.state.dictionaryActive);
-        perf::logf("applyTabState tab=%d rightPane_->refresh+setDictionaryTabActive: %.3f ms",
+        perf::logf("applyTabState tab=%d rightPane_->refresh: %.3f ms",
                    index, step.elapsedMs());
         step.reset();
     }
@@ -1663,6 +1631,9 @@ MainWindow::SessionState MainWindow::captureSessionState() {
     }
     state.activeStudyTab = activeStudyTab_;
     if (rightPane_) {
+        state.generalBooksTabActive = rightPane_->isDictionaryTabActive();
+        state.generalBookModule = rightPane_->currentGeneralBookModule();
+        state.generalBookKey = rightPane_->currentGeneralBookKey();
         state.documentsTabActive = rightPane_->isDocumentsTabActive();
         state.documentPath = rightPane_->currentDocumentPath();
     }
@@ -1725,6 +1696,15 @@ void MainWindow::restoreSessionState(const SessionState& state) {
     if (state.studyTabs.empty() || !studyTabsWidget_) {
         addStudyTab("", "Genesis", 1, 1);
         if (rightPane_) {
+            if (!state.generalBookModule.empty()) {
+                rightPane_->showGeneralBookEntry(state.generalBookModule,
+                                                 state.generalBookKey);
+            } else if (state.generalBooksTabActive &&
+                       !rightPane_->currentGeneralBookModule().empty()) {
+                rightPane_->showGeneralBookEntry(rightPane_->currentGeneralBookModule(),
+                                                 rightPane_->currentGeneralBookKey());
+            }
+            rightPane_->setDictionaryTabActive(state.generalBooksTabActive);
             scheduleDeferredDocumentRestore(state.documentPath,
                                             state.documentsTabActive);
         }
@@ -1773,6 +1753,18 @@ void MainWindow::restoreSessionState(const SessionState& state) {
                 ->resize(tileX + bibleW, tileY, tileW - bibleW, tileH);
             contentTile_->redraw();
         }
+    }
+
+    if (rightPane_) {
+        if (!state.generalBookModule.empty()) {
+            rightPane_->showGeneralBookEntry(state.generalBookModule,
+                                             state.generalBookKey);
+        } else if (state.generalBooksTabActive &&
+                   !rightPane_->currentGeneralBookModule().empty()) {
+            rightPane_->showGeneralBookEntry(rightPane_->currentGeneralBookModule(),
+                                             rightPane_->currentGeneralBookKey());
+        }
+        rightPane_->setDictionaryTabActive(state.generalBooksTabActive);
     }
 
     if (!studyTabs_.empty()) {

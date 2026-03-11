@@ -43,9 +43,6 @@ public:
         int commentaryScrollY = -1;
         std::string dictionaryModule;
         std::string dictionaryKey;
-        std::string generalBookModule;
-        std::string generalBookKey;
-        bool dictionaryActive = false;
         int dictionaryPaneHeight = 0;
     };
 
@@ -57,6 +54,9 @@ public:
         int leftPaneWidth = 300;
         int leftPanePreviewHeight = 150;
         int activeStudyTab = 0;
+        bool generalBooksTabActive = false;
+        std::string generalBookModule;
+        std::string generalBookKey;
         bool documentsTabActive = false;
         std::string documentPath;
         std::vector<StudyTabState> studyTabs;
@@ -154,7 +154,6 @@ private:
     struct RightDocBuffers {
         HtmlDocBuffer commentary;
         HtmlDocBuffer dictionary;
-        HtmlDocBuffer generalBook;
     };
 
     struct PendingWordInfo {
