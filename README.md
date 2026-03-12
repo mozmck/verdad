@@ -91,6 +91,14 @@ cmake --build build --target bundle
 
 That target writes a `verdad-<version>-<system>-<arch>.tar.gz` archive into `build/`. The archive contains the built Verdad binary, its data files, licenses, and `install.sh` so it can be unpacked and installed under `~/.local` or `/usr/local`. Unlike the AppImage, it is not a fully self-contained runtime bundle.
 
+To build a Debian package on a Debian/Ubuntu-based system:
+
+```bash
+cmake --build build --target deb
+```
+
+That target writes a `verdad_<version>_<arch>.deb` package into `build/`. The package installs under `/usr`, uses distro-managed runtime libraries, and declares a dependency on `libsword-common` in addition to the shared-library dependencies detected from the built binary.
+
 There is no dedicated automated test suite yet. Validation is currently a successful build plus manual UI smoke testing in the running application.
 
 ## Install from source

@@ -271,6 +271,66 @@ add_custom_target(bundle
 )
 
 if(UNIX AND NOT APPLE)
+    find_program(VERDAD_DPKG_EXECUTABLE NAMES dpkg)
+    find_program(VERDAD_DPKG_DEB_EXECUTABLE NAMES dpkg-deb)
+    find_program(VERDAD_DPKG_SHLIBDEPS_EXECUTABLE NAMES dpkg-shlibdeps)
+
+    if(VERDAD_DPKG_EXECUTABLE AND VERDAD_DPKG_DEB_EXECUTABLE
+       AND VERDAD_DPKG_SHLIBDEPS_EXECUTABLE)
+        execute_process(
+            COMMAND ${VERDAD_DPKG_EXECUTABLE} --print-architecture
+            OUTPUT_VARIABLE VERDAD_DEB_ARCH
+            OUTPUT_STRIP_TRAILING_WHITESPACE
+        )
+
+        if(NOT VERDAD_DEB_ARCH)
+            if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|amd64)$")
+                set(VERDAD_DEB_ARCH "amd64")
+            else()
+                set(VERDAD_DEB_ARCH "${CMAKE_SYSTEM_PROCESSOR}")
+            endif()
+        endif()
+
+        set(VERDAD_DEB_WORK_DIR "${CMAKE_BINARY_DIR}/deb")
+        set(VERDAD_DEB_PACKAGE_ROOT "${VERDAD_DEB_WORK_DIR}/pkgroot")
+        set(VERDAD_DEB_OUTPUT
+            "${CMAKE_BINARY_DIR}/verdad_${PROJECT_VERSION}_${VERDAD_DEB_ARCH}.deb")
+
+        add_custom_target(deb
+            COMMAND ${CMAKE_COMMAND} -E rm -rf ${VERDAD_DEB_WORK_DIR}
+            COMMAND ${CMAKE_COMMAND} -E make_directory ${VERDAD_DEB_WORK_DIR}
+            COMMAND ${CMAKE_COMMAND} -E env
+                    DESTDIR=${VERDAD_DEB_PACKAGE_ROOT}
+                    ${CMAKE_COMMAND}
+                    -DCMAKE_INSTALL_PREFIX=/usr
+                    -DCMAKE_INSTALL_CONFIG_NAME=${CMAKE_BUILD_TYPE}
+                    -DCMAKE_INSTALL_LOCAL_ONLY=1
+                    -P ${CMAKE_BINARY_DIR}/cmake_install.cmake
+            COMMAND ${CMAKE_COMMAND}
+                    -DWORK_DIR=${VERDAD_DEB_WORK_DIR}
+                    -DPACKAGE_ROOT=${VERDAD_DEB_PACKAGE_ROOT}
+                    -DOUTPUT_FILE=${VERDAD_DEB_OUTPUT}
+                    -DPACKAGE_NAME=verdad
+                    -DPACKAGE_VERSION=${PROJECT_VERSION}
+                    -DPACKAGE_ARCH=${VERDAD_DEB_ARCH}
+                    -DPACKAGE_SECTION=education
+                    -DPACKAGE_PRIORITY=optional
+                    -DPACKAGE_MAINTAINER=Verdad\ maintainers
+                    -DPACKAGE_SUMMARY=Desktop\ Bible\ study\ application\ for\ CrossWire\ SWORD\ modules
+                    -DPACKAGE_DESCRIPTION=Verdad\ is\ a\ desktop\ Bible\ study\ application\ for\ CrossWire\ SWORD\ modules.
+                    -DPACKAGE_EXTRA_DEPENDS=libsword-common
+                    -DDPKG_DEB_EXECUTABLE=${VERDAD_DPKG_DEB_EXECUTABLE}
+                    -DDPKG_SHLIBDEPS_EXECUTABLE=${VERDAD_DPKG_SHLIBDEPS_EXECUTABLE}
+                    -P ${CMAKE_SOURCE_DIR}/cmake/BuildDebPackage.cmake
+            DEPENDS verdad copy_runtime_assets
+            USES_TERMINAL
+            VERBATIM
+        )
+    else()
+        message(STATUS
+            "Debian packaging target disabled; dpkg, dpkg-deb, or dpkg-shlibdeps not found.")
+    endif()
+
     if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|amd64)$")
         set(VERDAD_APPIMAGE_ARCH "x86_64")
     else()
