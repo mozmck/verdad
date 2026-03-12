@@ -487,6 +487,25 @@ int parseVerseNumberValue(const char* text) {
     return std::stoi(value);
 }
 
+int parseParallelColumnValue(const char* text) {
+    if (!text || !*text) return -1;
+
+    std::string value = trimCopy(text);
+    if (value.empty()) return -1;
+    for (char c : value) {
+        if (!std::isdigit(static_cast<unsigned char>(c))) return -1;
+    }
+    return std::stoi(value);
+}
+
+int parallelColumnForElement(const std::shared_ptr<litehtml::element>& element) {
+    for (auto cur = element; cur; cur = cur->parent()) {
+        int column = parseParallelColumnValue(cur->get_attr("data-parallel-col"));
+        if (column >= 0) return column;
+    }
+    return -1;
+}
+
 } // namespace
 
 HtmlWidget::HtmlWidget(int X, int Y, int W, int H, const char* label)
@@ -533,6 +552,7 @@ HtmlWidget::~HtmlWidget() {
 void HtmlWidget::clearSelection() {
     selectionAnchor_ = SelectionPoint{};
     selectionFocus_ = SelectionPoint{};
+    selectionParallelColumn_ = -1;
     selecting_ = false;
     dragSelecting_ = false;
 }
@@ -558,6 +578,10 @@ void HtmlWidget::setScrollX(int x) {
     redraw();
 }
 
+bool HtmlWidget::isParallelDocument() const {
+    return currentHtml_.find("class=\"parallel\"") != std::string::npos;
+}
+
 bool HtmlWidget::selectionPointLess(const SelectionPoint& lhs,
                                     const SelectionPoint& rhs) const {
     if (lhs.fragmentIndex != rhs.fragmentIndex) {
@@ -577,6 +601,19 @@ bool HtmlWidget::hasSelection() const {
     if (!selectionAnchor_.valid || !selectionFocus_.valid) return false;
     return selectionAnchor_.fragmentIndex != selectionFocus_.fragmentIndex ||
            selectionAnchor_.charIndex != selectionFocus_.charIndex;
+}
+
+int HtmlWidget::fragmentParallelColumn(int fragmentIndex) const {
+    if (fragmentIndex < 0 ||
+        fragmentIndex >= static_cast<int>(textFragments_.size())) {
+        return -1;
+    }
+    return textFragments_[fragmentIndex].parallelColumn;
+}
+
+bool HtmlWidget::fragmentMatchesSelectionColumn(int fragmentIndex) const {
+    if (selectionParallelColumn_ < 0) return true;
+    return fragmentParallelColumn(fragmentIndex) == selectionParallelColumn_;
 }
 
 bool HtmlWidget::isWordCharAt(int fragmentIndex, int charIndex) const {
@@ -611,6 +648,12 @@ HtmlWidget::SelectionPoint HtmlWidget::nextSelectionPoint(
     SelectionPoint next = point;
     while (next.fragmentIndex >= 0 &&
            next.fragmentIndex < static_cast<int>(textFragments_.size())) {
+        if (!fragmentMatchesSelectionColumn(next.fragmentIndex)) {
+            ++next.fragmentIndex;
+            next.charIndex = 0;
+            next.valid = next.fragmentIndex < static_cast<int>(textFragments_.size());
+            continue;
+        }
         const TextFragment& fragment = textFragments_[next.fragmentIndex];
         int charCount = static_cast<int>(fragment.byteOffsets.size()) - 1;
         if (next.charIndex < charCount) {
@@ -620,12 +663,8 @@ HtmlWidget::SelectionPoint HtmlWidget::nextSelectionPoint(
         }
 
         ++next.fragmentIndex;
-        if (next.fragmentIndex >= static_cast<int>(textFragments_.size())) {
-            break;
-        }
         next.charIndex = 0;
-        next.valid = true;
-        return next;
+        next.valid = next.fragmentIndex < static_cast<int>(textFragments_.size());
     }
 
     return SelectionPoint{};
@@ -644,6 +683,10 @@ HtmlWidget::SelectionPoint HtmlWidget::previousSelectionPoint(
 
     --prev.fragmentIndex;
     while (prev.fragmentIndex >= 0) {
+        if (!fragmentMatchesSelectionColumn(prev.fragmentIndex)) {
+            --prev.fragmentIndex;
+            continue;
+        }
         const TextFragment& fragment = textFragments_[prev.fragmentIndex];
         int charCount = static_cast<int>(fragment.byteOffsets.size()) - 1;
         prev.charIndex = std::max(0, charCount);
@@ -696,7 +739,8 @@ bool HtmlWidget::screenPointForSelectionBoundary(const SelectionPoint& point,
 }
 
 HtmlWidget::SelectionPoint HtmlWidget::hitTestSelectionPoint(int screenX,
-                                                             int screenY) const {
+                                                             int screenY,
+                                                             int requiredParallelColumn) const {
     SelectionPoint best;
     if (textFragments_.empty()) return best;
 
@@ -705,6 +749,10 @@ HtmlWidget::SelectionPoint HtmlWidget::hitTestSelectionPoint(int screenX,
     for (size_t i = 0; i < textFragments_.size(); ++i) {
         const TextFragment& fragment = textFragments_[i];
         if (fragment.byteOffsets.empty() || fragment.xOffsets.empty()) continue;
+        if (requiredParallelColumn >= 0 &&
+            fragment.parallelColumn != requiredParallelColumn) {
+            continue;
+        }
 
         int left = static_cast<int>(fragment.pos.x);
         int right = static_cast<int>(fragment.pos.x + fragment.pos.width);
@@ -878,6 +926,7 @@ bool HtmlWidget::fragmentSelectionRange(int fragmentIndex,
         fragmentIndex >= static_cast<int>(textFragments_.size())) {
         return false;
     }
+    if (!fragmentMatchesSelectionColumn(fragmentIndex)) return false;
 
     SelectionPoint start = selectionAnchor_;
     SelectionPoint end = selectionFocus_;
@@ -1646,6 +1695,10 @@ int HtmlWidget::handle(int event) {
         if (Fl::event_button() == FL_LEFT_MOUSE) {
             selectionAnchor_ = hitTestSelectionPoint(Fl::event_x(), Fl::event_y());
             selectionFocus_ = selectionAnchor_;
+            selectionParallelColumn_ =
+                (selectionAnchor_.valid && isParallelDocument())
+                    ? fragmentParallelColumn(selectionAnchor_.fragmentIndex)
+                    : -1;
             selecting_ = selectionAnchor_.valid;
             dragSelecting_ = false;
             selectionStartX_ = Fl::event_x();
@@ -1668,7 +1721,8 @@ int HtmlWidget::handle(int event) {
 
     case FL_DRAG: {
         if (selecting_) {
-            SelectionPoint point = hitTestSelectionPoint(Fl::event_x(), Fl::event_y());
+            SelectionPoint point = hitTestSelectionPoint(
+                Fl::event_x(), Fl::event_y(), selectionParallelColumn_);
             if (point.valid) {
                 selectionFocus_ = point;
                 dragSelecting_ =
@@ -1684,7 +1738,8 @@ int HtmlWidget::handle(int event) {
 
     case FL_RELEASE: {
         if (Fl::event_button() == FL_LEFT_MOUSE && selecting_) {
-            SelectionPoint point = hitTestSelectionPoint(Fl::event_x(), Fl::event_y());
+            SelectionPoint point = hitTestSelectionPoint(
+                Fl::event_x(), Fl::event_y(), selectionParallelColumn_);
             if (point.valid) {
                 selectionFocus_ = point;
             }
@@ -1875,6 +1930,7 @@ int HtmlWidget::handle(int event) {
             return copySelectionToClipboard() ? 1 : 0;
         }
         if (ctrl && (key == 'a' || key == 'A') && !textFragments_.empty()) {
+            selectionParallelColumn_ = -1;
             selectionAnchor_.fragmentIndex = 0;
             selectionAnchor_.charIndex = 0;
             selectionAnchor_.valid = true;
@@ -2009,6 +2065,7 @@ void HtmlWidget::draw_text(litehtml::uint_ptr hdc, const char* text,
     fragment.pos = pos;
     fragment.byteOffsets.push_back(0);
     fragment.xOffsets.push_back(0);
+    fragment.parallelColumn = -1;
 
     int cursorX = 0;
     for (size_t i = 0; i < fragment.text.size();) {
@@ -2018,6 +2075,21 @@ void HtmlWidget::draw_text(litehtml::uint_ptr hdc, const char* text,
         i += static_cast<size_t>(len);
         fragment.byteOffsets.push_back(static_cast<int>(i));
         fragment.xOffsets.push_back(cursorX);
+    }
+
+    if (isParallelDocument() && doc_ && doc_->root_render()) {
+        int screenX = static_cast<int>(pos.x) + std::max(0, cursorX / 2);
+        int screenY = static_cast<int>(pos.y + pos.height / 2);
+        int docX = screenX - x() + scrollX_;
+        int docY = screenY - y() + scrollY_;
+        auto el = doc_->root_render()->get_element_by_point(
+            docX, docY, docX, docY,
+            [](const std::shared_ptr<litehtml::render_item>&) { return true; });
+        if (el) {
+            HitElement hit = findDeepestElementAtPoint(el, docX, docY);
+            if (hit.element) el = hit.element;
+            fragment.parallelColumn = parallelColumnForElement(el);
+        }
     }
 
     const int baselineY = static_cast<int>(pos.y + pos.height) - fl_descent();

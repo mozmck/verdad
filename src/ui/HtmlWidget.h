@@ -267,6 +267,7 @@ private:
         litehtml::position pos;
         std::vector<int> byteOffsets;
         std::vector<int> xOffsets;
+        int parallelColumn = -1;
     };
 
     struct SelectionPoint {
@@ -278,6 +279,7 @@ private:
     std::vector<TextFragment> textFragments_;
     SelectionPoint selectionAnchor_;
     SelectionPoint selectionFocus_;
+    int selectionParallelColumn_ = -1;
     bool selecting_ = false;
     bool dragSelecting_ = false;
     int selectionStartX_ = 0;
@@ -314,12 +316,17 @@ private:
     int viewportWidth() const;
     int viewportHeight() const;
     void setScrollX(int x);
+    bool isParallelDocument() const;
     bool hasSelection() const;
     bool isWordCharAt(int fragmentIndex, int charIndex) const;
-    SelectionPoint hitTestSelectionPoint(int screenX, int screenY) const;
+    SelectionPoint hitTestSelectionPoint(int screenX,
+                                         int screenY,
+                                         int requiredParallelColumn = -1) const;
     bool fragmentSelectionRange(int fragmentIndex, int& startChar, int& endChar) const;
     bool selectionPointLess(const SelectionPoint& lhs, const SelectionPoint& rhs) const;
     bool selectionPointEqual(const SelectionPoint& lhs, const SelectionPoint& rhs) const;
+    int fragmentParallelColumn(int fragmentIndex) const;
+    bool fragmentMatchesSelectionColumn(int fragmentIndex) const;
     SelectionPoint nextSelectionPoint(const SelectionPoint& point) const;
     SelectionPoint previousSelectionPoint(const SelectionPoint& point) const;
     bool screenPointForSelectionBoundary(const SelectionPoint& point,

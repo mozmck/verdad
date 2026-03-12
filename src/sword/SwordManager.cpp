@@ -2923,15 +2923,18 @@ std::string SwordManager::getParallelText(
             int w = isLast ? lastColWidth : colWidth;
             const char* colClass = isLast ? "parallel-col-last" : "parallel-col";
             std::string cellClasses = isLast ? "parallel-cell-last" : "parallel-cell";
+            const std::string columnAttr = std::to_string(i);
             if (selectedVerse > 0 && v == selectedVerse) {
                 cellClasses += " verse-selected";
             }
             const std::string moduleAttr = htmlEscapeAttr(moduleNames[i]);
             sword::SWModule* mod = getModule(moduleNames[i]);
             html << "<div class=\"" << colClass << "\" data-module=\""
-                 << moduleAttr << "\" style=\"width: " << w << "%;\">"
+                 << moduleAttr << "\" data-parallel-col=\"" << columnAttr
+                 << "\" style=\"width: " << w << "%;\">"
                  << "<div class=\"" << cellClasses << "\" data-module=\""
-                 << moduleAttr << "\">";
+                 << moduleAttr << "\" data-parallel-col=\"" << columnAttr
+                 << "\">";
             if (mod) {
                 mod->setKey(verseRef.c_str());
                 if (!mod->popError()) {
