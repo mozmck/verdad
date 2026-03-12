@@ -86,6 +86,15 @@ std::string buildModuleRefLabel(VerdadApp* app,
     return module + ":" + shortRef;
 }
 
+std::string buildBibleReference(const std::string& book, int chapter, int verse) {
+    std::string refBook = trimCopy(book);
+    if (refBook.empty()) refBook = "Genesis";
+    int refChapter = std::max(1, chapter);
+    int refVerse = std::max(1, verse);
+    return refBook + " " + std::to_string(refChapter) +
+           ":" + std::to_string(refVerse);
+}
+
 std::string extractStrongsToken(const std::string& query) {
     static const std::regex strongRe(R"(([HhGg]\d+[A-Za-z]?))");
     std::smatch m;
@@ -646,6 +655,7 @@ void MainWindow::addStudyTab(const std::string& module,
     ctx.state.parallelMode = false;
     ctx.state.parallelModules.clear();
     ctx.state.biblePaneWidth = biblePane_ ? biblePane_->w() : 0;
+    ensureStudyTabHistorySeeded(ctx.state);
 
     if (rightPane_) {
         ctx.state.commentaryModule = rightPane_->currentCommentaryModule();
@@ -807,6 +817,7 @@ void MainWindow::activateStudyTab(int index) {
     if (index < 0 || index >= static_cast<int>(studyTabs_.size())) return;
     Fl_Widget* targetGroup = studyTabs_[index].tabGroup;
     if (activeStudyTab_ == index && appliedStudyTabGroup_ == targetGroup) {
+        syncBibleHistoryUi();
         updateActiveStudyTabLabel();
         updateStatusBar();
         return;
@@ -831,6 +842,10 @@ void MainWindow::activateStudyTab(int index) {
     studyTabs_[index].lastUsed = ++tabUseCounter_;
     applyTabState(index);
     perf::logf("activateStudyTab from=%d to=%d applyTabState: %.3f ms",
+               from, index, step.elapsedMs());
+    step.reset();
+    syncBibleHistoryUi();
+    perf::logf("activateStudyTab from=%d to=%d syncBibleHistoryUi: %.3f ms",
                from, index, step.elapsedMs());
     step.reset();
     updateActiveStudyTabLabel();
@@ -879,22 +894,212 @@ void MainWindow::layoutStudyTabHeader() {
 }
 
 std::string MainWindow::studyTabLabel(const StudyTabState& state) const {
-    std::string module = state.module;
-    if (module.empty()) module = "Bible";
-    std::string book = state.book;
-    if (book.empty()) book = "Genesis";
-    int chapter = std::max(1, state.chapter);
-    int verse = std::max(1, state.verse);
+    StudyHistoryEntry entry = historyEntryFromState(state);
+    std::string label = historyEntryLabel(entry);
+    if (!label.empty()) return label;
+    return "Bible:" + buildBibleReference(state.book, state.chapter, state.verse);
+}
 
-    std::string reference = book + " " + std::to_string(chapter) +
-                            ":" + std::to_string(verse);
-    std::string shortRef = app_ ? app_->swordManager().getShortReference(module, reference)
-                                : reference;
-    if (shortRef.empty()) {
-        shortRef = reference;
+std::string MainWindow::historyEntryLabel(const StudyHistoryEntry& entry) const {
+    std::string module = trimCopy(entry.module);
+    std::string reference = trimCopy(entry.reference);
+    if (reference.empty()) return "";
+    if (module.empty()) return reference;
+    return buildModuleRefLabel(app_, module, reference);
+}
+
+MainWindow::StudyHistoryEntry MainWindow::historyEntryFromState(const StudyTabState& state) const {
+    return StudyHistoryEntry{
+        state.module,
+        buildBibleReference(state.book, state.chapter, state.verse)
+    };
+}
+
+MainWindow::StudyHistoryEntry MainWindow::currentBibleHistoryEntry() const {
+    if (!biblePane_) return {};
+    return StudyHistoryEntry{
+        biblePane_->currentModule(),
+        buildBibleReference(biblePane_->currentBook(),
+                            biblePane_->currentChapter(),
+                            biblePane_->currentVerse())
+    };
+}
+
+void MainWindow::normalizeStudyHistory(StudyTabState& state) {
+    state.history.erase(
+        std::remove_if(state.history.begin(), state.history.end(),
+                       [](const StudyHistoryEntry& entry) {
+                           return trimCopy(entry.reference).empty();
+                       }),
+        state.history.end());
+
+    if (state.history.empty()) {
+        state.historyIndex = -1;
+        return;
     }
 
-    return module + ":" + shortRef;
+    state.historyIndex = std::clamp(
+        state.historyIndex, 0, static_cast<int>(state.history.size()) - 1);
+}
+
+void MainWindow::ensureStudyTabHistorySeeded(StudyTabState& state) {
+    normalizeStudyHistory(state);
+    if (!state.history.empty()) return;
+
+    StudyHistoryEntry entry = historyEntryFromState(state);
+    if (trimCopy(entry.reference).empty()) return;
+
+    state.history.push_back(entry);
+    state.historyIndex = 0;
+}
+
+void MainWindow::recordActiveStudyHistory() {
+    if (activeStudyTab_ < 0 || activeStudyTab_ >= static_cast<int>(studyTabs_.size())) return;
+
+    StudyTabState& state = studyTabs_[activeStudyTab_].state;
+    normalizeStudyHistory(state);
+
+    StudyHistoryEntry entry = currentBibleHistoryEntry();
+    if (trimCopy(entry.reference).empty()) {
+        syncBibleHistoryUi();
+        return;
+    }
+
+    auto sameEntry = [](const StudyHistoryEntry& lhs, const StudyHistoryEntry& rhs) {
+        return trimCopy(lhs.module) == trimCopy(rhs.module) &&
+               trimCopy(lhs.reference) == trimCopy(rhs.reference);
+    };
+
+    if (state.history.empty()) {
+        state.history.push_back(entry);
+        state.historyIndex = 0;
+        syncBibleHistoryUi();
+        return;
+    }
+
+    if (state.historyIndex < 0 || state.historyIndex >= static_cast<int>(state.history.size())) {
+        state.historyIndex = static_cast<int>(state.history.size()) - 1;
+    }
+
+    if (sameEntry(state.history[state.historyIndex], entry)) {
+        syncBibleHistoryUi();
+        return;
+    }
+
+    if (state.historyIndex + 1 < static_cast<int>(state.history.size())) {
+        state.history.erase(state.history.begin() + state.historyIndex + 1,
+                            state.history.end());
+    }
+
+    state.history.push_back(entry);
+    state.historyIndex = static_cast<int>(state.history.size()) - 1;
+
+    if (state.history.size() > static_cast<size_t>(kMaxStudyHistoryEntries)) {
+        const size_t overflow = state.history.size() - kMaxStudyHistoryEntries;
+        state.history.erase(state.history.begin(), state.history.begin() + overflow);
+        state.historyIndex = std::max(0, state.historyIndex - static_cast<int>(overflow));
+    }
+
+    syncBibleHistoryUi();
+}
+
+void MainWindow::syncBibleHistoryUi() {
+    if (!biblePane_) return;
+    if (activeStudyTab_ < 0 || activeStudyTab_ >= static_cast<int>(studyTabs_.size())) {
+        biblePane_->setNavigationHistory({}, -1, false, false);
+        return;
+    }
+
+    StudyTabState& state = studyTabs_[activeStudyTab_].state;
+    normalizeStudyHistory(state);
+    if (state.history.empty()) {
+        if (!suppressHistoryRecording_) {
+            ensureStudyTabHistorySeeded(state);
+        } else {
+            biblePane_->setNavigationHistory({}, -1, false, false);
+            return;
+        }
+    }
+
+    std::vector<std::string> labels;
+    labels.reserve(state.history.size());
+    for (const auto& entry : state.history) {
+        labels.push_back(historyEntryLabel(entry));
+    }
+
+    const bool canGoBack = state.historyIndex > 0;
+    const bool canGoForward =
+        state.historyIndex >= 0 &&
+        state.historyIndex + 1 < static_cast<int>(state.history.size());
+    biblePane_->setNavigationHistory(labels, state.historyIndex,
+                                     canGoBack, canGoForward);
+}
+
+void MainWindow::onBibleStudyContextChanged() {
+    if (activeStudyTab_ < 0 || activeStudyTab_ >= static_cast<int>(studyTabs_.size())) return;
+
+    captureActiveTabState();
+    if (!suppressHistoryRecording_) {
+        recordActiveStudyHistory();
+    } else {
+        syncBibleHistoryUi();
+    }
+    updateActiveStudyTabLabel();
+    updateStatusBar();
+}
+
+void MainWindow::navigateHistoryBack() {
+    if (activeStudyTab_ < 0 || activeStudyTab_ >= static_cast<int>(studyTabs_.size())) return;
+    StudyTabState& state = studyTabs_[activeStudyTab_].state;
+    normalizeStudyHistory(state);
+    navigateToHistoryIndex(state.historyIndex - 1);
+}
+
+void MainWindow::navigateHistoryForward() {
+    if (activeStudyTab_ < 0 || activeStudyTab_ >= static_cast<int>(studyTabs_.size())) return;
+    StudyTabState& state = studyTabs_[activeStudyTab_].state;
+    normalizeStudyHistory(state);
+    navigateToHistoryIndex(state.historyIndex + 1);
+}
+
+void MainWindow::navigateToHistoryMenuIndex(int menuIndex) {
+    navigateToHistoryIndex(menuIndex);
+}
+
+void MainWindow::navigateToHistoryIndex(int index) {
+    if (activeStudyTab_ < 0 || activeStudyTab_ >= static_cast<int>(studyTabs_.size())) return;
+
+    StudyTabState& state = studyTabs_[activeStudyTab_].state;
+    normalizeStudyHistory(state);
+    if (index < 0 || index >= static_cast<int>(state.history.size())) {
+        syncBibleHistoryUi();
+        return;
+    }
+    if (index == state.historyIndex) {
+        syncBibleHistoryUi();
+        return;
+    }
+
+    StudyHistoryEntry entry = state.history[index];
+    std::string reference = trimCopy(entry.reference);
+    if (reference.empty()) {
+        syncBibleHistoryUi();
+        return;
+    }
+
+    state.historyIndex = index;
+    bool wasSuppressing = suppressHistoryRecording_;
+    suppressHistoryRecording_ = true;
+    if (!trimCopy(entry.module).empty()) {
+        navigateTo(entry.module, reference);
+    } else {
+        navigateTo(reference);
+    }
+    suppressHistoryRecording_ = wasSuppressing;
+
+    captureActiveTabState();
+    syncBibleHistoryUi();
+    updateActiveStudyTabLabel();
 }
 
 void MainWindow::updateActiveStudyTabLabel() {
@@ -937,6 +1142,10 @@ void MainWindow::captureActiveTabState() {
         ctx.state.commentaryScrollY = rightPane_->commentaryScrollY();
         ctx.state.dictionaryModule = rightPane_->currentDictionaryModule();
         ctx.state.dictionaryKey = rightPane_->currentDictionaryKey();
+    }
+
+    if (!suppressHistoryRecording_) {
+        ensureStudyTabHistorySeeded(ctx.state);
     }
 }
 
@@ -1324,9 +1533,25 @@ void MainWindow::navigateTo(const std::string& reference) {
 
 void MainWindow::navigateTo(const std::string& module, const std::string& reference) {
     if (biblePane_) {
-        biblePane_->setModule(module);
-        biblePane_->navigateToReference(reference);
+        const bool alreadySuppressing = suppressHistoryRecording_;
+        if (!alreadySuppressing) {
+            suppressHistoryRecording_ = true;
+        }
+
         std::string mod = trimCopy(module);
+        if (!mod.empty() && mod != trimCopy(biblePane_->currentModule())) {
+            biblePane_->setModule(mod);
+        }
+        biblePane_->navigateToReference(reference);
+
+        if (!alreadySuppressing) {
+            suppressHistoryRecording_ = false;
+            captureActiveTabState();
+            recordActiveStudyHistory();
+            updateActiveStudyTabLabel();
+            updateStatusBar();
+        }
+
         std::string ref = trimCopy(reference);
         if (!mod.empty() && !ref.empty()) {
             showTransientStatus("Opened " + buildModuleRefLabel(app_, mod, ref), 2.2);
@@ -1628,6 +1853,7 @@ MainWindow::SessionState MainWindow::captureSessionState() {
     int sharedBiblePaneWidth = biblePane_ ? biblePane_->w() : 0;
     for (const auto& ctx : studyTabs_) {
         StudyTabState tab = ctx.state;
+        ensureStudyTabHistorySeeded(tab);
         if (tab.biblePaneWidth <= 0) {
             tab.biblePaneWidth = sharedBiblePaneWidth;
         }
@@ -1699,6 +1925,10 @@ void MainWindow::restoreSessionState(const SessionState& state) {
     for (const auto& tabState : state.studyTabs) {
         StudyContext ctx;
         ctx.state = tabState;
+        normalizeStudyHistory(ctx.state);
+        if (ctx.state.history.empty()) {
+            ensureStudyTabHistorySeeded(ctx.state);
+        }
 
         studyTabsWidget_->begin();
         ctx.tabGroup = new Fl_Group(studyTabsWidget_->x(),

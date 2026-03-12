@@ -338,6 +338,19 @@ MainWindow::SessionState sessionStateFromPreferences(const PreferenceMap& prefs)
         tab.commentaryScrollY = parseIntOr(lookup("commentary_scroll_y"), -1);
         tab.dictionaryModule = lookup("dictionary_module");
         tab.dictionaryKey = lookup("dictionary_key");
+        int historyCount = std::clamp(parseIntOr(lookup("history_count"), 0), 0, 100);
+        for (int h = 0; h < historyCount; ++h) {
+            MainWindow::StudyHistoryEntry entry;
+            entry.module = lookup("history_" + std::to_string(h) + "_module");
+            entry.reference = lookup("history_" + std::to_string(h) + "_ref");
+            if (!trimCopy(entry.reference).empty()) {
+                tab.history.push_back(std::move(entry));
+            }
+        }
+        tab.historyIndex = parseIntOr(lookup("history_index"),
+                                      tab.history.empty()
+                                          ? -1
+                                          : static_cast<int>(tab.history.size()) - 1);
         int legacyDictionaryPaneHeight = parseIntOr(lookup("dictionary_pane_h"), 0);
         std::string legacyGeneralBookModule = lookup("general_book_module");
         std::string legacyGeneralBookKey = lookup("general_book_key");
@@ -720,6 +733,13 @@ void VerdadApp::savePreferences() {
             file << pfx << "commentary_scroll_y=" << t.commentaryScrollY << "\n";
             file << pfx << "dictionary_module=" << t.dictionaryModule << "\n";
             file << pfx << "dictionary_key=" << t.dictionaryKey << "\n";
+            file << pfx << "history_count=" << t.history.size() << "\n";
+            file << pfx << "history_index=" << t.historyIndex << "\n";
+            for (size_t h = 0; h < t.history.size(); ++h) {
+                const auto& entry = t.history[h];
+                file << pfx << "history_" << h << "_module=" << entry.module << "\n";
+                file << pfx << "history_" << h << "_ref=" << entry.reference << "\n";
+            }
         }
 
         // Also keep legacy keys for backwards compatibility with older builds.

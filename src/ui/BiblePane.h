@@ -3,7 +3,7 @@
 
 #include <FL/Fl_Group.H>
 #include <FL/Fl_Choice.H>
-#include <FL/Fl_Input.H>
+#include <FL/Fl_Input_Choice.H>
 #include <FL/Fl_Button.H>
 #include <FL/Fl_Box.H>
 #include <memory>
@@ -120,6 +120,12 @@ public:
     /// Sync option button state from the application settings.
     void syncOptionButtons();
 
+    /// Update the per-tab history controls in the Bible toolbar.
+    void setNavigationHistory(const std::vector<std::string>& labels,
+                              int currentIndex,
+                              bool canGoBack,
+                              bool canGoForward);
+
 protected:
     void resize(int X, int Y, int W, int H) override;
 
@@ -131,10 +137,13 @@ private:
     Fl_Choice* bookChoice_;
     Fl_Choice* chapterChoice_;
     Fl_Choice* moduleChoice_;
-    Fl_Input* refInput_;
-    Fl_Button* goButton_;
     Fl_Button* prevButton_;
     Fl_Button* nextButton_;
+    Fl_Box* historyLeftSeparator_;
+    Fl_Button* historyBackButton_;
+    Fl_Input_Choice* historyChoice_;
+    Fl_Button* historyForwardButton_;
+    Fl_Box* historyRightSeparator_;
     Fl_Button* parallelButton_;
     Fl_Button* paragraphButton_;
     Fl_Button* parallelAddButton_;
@@ -198,9 +207,11 @@ private:
     void notifyContextChanged();
 
     // Callbacks
-    static void onGo(Fl_Widget* w, void* data);
     static void onPrev(Fl_Widget* w, void* data);
     static void onNext(Fl_Widget* w, void* data);
+    static void onHistoryBack(Fl_Widget* w, void* data);
+    static void onHistoryChoice(Fl_Widget* w, void* data);
+    static void onHistoryForward(Fl_Widget* w, void* data);
     static void onBookChange(Fl_Widget* w, void* data);
     static void onChapterChange(Fl_Widget* w, void* data);
     static void onModuleChange(Fl_Widget* w, void* data);

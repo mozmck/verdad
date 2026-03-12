@@ -23,7 +23,7 @@ constexpr int kNavH = 30;
 constexpr int kContentPadding = 2;
 constexpr int kParallelHeaderH = 28;
 constexpr int kParallelHeaderSpacing = 6;
-constexpr int kRefInputWidth = 190; // Fits: "2 Thessalonians xx:xxx"
+constexpr int kHistoryChoiceWidth = 170; // Fits most refs while leaving room for history buttons.
 
 std::string htmlEscape(const std::string& text) {
     std::string out;
@@ -76,10 +76,13 @@ BiblePane::BiblePane(VerdadApp* app, int X, int Y, int W, int H)
     , bookChoice_(nullptr)
     , chapterChoice_(nullptr)
     , moduleChoice_(nullptr)
-    , refInput_(nullptr)
-    , goButton_(nullptr)
     , prevButton_(nullptr)
     , nextButton_(nullptr)
+    , historyLeftSeparator_(nullptr)
+    , historyBackButton_(nullptr)
+    , historyChoice_(nullptr)
+    , historyForwardButton_(nullptr)
+    , historyRightSeparator_(nullptr)
     , parallelButton_(nullptr)
     , paragraphButton_(nullptr)
     , parallelAddButton_(nullptr)
@@ -158,7 +161,9 @@ void BiblePane::resize(int X, int Y, int W, int H) {
     Fl_Group::resize(X, Y, W, H);
 
     if (!navBar_ || !bookChoice_ || !chapterChoice_ || !moduleChoice_ ||
-        !refInput_ || !goButton_ || !prevButton_ || !nextButton_ ||
+        !prevButton_ || !nextButton_ || !historyLeftSeparator_ ||
+        !historyBackButton_ || !historyChoice_ || !historyForwardButton_ ||
+        !historyRightSeparator_ ||
         !parallelButton_ || !paragraphButton_ || !parallelAddButton_ ||
         !strongsToggleButton_ || !morphToggleButton_ ||
         !footnotesToggleButton_ || !crossRefsToggleButton_ ||
@@ -171,10 +176,12 @@ void BiblePane::resize(int X, int Y, int W, int H) {
     const int spacing = 2;
     const int buttonW = 30;
     const int compactBtnW = 25;
+    const int historyBtnW = 24;
+    const int separatorW = 4;
     const int bookW = 120;
     const int chapW = 50;
     const int moduleW = 100;
-    const int refW = kRefInputWidth;
+    const int historyW = kHistoryChoiceWidth;
 
     navBar_->resize(X, Y, W, navH);
     int cy = Y + 2;
@@ -193,11 +200,20 @@ void BiblePane::resize(int X, int Y, int W, int H) {
     nextButton_->resize(cx, cy, buttonW, nh);
     cx += buttonW + spacing;
 
-    refInput_->resize(cx, cy, refW, nh);
-    cx += refW + spacing;
+    historyLeftSeparator_->resize(cx, cy + 4, separatorW, std::max(10, nh - 8));
+    cx += separatorW + spacing;
 
-    goButton_->resize(cx, cy, buttonW, nh);
-    cx += buttonW + spacing;
+    historyBackButton_->resize(cx, cy, historyBtnW, nh);
+    cx += historyBtnW + spacing;
+
+    historyChoice_->resize(cx, cy, historyW, nh);
+    cx += historyW + spacing;
+
+    historyForwardButton_->resize(cx, cy, historyBtnW, nh);
+    cx += historyBtnW + spacing;
+
+    historyRightSeparator_->resize(cx, cy + 4, separatorW, std::max(10, nh - 8));
+    cx += separatorW + spacing;
 
     moduleChoice_->resize(cx, cy, moduleW, nh);
     cx += moduleW + spacing;
@@ -435,6 +451,35 @@ void BiblePane::syncOptionButtons() {
     }
 }
 
+void BiblePane::setNavigationHistory(const std::vector<std::string>& labels,
+                                     int currentIndex,
+                                     bool canGoBack,
+                                     bool canGoForward) {
+    if (!historyChoice_ || !historyBackButton_ || !historyForwardButton_) return;
+
+    historyChoice_->clear();
+    for (const auto& label : labels) {
+        historyChoice_->add(label.c_str());
+    }
+
+    if (currentIndex >= 0 && currentIndex < static_cast<int>(labels.size())) {
+        historyChoice_->menubutton()->value(currentIndex);
+    } else {
+        historyChoice_->menubutton()->value(-1);
+    }
+
+    historyBackButton_->activate();
+    if (!canGoBack) historyBackButton_->deactivate();
+
+    historyForwardButton_->activate();
+    if (!canGoForward) historyForwardButton_->deactivate();
+
+    syncReferenceInput();
+    historyChoice_->clear_changed();
+    historyChoice_->input()->clear_changed();
+    historyChoice_->menubutton()->clear_changed();
+}
+
 void BiblePane::redrawChrome() {
     damage(FL_DAMAGE_ALL);
     if (navBar_) {
@@ -647,13 +692,35 @@ void BiblePane::buildNavBar() {
     nextButton_->tooltip("Next chapter");
     cx += 32;
 
-    refInput_ = new Fl_Input(cx, cy, kRefInputWidth, nh);
-    refInput_->tooltip("Type a reference (e.g. 'Gen 1:1')");
-    cx += kRefInputWidth + 2;
+    historyLeftSeparator_ = new Fl_Box(cx, cy + 4, 4, std::max(10, nh - 8));
+    historyLeftSeparator_->box(FL_THIN_DOWN_BOX);
+    cx += historyLeftSeparator_->w() + 2;
 
-    goButton_ = new Fl_Button(cx, cy, 30, nh, "Go");
-    goButton_->callback(onGo, this);
-    cx += 32;
+    historyBackButton_ = new Fl_Button(cx, cy, 24, nh, "@undo");
+    historyBackButton_->callback(onHistoryBack, this);
+    historyBackButton_->tooltip("Back in this study tab's history");
+    historyBackButton_->box(FL_THIN_UP_BOX);
+    historyBackButton_->deactivate();
+    cx += historyBackButton_->w() + 2;
+
+    historyChoice_ = new Fl_Input_Choice(cx, cy, kHistoryChoiceWidth, nh);
+    historyChoice_->callback(onHistoryChoice, this);
+    historyChoice_->when(FL_WHEN_CHANGED | FL_WHEN_RELEASE);
+    historyChoice_->input()->when(FL_WHEN_ENTER_KEY_ALWAYS);
+    historyChoice_->tooltip("Type a reference and press Enter, or pick from this tab's history");
+    historyChoice_->input()->tooltip("Type a reference and press Enter, or pick from this tab's history");
+    cx += kHistoryChoiceWidth + 2;
+
+    historyForwardButton_ = new Fl_Button(cx, cy, 24, nh, "@redo");
+    historyForwardButton_->callback(onHistoryForward, this);
+    historyForwardButton_->tooltip("Forward in this study tab's history");
+    historyForwardButton_->box(FL_THIN_UP_BOX);
+    historyForwardButton_->deactivate();
+    cx += historyForwardButton_->w() + 2;
+
+    historyRightSeparator_ = new Fl_Box(cx, cy + 4, 4, std::max(10, nh - 8));
+    historyRightSeparator_->box(FL_THIN_DOWN_BOX);
+    cx += historyRightSeparator_->w() + 2;
 
     moduleChoice_ = new Fl_Choice(cx, cy, 100, nh);
     moduleChoice_->callback(onModuleChange, this);
@@ -843,15 +910,15 @@ void BiblePane::normalizeParallelModules() {
 }
 
 void BiblePane::syncReferenceInput() {
-    if (!refInput_) return;
+    if (!historyChoice_) return;
     if (currentBook_.empty() || currentChapter_ <= 0) {
-        refInput_->value("");
+        historyChoice_->value("");
         return;
     }
 
     std::string ref = currentBook_ + " " + std::to_string(currentChapter_) +
                       ":" + std::to_string(std::max(1, currentVerse_));
-    refInput_->value(ref.c_str());
+    historyChoice_->value(ref.c_str());
 }
 
 void BiblePane::clearParallelHeader() {
@@ -1114,15 +1181,7 @@ void BiblePane::populateChapters() {
 
 void BiblePane::notifyContextChanged() {
     if (app_->mainWindow()) {
-        app_->mainWindow()->updateActiveStudyTabLabel();
-    }
-}
-
-void BiblePane::onGo(Fl_Widget* /*w*/, void* data) {
-    auto* self = static_cast<BiblePane*>(data);
-    const char* ref = self->refInput_->value();
-    if (ref && ref[0]) {
-        self->navigateToReference(ref);
+        app_->mainWindow()->onBibleStudyContextChanged();
     }
 }
 
@@ -1134,6 +1193,39 @@ void BiblePane::onPrev(Fl_Widget* /*w*/, void* data) {
 void BiblePane::onNext(Fl_Widget* /*w*/, void* data) {
     auto* self = static_cast<BiblePane*>(data);
     self->nextChapter();
+}
+
+void BiblePane::onHistoryBack(Fl_Widget* /*w*/, void* data) {
+    auto* self = static_cast<BiblePane*>(data);
+    if (!self || !self->app_ || !self->app_->mainWindow()) return;
+    self->app_->mainWindow()->navigateHistoryBack();
+}
+
+void BiblePane::onHistoryChoice(Fl_Widget* /*w*/, void* data) {
+    auto* self = static_cast<BiblePane*>(data);
+    if (!self || !self->historyChoice_) return;
+
+    if (self->historyChoice_->menubutton()->changed()) {
+        if (self->app_ && self->app_->mainWindow()) {
+            self->app_->mainWindow()->navigateToHistoryMenuIndex(
+                self->historyChoice_->menubutton()->value());
+        }
+    } else {
+        const char* ref = self->historyChoice_->value();
+        if (ref && ref[0]) {
+            self->navigateToReference(ref);
+        }
+    }
+
+    self->historyChoice_->clear_changed();
+    self->historyChoice_->input()->clear_changed();
+    self->historyChoice_->menubutton()->clear_changed();
+}
+
+void BiblePane::onHistoryForward(Fl_Widget* /*w*/, void* data) {
+    auto* self = static_cast<BiblePane*>(data);
+    if (!self || !self->app_ || !self->app_->mainWindow()) return;
+    self->app_->mainWindow()->navigateHistoryForward();
 }
 
 void BiblePane::onBookChange(Fl_Widget* /*w*/, void* data) {

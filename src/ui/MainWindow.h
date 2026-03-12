@@ -27,6 +27,11 @@ class HtmlWidget;
 /// Main application window with left pane + tabbed Bible/Commentary workspaces.
 class MainWindow : public Fl_Double_Window {
 public:
+    struct StudyHistoryEntry {
+        std::string module;
+        std::string reference;
+    };
+
     struct StudyTabState {
         std::string module;
         std::string book;
@@ -43,6 +48,8 @@ public:
         int commentaryScrollY = -1;
         std::string dictionaryModule;
         std::string dictionaryKey;
+        std::vector<StudyHistoryEntry> history;
+        int historyIndex = -1;
     };
 
     struct SessionState {
@@ -105,6 +112,18 @@ public:
 
     /// Called by BiblePane when module/book/chapter context changes.
     void updateActiveStudyTabLabel();
+
+    /// Called by BiblePane after the active study tab's Bible context changes.
+    void onBibleStudyContextChanged();
+
+    /// Move backward through the active study tab history.
+    void navigateHistoryBack();
+
+    /// Move forward through the active study tab history.
+    void navigateHistoryForward();
+
+    /// Navigate to a history item selected from the Bible toolbar dropdown.
+    void navigateToHistoryMenuIndex(int menuIndex);
 
     /// Get left pane
     LeftPane* leftPane() { return leftPane_; }
@@ -198,7 +217,9 @@ private:
     Fl_Widget* appliedStudyTabGroup_ = nullptr;
     uint64_t tabUseCounter_ = 0;
     static constexpr int kMaxCachedTabDocs = 4;
+    static constexpr int kMaxStudyHistoryEntries = 30;
     bool applyingTabState_ = false;
+    bool suppressHistoryRecording_ = false;
     bool appearanceApplied_ = false;
     Fl_Font lastAppliedAppFont_ = FL_HELVETICA;
     int lastAppliedAppFontSize_ = 12;
@@ -241,6 +262,14 @@ private:
 
     /// Build a label like "KJV:Gen 1:1" for the given tab state.
     std::string studyTabLabel(const StudyTabState& state) const;
+    std::string historyEntryLabel(const StudyHistoryEntry& entry) const;
+    StudyHistoryEntry currentBibleHistoryEntry() const;
+    StudyHistoryEntry historyEntryFromState(const StudyTabState& state) const;
+    void normalizeStudyHistory(StudyTabState& state);
+    void ensureStudyTabHistorySeeded(StudyTabState& state);
+    void recordActiveStudyHistory();
+    void syncBibleHistoryUi();
+    void navigateToHistoryIndex(int index);
 
     /// Capture current shared pane state into the active tab context.
     void captureActiveTabState();
