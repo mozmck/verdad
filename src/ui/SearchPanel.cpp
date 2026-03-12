@@ -4,6 +4,7 @@
 #include "ui/LeftPane.h"
 #include "ui/BiblePane.h"
 #include "ui/ModuleChoiceUtils.h"
+#include "ui/VerseReferenceSort.h"
 #include "ui/VerseListCopyMenu.h"
 #include "search/SearchIndexer.h"
 #include "sword/SwordManager.h"
@@ -17,10 +18,8 @@
 
 #include <algorithm>
 #include <cctype>
-#include <limits>
 #include <regex>
 #include <sstream>
-#include <unordered_map>
 #include <unordered_set>
 
 namespace verdad {
@@ -136,18 +135,6 @@ std::string normalizeStrongsQuery(const std::string& query) {
     }
 
     return "";
-}
-
-std::string normalizeBookKey(const std::string& in) {
-    std::string out;
-    out.reserve(in.size());
-    for (char c : in) {
-        unsigned char uc = static_cast<unsigned char>(c);
-        if (std::isalnum(uc)) {
-            out.push_back(static_cast<char>(std::tolower(uc)));
-        }
-    }
-    return out;
 }
 
 std::string normalizeWordToken(const std::string& raw) {
@@ -685,97 +672,6 @@ bool strongsAttrMatches(const std::string& attr,
     return false;
 }
 
-bool parseReferenceKey(const std::string& key, SwordManager::VerseRef& out) {
-    out = SwordManager::VerseRef{};
-    try {
-        out = SwordManager::parseVerseRef(key);
-    } catch (...) {
-        out = SwordManager::VerseRef{};
-    }
-
-    if (!out.book.empty() && out.chapter > 0 && out.verse > 0) {
-        return true;
-    }
-
-    static const std::regex fallbackRe(R"(^\s*(.+?)\s+(\d+):(\d+)(?:-\d+)?\s*$)");
-    std::smatch m;
-    if (!std::regex_match(key, m, fallbackRe)) return false;
-
-    out.book = trimCopy(m[1].str());
-    try {
-        out.chapter = std::stoi(m[2].str());
-        out.verse = std::stoi(m[3].str());
-    } catch (...) {
-        return false;
-    }
-    return !out.book.empty() && out.chapter > 0 && out.verse > 0;
-}
-
-void sortSearchResultsCanonical(SwordManager& swordMgr,
-                                const std::string& moduleName,
-                                std::vector<SearchResult>& results) {
-    if (results.size() < 2 || moduleName.empty()) return;
-
-    std::unordered_map<std::string, int> bookOrder;
-    const auto books = swordMgr.getBookNames(moduleName);
-    for (size_t i = 0; i < books.size(); ++i) {
-        std::string key = normalizeBookKey(books[i]);
-        if (!key.empty() && bookOrder.find(key) == bookOrder.end()) {
-            bookOrder.emplace(key, static_cast<int>(i));
-        }
-    }
-
-    struct SortKey {
-        bool parsed = false;
-        int bookRank = std::numeric_limits<int>::max();
-        int chapter = std::numeric_limits<int>::max();
-        int verse = std::numeric_limits<int>::max();
-        std::string normBook;
-    };
-
-    std::unordered_map<std::string, SortKey> cache;
-    cache.reserve(results.size());
-
-    auto getSortKey = [&](const std::string& ref) -> const SortKey& {
-        auto it = cache.find(ref);
-        if (it != cache.end()) return it->second;
-
-        SortKey k;
-        SwordManager::VerseRef parsed;
-        if (parseReferenceKey(ref, parsed)) {
-            k.parsed = true;
-            k.chapter = parsed.chapter;
-            k.verse = parsed.verse;
-            k.normBook = normalizeBookKey(parsed.book);
-            auto bi = bookOrder.find(k.normBook);
-            if (bi != bookOrder.end()) {
-                k.bookRank = bi->second;
-            }
-        }
-
-        auto inserted = cache.emplace(ref, std::move(k));
-        return inserted.first->second;
-    };
-
-    std::stable_sort(results.begin(), results.end(),
-                     [&](const SearchResult& a, const SearchResult& b) {
-        const SortKey& ka = getSortKey(a.key);
-        const SortKey& kb = getSortKey(b.key);
-
-        if (ka.parsed != kb.parsed) return ka.parsed > kb.parsed;
-        if (!ka.parsed && !kb.parsed) return a.key < b.key;
-
-        if (ka.bookRank != kb.bookRank) return ka.bookRank < kb.bookRank;
-        if (ka.bookRank == std::numeric_limits<int>::max() &&
-            ka.normBook != kb.normBook) {
-            return ka.normBook < kb.normBook;
-        }
-        if (ka.chapter != kb.chapter) return ka.chapter < kb.chapter;
-        if (ka.verse != kb.verse) return ka.verse < kb.verse;
-        return a.key < b.key;
-    });
-}
-
 } // namespace
 
 int SearchResultBrowser::item_height(void* item) const {
@@ -1053,7 +949,8 @@ void SearchPanel::search(const std::string& query,
         }
     }
 
-    sortSearchResultsCanonical(app_->swordManager(), moduleName, results_);
+    verse_reference_sort::sortSearchResultsCanonical(
+        app_->swordManager(), moduleName, results_);
 
     // Populate result browser
     for (const auto& r : results_) {

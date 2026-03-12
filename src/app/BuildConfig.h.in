@@ -1,0 +1,12 @@
+#ifndef VERDAD_BUILD_CONFIG_H
+#define VERDAD_BUILD_CONFIG_H
+
+namespace verdad {
+namespace build_config {
+
+inline constexpr const char* kVersion = "@PROJECT_VERSION@";
+
+} // namespace build_config
+} // namespace verdad
+
+#endif // VERDAD_BUILD_CONFIG_H

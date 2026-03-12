@@ -3,6 +3,7 @@
 #include "ui/MainWindow.h"
 #include "ui/LeftPane.h"
 #include "ui/BiblePane.h"
+#include "ui/VerseReferenceSort.h"
 #include "ui/VerseListCopyMenu.h"
 #include "sword/SwordManager.h"
 #include "tags/TagManager.h"
@@ -559,6 +560,9 @@ void TagPanel::populateVerses(const std::string& tagName) {
     verseBrowser_->value(0);
 
     auto verses = app_->tagManager().getVersesWithTag(tagName);
+    verse_reference_sort::sortVerseKeysCanonical(app_->swordManager(),
+                                                 activeBibleModule(),
+                                                 verses);
     const TagFilterQuery filter = buildTagFilterQuery(
         filterInput_ ? filterInput_->value() : "");
     int selectedLine = 0;

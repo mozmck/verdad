@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(Verdad VERSION 0.1.0 LANGUAGES CXX)
+project(Verdad VERSION 0.1.1 LANGUAGES CXX)
 
 include(GNUInstallDirs)
 
@@ -119,6 +119,7 @@ set(HEADERS
     src/ui/SearchPanel.h
     src/ui/ModulePanel.h
     src/ui/TagPanel.h
+    src/ui/VerseReferenceSort.h
     src/ui/VerseListCopyMenu.h
     src/ui/VerseContext.h
 )
@@ -127,6 +128,7 @@ set(HEADERS
 add_executable(verdad ${SOURCES} ${HEADERS})
 
 target_include_directories(verdad PRIVATE
+    ${CMAKE_BINARY_DIR}/generated
     ${CMAKE_SOURCE_DIR}/src
     ${SWORD_INCLUDE_DIRS}
 )
@@ -152,6 +154,12 @@ if(APPLE)
         "-framework ApplicationServices"
     )
 endif()
+
+configure_file(
+    "${CMAKE_SOURCE_DIR}/src/app/BuildConfig.h.in"
+    "${CMAKE_BINARY_DIR}/generated/app/BuildConfig.h"
+    @ONLY
+)
 
 configure_file(
     "${CMAKE_SOURCE_DIR}/data/verdad.desktop.in"

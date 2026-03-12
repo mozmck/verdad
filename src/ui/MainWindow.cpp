@@ -1,4 +1,5 @@
 #include "ui/MainWindow.h"
+#include "app/BuildConfig.h"
 #include "app/VerdadApp.h"
 #include "ui/LeftPane.h"
 #include "ui/BiblePane.h"
@@ -44,6 +45,7 @@ namespace verdad {
 namespace {
 
 namespace fs = std::filesystem;
+constexpr const char* kVerdadProjectUrl = "https://github.com/mozmck/verdad";
 
 std::string trimCopy(const std::string& s) {
     size_t start = 0;
@@ -336,6 +338,19 @@ bool runUnzipArchive(const std::string& archivePath,
     cmd += " >NUL 2>NUL";
 #else
     cmd += " >/dev/null 2>&1";
+#endif
+    return std::system(cmd.c_str()) == 0;
+}
+
+bool openExternalUrl(const std::string& url) {
+    if (url.empty()) return false;
+
+#ifdef _WIN32
+    std::string cmd = "cmd /c start \"\" " + shellQuote(url);
+#elif defined(__APPLE__)
+    std::string cmd = "open " + shellQuote(url) + " >/dev/null 2>&1";
+#else
+    std::string cmd = "xdg-open " + shellQuote(url) + " >/dev/null 2>&1";
 #endif
     return std::system(cmd.c_str()) == 0;
 }
@@ -2700,7 +2715,7 @@ void MainWindow::onHelpAbout(Fl_Widget* /*w*/, void* data) {
     if (!self) return;
 
     constexpr int kDialogW = 420;
-    constexpr int kDialogH = 410;
+    constexpr int kDialogH = 446;
     constexpr int kIconSize = 192;
 
     Fl_Double_Window dialog(kDialogW, kDialogH, "About Verdad");
@@ -2725,7 +2740,8 @@ void MainWindow::onHelpAbout(Fl_Widget* /*w*/, void* data) {
     titleBox.align(FL_ALIGN_CENTER | FL_ALIGN_INSIDE);
     titleBox.labelsize(24);
 
-    Fl_Box versionBox(20, 252, kDialogW - 40, 22, "Version 0.1.0");
+    const std::string versionLabel = std::string("Version ") + build_config::kVersion;
+    Fl_Box versionBox(20, 252, kDialogW - 40, 22, versionLabel.c_str());
     versionBox.box(FL_NO_BOX);
     versionBox.align(FL_ALIGN_CENTER | FL_ALIGN_INSIDE);
     versionBox.labelsize(14);
@@ -2740,7 +2756,22 @@ void MainWindow::onHelpAbout(Fl_Widget* /*w*/, void* data) {
     detailsBox.align(FL_ALIGN_CENTER | FL_ALIGN_INSIDE | FL_ALIGN_WRAP);
     detailsBox.labelsize(14);
 
-    Fl_Return_Button closeButton((kDialogW - 96) / 2, 364, 96, 28, "Close");
+    Fl_Button projectLinkButton(44, 360, kDialogW - 88, 24, kVerdadProjectUrl);
+    projectLinkButton.box(FL_NO_BOX);
+    projectLinkButton.down_box(FL_NO_BOX);
+    projectLinkButton.clear_visible_focus();
+    projectLinkButton.align(FL_ALIGN_CENTER | FL_ALIGN_INSIDE);
+    projectLinkButton.labelcolor(fl_rgb_color(0, 102, 204));
+    projectLinkButton.tooltip("Open the Verdad GitHub project page.");
+    projectLinkButton.callback(
+        [](Fl_Widget* /*w*/, void* /*data*/) {
+            if (!openExternalUrl(kVerdadProjectUrl)) {
+                fl_alert("Failed to open:\n%s", kVerdadProjectUrl);
+            }
+        },
+        nullptr);
+
+    Fl_Return_Button closeButton((kDialogW - 96) / 2, 394, 96, 28, "Close");
     auto hideDialog = [](Fl_Widget* /*w*/, void* data) {
         auto* win = static_cast<Fl_Window*>(data);
         if (win) win->hide();
@@ -2758,8 +2789,10 @@ void MainWindow::onHelpAbout(Fl_Widget* /*w*/, void* data) {
         titleBox.labelsize(std::max(24, self->lastAppliedAppFontSize_ + 10));
         versionBox.labelsize(std::max(14, self->lastAppliedAppFontSize_));
         detailsBox.labelsize(std::max(14, self->lastAppliedAppFontSize_));
+        projectLinkButton.labelsize(std::max(13, self->lastAppliedAppFontSize_));
     } else {
         titleBox.labelfont(FL_HELVETICA_BOLD);
+        projectLinkButton.labelsize(13);
     }
 
     dialog.show();
