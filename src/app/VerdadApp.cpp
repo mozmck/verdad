@@ -10,6 +10,8 @@
 #include <FL/fl_ask.H>
 
 #include <cstdlib>
+#include <filesystem>
+#include <limits.h>
 #include <sys/stat.h>
 #include <fstream>
 #include <algorithm>
@@ -251,6 +253,31 @@ bool readPreferencesFile(const std::string& prefFile, PreferenceMap& prefsOut) {
     return true;
 }
 
+bool directoryExists(const std::string& path) {
+    struct stat st;
+    return !path.empty() && stat(path.c_str(), &st) == 0 && S_ISDIR(st.st_mode);
+}
+
+std::vector<std::string> candidateDataDirs() {
+    std::vector<std::string> dirs;
+
+#if defined(__linux__)
+    char exePath[PATH_MAX];
+    ssize_t pathLen = readlink("/proc/self/exe", exePath, sizeof(exePath) - 1);
+    if (pathLen > 0) {
+        exePath[pathLen] = '\0';
+        std::filesystem::path exeDir = std::filesystem::path(exePath).parent_path();
+        dirs.push_back((exeDir / "data").string());
+        dirs.push_back((exeDir.parent_path() / "share" / "verdad").string());
+    }
+#endif
+
+    dirs.push_back("/usr/local/share/verdad");
+    dirs.push_back("/usr/share/verdad");
+    dirs.push_back("./data");
+    return dirs;
+}
+
 MainWindow::SessionState sessionStateFromPreferences(const PreferenceMap& prefs) {
     auto lookup = [&](const std::string& key) -> std::string {
         auto it = prefs.find(key);
@@ -421,6 +448,7 @@ bool VerdadApp::initialize(int argc, char* argv[]) {
     // Set up FLTK
     Fl::scheme("gtk+");
     Fl_File_Icon::load_system_icons();
+    Fl::set_fonts("-*");
 
     // Create main window
     mainWindow_ = std::make_unique<MainWindow>(this, 1200, 800, "Verdad Bible Study");
@@ -465,20 +493,13 @@ int VerdadApp::run() {
 }
 
 std::string VerdadApp::getDataDir() const {
-    // Check for installed data
-    std::string dataDir = "/usr/share/verdad";
-    struct stat st;
-    if (stat(dataDir.c_str(), &st) == 0) {
-        return dataDir;
+    for (const std::string& dataDir : candidateDataDirs()) {
+        if (directoryExists(dataDir)) {
+            return dataDir;
+        }
     }
 
-    // Check local data directory
-    dataDir = "./data";
-    if (stat(dataDir.c_str(), &st) == 0) {
-        return dataDir;
-    }
-
-    return dataDir;
+    return "./data";
 }
 
 std::string VerdadApp::getConfigDir() const {
@@ -503,12 +524,8 @@ std::string VerdadApp::getConfigDir() const {
 
 void VerdadApp::ensureConfigDir() {
     std::string dir = getConfigDir();
-
-#ifdef _WIN32
-    CreateDirectoryA(dir.c_str(), nullptr);
-#else
-    mkdir(dir.c_str(), 0755);
-#endif
+    std::error_code ec;
+    std::filesystem::create_directories(dir, ec);
 }
 
 bool VerdadApp::loadPreferences() {

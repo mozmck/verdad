@@ -56,6 +56,25 @@ You need a C++17 compiler, `fltk-config`, the CrossWire SWORD development files,
 
 There is no dedicated automated test suite yet. Validation is currently a successful build plus manual UI smoke testing in the running application.
 
+## Install from source
+
+Use the repo-level installer:
+
+```bash
+./install.sh
+```
+
+By default, `install.sh` installs system-wide under `/usr/local` when root or
+sudo access is available. Otherwise it installs for the current user under
+`~/.local`, and that default can be accepted by pressing Enter.
+
+Useful options:
+
+- `./install.sh --user` to force a per-user install
+- `./install.sh --system` to force a system-wide install
+- `./install.sh --prefix /some/prefix` to choose a different install prefix
+- `./install.sh --yes` to accept defaults without prompts
+
 ## Technical overview
 
 - UI: FLTK

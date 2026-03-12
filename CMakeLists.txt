@@ -1,6 +1,8 @@
 cmake_minimum_required(VERSION 3.16)
 project(Verdad VERSION 0.1.0 LANGUAGES CXX)
 
+include(GNUInstallDirs)
+
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
@@ -114,6 +116,17 @@ if(APPLE)
     )
 endif()
 
+configure_file(
+    "${CMAKE_SOURCE_DIR}/data/verdad.desktop.in"
+    "${CMAKE_BINARY_DIR}/verdad.desktop"
+    @ONLY
+)
+
+set(VERDAD_BUNDLE_NAME
+    "verdad-${PROJECT_VERSION}-${CMAKE_SYSTEM_NAME}-${CMAKE_SYSTEM_PROCESSOR}")
+set(VERDAD_BUNDLE_DIR "${CMAKE_BINARY_DIR}/${VERDAD_BUNDLE_NAME}")
+set(VERDAD_BUNDLE_ARCHIVE "${CMAKE_BINARY_DIR}/${VERDAD_BUNDLE_NAME}.tar.gz")
+
 # Copy runtime CSS asset into the build tree on every build invocation.
 add_custom_target(copy_runtime_assets ALL
     COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_BINARY_DIR}/data"
@@ -161,19 +174,56 @@ if(APPLE)
 endif()
 
 # Installation
-install(TARGETS verdad DESTINATION bin)
+install(TARGETS verdad DESTINATION ${CMAKE_INSTALL_BINDIR})
 install(FILES
     LICENSE
     data/master.css
     data/help.html
     data/verdad_icon.png
     data/verdad_icon_128.png
-    DESTINATION share/verdad)
+    DESTINATION ${CMAKE_INSTALL_DATADIR}/verdad)
 install(DIRECTORY LICENSES
-    DESTINATION share/verdad)
+    DESTINATION ${CMAKE_INSTALL_DATADIR}/verdad)
+install(FILES "${CMAKE_BINARY_DIR}/verdad.desktop"
+    DESTINATION ${CMAKE_INSTALL_DATADIR}/applications)
 install(FILES data/verdad_icon_128.png
-    DESTINATION share/pixmaps
+    DESTINATION ${CMAKE_INSTALL_DATADIR}/pixmaps
     RENAME verdad.png)
 install(FILES data/verdad_icon_128.png
-    DESTINATION share/icons/hicolor/128x128/apps
+    DESTINATION ${CMAKE_INSTALL_DATADIR}/icons/hicolor/128x128/apps
     RENAME verdad.png)
+
+add_custom_command(
+    OUTPUT "${VERDAD_BUNDLE_ARCHIVE}"
+    COMMAND ${CMAKE_COMMAND} -E rm -rf "${VERDAD_BUNDLE_DIR}"
+    COMMAND ${CMAKE_COMMAND} -E rm -f "${VERDAD_BUNDLE_ARCHIVE}"
+    COMMAND ${CMAKE_COMMAND} -E make_directory "${VERDAD_BUNDLE_DIR}/bin"
+    COMMAND ${CMAKE_COMMAND} -E make_directory "${VERDAD_BUNDLE_DIR}/share/verdad"
+    COMMAND ${CMAKE_COMMAND} -E copy "$<TARGET_FILE:verdad>"
+            "${VERDAD_BUNDLE_DIR}/bin/verdad"
+    COMMAND ${CMAKE_COMMAND} -E copy "${CMAKE_SOURCE_DIR}/LICENSE"
+            "${VERDAD_BUNDLE_DIR}/share/verdad/LICENSE"
+    COMMAND ${CMAKE_COMMAND} -E copy "${CMAKE_SOURCE_DIR}/data/master.css"
+            "${VERDAD_BUNDLE_DIR}/share/verdad/master.css"
+    COMMAND ${CMAKE_COMMAND} -E copy "${CMAKE_SOURCE_DIR}/data/help.html"
+            "${VERDAD_BUNDLE_DIR}/share/verdad/help.html"
+    COMMAND ${CMAKE_COMMAND} -E copy "${CMAKE_SOURCE_DIR}/data/verdad_icon.png"
+            "${VERDAD_BUNDLE_DIR}/share/verdad/verdad_icon.png"
+    COMMAND ${CMAKE_COMMAND} -E copy "${CMAKE_SOURCE_DIR}/data/verdad_icon_128.png"
+            "${VERDAD_BUNDLE_DIR}/share/verdad/verdad_icon_128.png"
+    COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/LICENSES"
+            "${VERDAD_BUNDLE_DIR}/share/verdad/LICENSES"
+    COMMAND ${CMAKE_COMMAND} -E copy "${CMAKE_SOURCE_DIR}/install.sh"
+            "${VERDAD_BUNDLE_DIR}/install.sh"
+    COMMAND /bin/chmod 0755 "${VERDAD_BUNDLE_DIR}/bin/verdad"
+    COMMAND /bin/chmod 0755 "${VERDAD_BUNDLE_DIR}/install.sh"
+    COMMAND ${CMAKE_COMMAND} -E chdir "${CMAKE_BINARY_DIR}"
+            ${CMAKE_COMMAND} -E tar "cfvz" "${VERDAD_BUNDLE_ARCHIVE}"
+            "${VERDAD_BUNDLE_NAME}"
+    DEPENDS verdad copy_runtime_assets "${CMAKE_SOURCE_DIR}/install.sh"
+    VERBATIM
+)
+
+add_custom_target(bundle
+    DEPENDS "${VERDAD_BUNDLE_ARCHIVE}"
+)
