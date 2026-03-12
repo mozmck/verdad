@@ -75,6 +75,22 @@ FLTK 1.4.4 is vendored under `libs/fltk` and linked statically, so you do not ne
 
 On newer releases, the SWORD runtime package name may differ slightly from `libsword1.9.0`; if that exact package is unavailable, install the distro's current `libsword` runtime package instead. `litehtml` is vendored under `libs/litehtml`, so it is built with the project instead of being installed separately. `data/master.css` and `data/help.html` are copied into `build/data/` automatically during the build.
 
+To build an AppImage on Linux:
+
+```bash
+cmake --build build --target appimage
+```
+
+On the first run, that target downloads `linuxdeploy` and the AppImage output plugin into `tools/appimage-tools/`, stages an `AppDir` under `build/appimage/`, bundles the current `libsword` along with the installed SWORD common data, and writes the final AppImage into `build/`. It does not bundle any SWORD modules. Install `libsword-common` as well if you want to use the `appimage` target.
+
+To build the installer archive:
+
+```bash
+cmake --build build --target bundle
+```
+
+That target writes a `verdad-<version>-<system>-<arch>.tar.gz` archive into `build/`. The archive contains the built Verdad binary, its data files, licenses, and `install.sh` so it can be unpacked and installed under `~/.local` or `/usr/local`. Unlike the AppImage, it is not a fully self-contained runtime bundle.
+
 There is no dedicated automated test suite yet. Validation is currently a successful build plus manual UI smoke testing in the running application.
 
 ## Install from source

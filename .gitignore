@@ -65,3 +65,4 @@ doc/*.png
 doc/*.jpg
 
 ref/
+tools/appimage-tools/

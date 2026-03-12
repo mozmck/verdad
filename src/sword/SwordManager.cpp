@@ -1,7 +1,9 @@
 #include "sword/SwordManager.h"
+#include "sword/SwordPaths.h"
 #include "app/PerfTrace.h"
 
 #include <swmgr.h>
+#include <swconfig.h>
 #include <swmodule.h>
 #include <swkey.h>
 #include <treekey.h>
@@ -2450,6 +2452,8 @@ SwordManager::~SwordManager() = default;
 bool SwordManager::initialize() {
     std::lock_guard<std::mutex> lock(mutex_);
     try {
+        mgr_.reset();
+        bundledSysConfig_.reset();
         postProcessCache_.clear();
         postProcessLru_.clear();
         verseHtmlCache_.clear();
@@ -2457,8 +2461,27 @@ bool SwordManager::initialize() {
         dictionaryKeyCache_.clear();
 
         // Create SWORD manager with XHTML markup filter
-        mgr_ = std::make_unique<sword::SWMgr>(
-            new sword::MarkupFilterMgr(sword::FMT_XHTML));
+        auto* filterMgr = new sword::MarkupFilterMgr(sword::FMT_XHTML);
+        const std::string bundlePath = bundledSwordDataPath();
+        if (!bundlePath.empty()) {
+            bundledSysConfig_ = std::make_unique<sword::SWConfig>();
+            bundledSysConfig_->setValue("Install", "DataPath", bundlePath.c_str());
+
+            auto& install = bundledSysConfig_->getSection("Install");
+            if (bundlePath != "/usr/share/sword") {
+                install.insert({sword::SWBuf("AugmentPath"),
+                                sword::SWBuf("/usr/share/sword")});
+            }
+            if (bundlePath != "/usr/local/share/sword") {
+                install.insert({sword::SWBuf("AugmentPath"),
+                                sword::SWBuf("/usr/local/share/sword")});
+            }
+
+            mgr_ = std::make_unique<sword::SWMgr>(
+                nullptr, bundledSysConfig_.get(), true, filterMgr);
+        } else {
+            mgr_ = std::make_unique<sword::SWMgr>(filterMgr);
+        }
 
         if (!mgr_) {
             return false;

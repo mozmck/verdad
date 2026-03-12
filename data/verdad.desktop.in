@@ -8,6 +8,6 @@ Exec=@CMAKE_INSTALL_FULL_BINDIR@/verdad
 TryExec=@CMAKE_INSTALL_FULL_BINDIR@/verdad
 Icon=verdad
 Terminal=false
-Categories=Education;Religion;
+Categories=Education;
 Keywords=Bible;Study;SWORD;Commentary;Dictionary;
 StartupNotify=true

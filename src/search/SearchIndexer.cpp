@@ -1,6 +1,8 @@
 #include "search/SearchIndexer.h"
+#include "sword/SwordPaths.h"
 
 #include <markupfiltmgr.h>
+#include <swconfig.h>
 #include <swmgr.h>
 #include <swmodule.h>
 #include <versekey.h>
@@ -1083,9 +1085,31 @@ void SearchIndexer::indexModuleNow(const std::string& moduleName) {
         return;
     }
 
-    auto mgr = std::unique_ptr<sword::SWMgr>(new sword::SWMgr(
-        nullptr, nullptr, true,
-        new sword::MarkupFilterMgr(sword::FMT_XHTML, sword::ENC_UTF8)));
+    std::unique_ptr<sword::SWConfig> bundledSysConfig;
+    std::unique_ptr<sword::SWMgr> mgr;
+    const std::string bundlePath = bundledSwordDataPath();
+    if (!bundlePath.empty()) {
+        bundledSysConfig = std::make_unique<sword::SWConfig>();
+        bundledSysConfig->setValue("Install", "DataPath", bundlePath.c_str());
+
+        auto& install = bundledSysConfig->getSection("Install");
+        if (bundlePath != "/usr/share/sword") {
+            install.insert({sword::SWBuf("AugmentPath"),
+                            sword::SWBuf("/usr/share/sword")});
+        }
+        if (bundlePath != "/usr/local/share/sword") {
+            install.insert({sword::SWBuf("AugmentPath"),
+                            sword::SWBuf("/usr/local/share/sword")});
+        }
+
+        mgr = std::unique_ptr<sword::SWMgr>(new sword::SWMgr(
+            nullptr, bundledSysConfig.get(), true,
+            new sword::MarkupFilterMgr(sword::FMT_XHTML, sword::ENC_UTF8)));
+    } else {
+        mgr = std::unique_ptr<sword::SWMgr>(new sword::SWMgr(
+            nullptr, nullptr, true,
+            new sword::MarkupFilterMgr(sword::FMT_XHTML, sword::ENC_UTF8)));
+    }
     sword::SWModule* mod = mgr ? mgr->getModule(moduleName.c_str()) : nullptr;
     if (!mod) {
         sqlite3_close(writeDb);

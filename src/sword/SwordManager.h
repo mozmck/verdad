@@ -15,6 +15,7 @@ namespace sword {
     class SWMgr;
     class SWModule;
     class SWKey;
+    class SWConfig;
     class VerseKey;
     class InstallMgr;
 }
@@ -275,6 +276,7 @@ private:
     };
 
     std::unique_ptr<sword::SWMgr> mgr_;
+    std::unique_ptr<sword::SWConfig> bundledSysConfig_;
     mutable std::mutex mutex_;
     mutable std::unordered_map<std::string, PostProcessCacheEntry> postProcessCache_;
     mutable std::list<std::string> postProcessLru_;

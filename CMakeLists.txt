@@ -52,6 +52,19 @@ if(NOT SWORD_FOUND)
     message(FATAL_ERROR "SWORD not found. Install libsword-dev.")
 endif()
 
+find_path(VERDAD_SWORD_SHARE_DIR
+    NAMES locales.d
+    PATHS
+        /usr/share/sword
+        /usr/local/share/sword
+)
+
+find_file(VERDAD_SWORD_GLOBALS_CONF
+    NAMES globals.conf
+    PATH_SUFFIXES mods.d
+    HINTS ${VERDAD_SWORD_SHARE_DIR}
+)
+
 # SQLite3 (FTS5 search index)
 find_package(SQLite3 REQUIRED)
 
@@ -69,6 +82,7 @@ set(SOURCES
     src/main.cpp
     src/app/VerdadApp.cpp
     src/sword/SwordManager.cpp
+    src/sword/SwordPaths.cpp
     src/search/SearchIndexer.cpp
     src/tags/TagManager.cpp
     src/ui/MainWindow.cpp
@@ -90,6 +104,7 @@ set(HEADERS
     src/app/VerdadApp.h
     src/app/PerfTrace.h
     src/sword/SwordManager.h
+    src/sword/SwordPaths.h
     src/search/SearchIndexer.h
     src/tags/TagManager.h
     src/ui/MainWindow.h
@@ -254,3 +269,70 @@ add_custom_command(
 add_custom_target(bundle
     DEPENDS "${VERDAD_BUNDLE_ARCHIVE}"
 )
+
+if(UNIX AND NOT APPLE)
+    if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|amd64)$")
+        set(VERDAD_APPIMAGE_ARCH "x86_64")
+    else()
+        set(VERDAD_APPIMAGE_ARCH "${CMAKE_SYSTEM_PROCESSOR}")
+    endif()
+
+    set(VERDAD_APPIMAGE_TOOLS_DIR "${CMAKE_SOURCE_DIR}/tools/appimage-tools")
+    set(VERDAD_LINUXDEPLOY_APPIMAGE
+        "${VERDAD_APPIMAGE_TOOLS_DIR}/linuxdeploy-${VERDAD_APPIMAGE_ARCH}.AppImage")
+    set(VERDAD_LINUXDEPLOY_PLUGIN_APPIMAGE
+        "${VERDAD_APPIMAGE_TOOLS_DIR}/linuxdeploy-plugin-appimage-${VERDAD_APPIMAGE_ARCH}.AppImage")
+    set(VERDAD_LINUXDEPLOY_URL
+        "https://github.com/linuxdeploy/linuxdeploy/releases/latest/download/linuxdeploy-${VERDAD_APPIMAGE_ARCH}.AppImage"
+        CACHE STRING "Download URL for linuxdeploy")
+    set(VERDAD_LINUXDEPLOY_PLUGIN_APPIMAGE_URL
+        "https://github.com/linuxdeploy/linuxdeploy-plugin-appimage/releases/latest/download/linuxdeploy-plugin-appimage-${VERDAD_APPIMAGE_ARCH}.AppImage"
+        CACHE STRING "Download URL for the linuxdeploy AppImage plugin")
+
+    set(VERDAD_APPIMAGE_WORK_DIR "${CMAKE_BINARY_DIR}/appimage")
+    set(VERDAD_APPIMAGE_APPDIR "${VERDAD_APPIMAGE_WORK_DIR}/AppDir")
+    set(VERDAD_APPIMAGE_OUTPUT
+        "${CMAKE_BINARY_DIR}/verdad-${PROJECT_VERSION}-${CMAKE_SYSTEM_NAME}-${VERDAD_APPIMAGE_ARCH}.AppImage")
+
+    add_custom_target(appimage
+        COMMAND ${CMAKE_COMMAND}
+                -DVERDAD_APPIMAGE_TOOLS_DIR=${VERDAD_APPIMAGE_TOOLS_DIR}
+                -DVERDAD_LINUXDEPLOY_URL=${VERDAD_LINUXDEPLOY_URL}
+                -DVERDAD_LINUXDEPLOY_APPIMAGE=${VERDAD_LINUXDEPLOY_APPIMAGE}
+                -DVERDAD_LINUXDEPLOY_PLUGIN_APPIMAGE_URL=${VERDAD_LINUXDEPLOY_PLUGIN_APPIMAGE_URL}
+                -DVERDAD_LINUXDEPLOY_PLUGIN_APPIMAGE=${VERDAD_LINUXDEPLOY_PLUGIN_APPIMAGE}
+                -P ${CMAKE_SOURCE_DIR}/cmake/DownloadAppImageTools.cmake
+        COMMAND ${CMAKE_COMMAND} -E rm -rf ${VERDAD_APPIMAGE_WORK_DIR}
+        COMMAND ${CMAKE_COMMAND} -E make_directory ${VERDAD_APPIMAGE_WORK_DIR}
+        COMMAND ${CMAKE_COMMAND} -E env
+                DESTDIR=${VERDAD_APPIMAGE_APPDIR}
+                ${CMAKE_COMMAND}
+                -DCMAKE_INSTALL_PREFIX=/usr
+                -DCMAKE_INSTALL_CONFIG_NAME=${CMAKE_BUILD_TYPE}
+                -DCMAKE_INSTALL_LOCAL_ONLY=1
+                -P ${CMAKE_BINARY_DIR}/cmake_install.cmake
+        COMMAND ${CMAKE_COMMAND}
+                -DAPPDIR=${VERDAD_APPIMAGE_APPDIR}
+                -DSWORD_SHARE_DIR=${VERDAD_SWORD_SHARE_DIR}
+                -DSWORD_GLOBALS_CONF=${VERDAD_SWORD_GLOBALS_CONF}
+                -P ${CMAKE_SOURCE_DIR}/cmake/PrepareAppImage.cmake
+        COMMAND ${CMAKE_COMMAND} -E chdir ${VERDAD_APPIMAGE_WORK_DIR}
+                ${CMAKE_COMMAND} -E env
+                APPIMAGE_EXTRACT_AND_RUN=1
+                ARCH=${VERDAD_APPIMAGE_ARCH}
+                ${VERDAD_LINUXDEPLOY_APPIMAGE}
+                --appdir ${VERDAD_APPIMAGE_APPDIR}
+                --desktop-file ${VERDAD_APPIMAGE_APPDIR}/usr/share/applications/verdad.desktop
+                --icon-file ${VERDAD_APPIMAGE_APPDIR}/usr/share/icons/hicolor/128x128/apps/verdad.png
+                --executable ${VERDAD_APPIMAGE_APPDIR}/usr/bin/verdad
+                --library ${SWORD_LIBRARIES}
+                --output appimage
+        COMMAND ${CMAKE_COMMAND}
+                -DWORK_DIR=${VERDAD_APPIMAGE_WORK_DIR}
+                -DOUTPUT_FILE=${VERDAD_APPIMAGE_OUTPUT}
+                -P ${CMAKE_SOURCE_DIR}/cmake/RenameAppImage.cmake
+        DEPENDS verdad copy_runtime_assets
+        USES_TERMINAL
+        VERBATIM
+    )
+endif()
