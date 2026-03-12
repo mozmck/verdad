@@ -277,11 +277,17 @@ dest_bin_dir="$prefix/bin"
 dest_data_dir="$prefix/share/verdad"
 dest_applications_dir="$prefix/share/applications"
 dest_pixmaps_dir="$prefix/share/pixmaps"
-dest_icon_dir="$prefix/share/icons/hicolor/128x128/apps"
+dest_icon_128_dir="$prefix/share/icons/hicolor/128x128/apps"
+dest_icon_24_dir="$prefix/share/icons/hicolor/24x24/apps"
 
-icon_source="$source_data/verdad_icon_128.png"
-if [[ ! -f "$icon_source" ]]; then
-    icon_source="$source_data/verdad_icon.png"
+icon_128_source="$source_data/verdad_icon_128.png"
+if [[ ! -f "$icon_128_source" ]]; then
+    icon_128_source="$source_data/verdad_icon.png"
+fi
+
+icon_24_source="$source_data/verdad_icon_24.png"
+if [[ ! -f "$icon_24_source" ]]; then
+    icon_24_source="$icon_128_source"
 fi
 
 printf 'Install mode: %s\n' "$install_mode"
@@ -290,7 +296,8 @@ printf 'Source executable: %s\n' "$source_bin"
 printf 'Source data: %s\n' "$source_data"
 
 install -d "$dest_bin_dir" "$dest_data_dir" \
-    "$dest_applications_dir" "$dest_pixmaps_dir" "$dest_icon_dir"
+    "$dest_applications_dir" "$dest_pixmaps_dir" \
+    "$dest_icon_128_dir" "$dest_icon_24_dir"
 
 install -m 0755 "$source_bin" "$dest_bin_dir/verdad"
 install -m 0644 "$source_data/master.css" "$dest_data_dir/master.css"
@@ -302,6 +309,11 @@ if [[ -f "$source_data/verdad_icon_128.png" ]]; then
         "$dest_data_dir/verdad_icon_128.png"
 fi
 
+if [[ -f "$source_data/verdad_icon_24.png" ]]; then
+    install -m 0644 "$source_data/verdad_icon_24.png" \
+        "$dest_data_dir/verdad_icon_24.png"
+fi
+
 if [[ -f "$source_license" ]]; then
     install -m 0644 "$source_license" "$dest_data_dir/LICENSE"
 fi
@@ -311,8 +323,9 @@ if [[ -d "$source_licenses" ]]; then
     cp -a "$source_licenses/." "$dest_data_dir/LICENSES/"
 fi
 
-install -m 0644 "$icon_source" "$dest_pixmaps_dir/verdad.png"
-install -m 0644 "$icon_source" "$dest_icon_dir/verdad.png"
+install -m 0644 "$icon_128_source" "$dest_pixmaps_dir/verdad.png"
+install -m 0644 "$icon_128_source" "$dest_icon_128_dir/verdad.png"
+install -m 0644 "$icon_24_source" "$dest_icon_24_dir/verdad.png"
 
 desktop_file="$dest_applications_dir/verdad.desktop"
 write_desktop_entry "$desktop_file" "$dest_bin_dir/verdad"

@@ -142,6 +142,9 @@ add_custom_target(copy_runtime_assets ALL
     COMMAND ${CMAKE_COMMAND} -E copy
             "${CMAKE_SOURCE_DIR}/data/verdad_icon_128.png"
             "${CMAKE_BINARY_DIR}/data/verdad_icon_128.png"
+    COMMAND ${CMAKE_COMMAND} -E copy
+            "${CMAKE_SOURCE_DIR}/data/verdad_icon_24.png"
+            "${CMAKE_BINARY_DIR}/data/verdad_icon_24.png"
     VERBATIM
 )
 add_dependencies(verdad copy_runtime_assets)
@@ -181,6 +184,7 @@ install(FILES
     data/help.html
     data/verdad_icon.png
     data/verdad_icon_128.png
+    data/verdad_icon_24.png
     DESTINATION ${CMAKE_INSTALL_DATADIR}/verdad)
 install(DIRECTORY LICENSES
     DESTINATION ${CMAKE_INSTALL_DATADIR}/verdad)
@@ -191,6 +195,9 @@ install(FILES data/verdad_icon_128.png
     RENAME verdad.png)
 install(FILES data/verdad_icon_128.png
     DESTINATION ${CMAKE_INSTALL_DATADIR}/icons/hicolor/128x128/apps
+    RENAME verdad.png)
+install(FILES data/verdad_icon_24.png
+    DESTINATION ${CMAKE_INSTALL_DATADIR}/icons/hicolor/24x24/apps
     RENAME verdad.png)
 
 add_custom_command(
@@ -211,6 +218,8 @@ add_custom_command(
             "${VERDAD_BUNDLE_DIR}/share/verdad/verdad_icon.png"
     COMMAND ${CMAKE_COMMAND} -E copy "${CMAKE_SOURCE_DIR}/data/verdad_icon_128.png"
             "${VERDAD_BUNDLE_DIR}/share/verdad/verdad_icon_128.png"
+    COMMAND ${CMAKE_COMMAND} -E copy "${CMAKE_SOURCE_DIR}/data/verdad_icon_24.png"
+            "${VERDAD_BUNDLE_DIR}/share/verdad/verdad_icon_24.png"
     COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/LICENSES"
             "${VERDAD_BUNDLE_DIR}/share/verdad/LICENSES"
     COMMAND ${CMAKE_COMMAND} -E copy "${CMAKE_SOURCE_DIR}/install.sh"

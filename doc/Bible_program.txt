@@ -18,14 +18,14 @@ Implemented features
   - Verse-by-verse display or paragraph mode.
   - Up to seven parallel Bible columns.
   - Toggleable visible markers for Strong's, morphology, footnotes, and cross references.
-  - Word hover MAG preview plus right-click actions for search, Strong's search, dictionary lookup, copy, and tagging.
+  - Word hover preview plus right-click actions for search, Strong's search, dictionary lookup, copy, and tagging.
 - Commentary and reference tools:
   - Commentary follows the selected verse.
   - Commentary verse gutter links sync the Bible pane.
   - Linked verses and notes from commentary or general books can update the preview pane or populate the Search tab.
 - General books:
-  - Module TOC chooser.
-  - Loads a bounded page from the selected TOC entry; very small sections can include a few following entries.
+  - Module table of contents chooser.
+  - Loads a bounded page from the selected table of contents entry; very small sections can include a few following entries.
   - Inline contents links scroll inside the current rendered section.
 - Documents and editing:
   - Lightweight HTML document editor with bold, italic, lists, text sizing, and horizontal rules.
