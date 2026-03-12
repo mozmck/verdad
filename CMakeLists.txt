@@ -3,6 +3,12 @@ project(Verdad VERSION 0.1.0 LANGUAGES CXX)
 
 include(GNUInstallDirs)
 
+if(NOT CMAKE_CONFIGURATION_TYPES AND NOT CMAKE_BUILD_TYPE)
+    set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)
+    set_property(CACHE CMAKE_BUILD_TYPE PROPERTY STRINGS
+        "Debug" "Release" "RelWithDebInfo" "MinSizeRel")
+endif()
+
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
@@ -12,17 +18,33 @@ list(APPEND CMAKE_MODULE_PATH "${CMAKE_SOURCE_DIR}/cmake")
 
 # --- Dependencies ---
 
-# FLTK - use fltk-config to get correct compile and link flags
-find_program(FLTK_CONFIG_SCRIPT fltk-config)
-if(NOT FLTK_CONFIG_SCRIPT)
-    message(FATAL_ERROR "fltk-config not found. Install FLTK development packages.")
+# Vendored submodules
+if(NOT EXISTS "${CMAKE_SOURCE_DIR}/libs/fltk/CMakeLists.txt")
+    message(FATAL_ERROR
+        "FLTK submodule not found. Run: git submodule update --init --recursive")
 endif()
 
-execute_process(COMMAND ${FLTK_CONFIG_SCRIPT} --use-images --ldflags
-    OUTPUT_VARIABLE FLTK_LDFLAGS OUTPUT_STRIP_TRAILING_WHITESPACE)
-separate_arguments(FLTK_LDFLAGS)
-execute_process(COMMAND ${FLTK_CONFIG_SCRIPT} --includedir
-    OUTPUT_VARIABLE FLTK_INCLUDE_DIR OUTPUT_STRIP_TRAILING_WHITESPACE)
+if(NOT EXISTS "${CMAKE_SOURCE_DIR}/libs/litehtml/CMakeLists.txt")
+    message(FATAL_ERROR
+        "litehtml submodule not found. Run: git submodule update --init --recursive")
+endif()
+
+# FLTK (vendored)
+set(FLTK_BUILD_SHARED_LIBS OFF CACHE BOOL "Build shared FLTK libraries" FORCE)
+set(FLTK_BUILD_TEST OFF CACHE BOOL "Build FLTK test programs" FORCE)
+set(FLTK_BUILD_EXAMPLES OFF CACHE BOOL "Build FLTK examples" FORCE)
+set(FLTK_BUILD_FLUID OFF CACHE BOOL "Build FLUID" FORCE)
+set(FLTK_BUILD_FLTK_OPTIONS OFF CACHE BOOL "Build fltk-options" FORCE)
+set(FLTK_BUILD_FORMS OFF CACHE BOOL "Build the forms compatibility library" FORCE)
+set(FLTK_BUILD_GL OFF CACHE BOOL "Build the OpenGL FLTK library" FORCE)
+set(FLTK_OPTION_PRINT_SUPPORT OFF CACHE BOOL "Enable FLTK print support" FORCE)
+set(FLTK_BACKEND_WAYLAND OFF CACHE BOOL "Enable FLTK Wayland backend" FORCE)
+set(FLTK_USE_PANGO OFF CACHE BOOL "Use Pango for FLTK text rendering" FORCE)
+set(FLTK_GRAPHICS_CAIRO OFF CACHE BOOL "Use Cairo for FLTK drawing" FORCE)
+set(FLTK_USE_SYSTEM_LIBJPEG OFF CACHE BOOL "Use system libjpeg" FORCE)
+set(FLTK_USE_SYSTEM_LIBPNG OFF CACHE BOOL "Use system libpng" FORCE)
+set(FLTK_USE_SYSTEM_ZLIB OFF CACHE BOOL "Use system zlib" FORCE)
+add_subdirectory(libs/fltk)
 
 # SWORD library
 find_package(SWORD REQUIRED)
@@ -91,13 +113,12 @@ add_executable(verdad ${SOURCES} ${HEADERS})
 
 target_include_directories(verdad PRIVATE
     ${CMAKE_SOURCE_DIR}/src
-    ${FLTK_INCLUDE_DIR}
     ${SWORD_INCLUDE_DIRS}
 )
 
 # Link libraries
 target_link_libraries(verdad PRIVATE
-    ${FLTK_LDFLAGS}
+    fltk::images
     ${SWORD_LIBRARIES}
     SQLite::SQLite3
     litehtml
@@ -155,12 +176,8 @@ add_executable(browser_redraw_test
     tools/browser_redraw_test.cpp
 )
 
-target_include_directories(browser_redraw_test PRIVATE
-    ${FLTK_INCLUDE_DIR}
-)
-
 target_link_libraries(browser_redraw_test PRIVATE
-    ${FLTK_LDFLAGS}
+    fltk::fltk
 )
 
 if(UNIX AND NOT APPLE)

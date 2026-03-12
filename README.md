@@ -40,19 +40,40 @@ Verdad stores user state in `~/.config/verdad/` on Linux:
 Verdad currently builds as a C++17 desktop application with CMake.
 
 ```bash
-cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug
+git submodule update --init --recursive
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build -j$(nproc)
 ./build/verdad
 ```
 
-For a release build:
+Fresh single-config builds default to `Release` if you do not set `CMAKE_BUILD_TYPE` yourself. Use `Debug` only when you actually need it:
 
 ```bash
-cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
-cmake --build build -j$(nproc)
+cmake -S . -B build-debug -DCMAKE_BUILD_TYPE=Debug
+cmake --build build-debug -j$(nproc)
 ```
 
-You need a C++17 compiler, `fltk-config`, the CrossWire SWORD development files, SQLite3, and the usual X11/Xft/fontconfig dependencies on Linux. `litehtml` is vendored under `libs/litehtml`, so it is built with the project instead of being installed separately. `data/master.css` and `data/help.html` are copied into `build/data/` automatically during the build.
+On a recent Debian/Ubuntu-based distribution, these packages are typically enough to build Verdad from source:
+
+```bash
+sudo apt install build-essential cmake pkg-config \
+    git libsword-dev libsqlite3-dev \
+    libx11-dev libxext-dev libxinerama-dev libxfixes-dev \
+    libxcursor-dev libxrender-dev libxft-dev \
+    libfontconfig-dev libfreetype-dev
+```
+
+To install and run a prebuilt Verdad binary without the compiler toolchain, install the runtime libraries instead:
+
+```bash
+sudo apt install libsword1.9.0 libsword-common libsqlite3-0 \
+    libx11-6 libxext6 libxinerama1 libxfixes3 \
+    libxcursor1 libxrender1 libxft2 libfontconfig1
+```
+
+FLTK 1.4.4 is vendored under `libs/fltk` and linked statically, so you do not need distro FLTK runtime or `-dev` packages. If you cloned the repository without submodules, run `git submodule update --init --recursive` before configuring.
+
+On newer releases, the SWORD runtime package name may differ slightly from `libsword1.9.0`; if that exact package is unavailable, install the distro's current `libsword` runtime package instead. `litehtml` is vendored under `libs/litehtml`, so it is built with the project instead of being installed separately. `data/master.css` and `data/help.html` are copied into `build/data/` automatically during the build.
 
 There is no dedicated automated test suite yet. Validation is currently a successful build plus manual UI smoke testing in the running application.
 
