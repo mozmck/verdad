@@ -7,7 +7,6 @@ install_mode=""
 prefix=""
 prefix_supplied=0
 assume_yes=0
-sudo_cmd=""
 
 source_bin=""
 source_data=""
@@ -32,7 +31,7 @@ The script also accepts a built source tree for developer testing:
   LICENSES/
 
 Default behavior:
-  - If root or working sudo access is available, install under /usr/local.
+  - If run as root, install under /usr/local.
   - Otherwise, install for the current user under ~/.local.
 
 Options:
@@ -67,41 +66,56 @@ can_prompt() {
     [[ -t 0 && -t 1 ]]
 }
 
-run_with_privilege() {
-    if [[ -n "$sudo_cmd" ]]; then
-        "$sudo_cmd" "$@"
-    else
-        "$@"
+desktop_owner_home() {
+    if [[ $EUID -eq 0 && -n "${SUDO_USER:-}" && "$SUDO_USER" != "root" ]]; then
+        local home_dir
+        home_dir=$(getent passwd "$SUDO_USER" | cut -d: -f6)
+        if [[ -n "$home_dir" ]]; then
+            printf '%s\n' "$home_dir"
+            return
+        fi
     fi
+
+    printf '%s\n' "$HOME"
+}
+
+desktop_owner_ids() {
+    if [[ $EUID -eq 0 && -n "${SUDO_USER:-}" && "$SUDO_USER" != "root" ]]; then
+        printf '%s:%s\n' "${SUDO_UID:-$(id -u "$SUDO_USER")}" \
+            "${SUDO_GID:-$(id -g "$SUDO_USER")}"
+        return
+    fi
+
+    printf '%s:%s\n' "$(id -u)" "$(id -g)"
+}
+
+desktop_dir_for_home() {
+    local home_dir=$1
+    local config_file="$home_dir/.config/user-dirs.dirs"
+    local desktop_dir="$home_dir/Desktop"
+
+    if [[ -f "$config_file" ]]; then
+        local line
+        line=$(grep '^XDG_DESKTOP_DIR=' "$config_file" | tail -n 1 || true)
+        if [[ -n "$line" ]]; then
+            desktop_dir=${line#XDG_DESKTOP_DIR=}
+            desktop_dir=${desktop_dir#\"}
+            desktop_dir=${desktop_dir%\"}
+            desktop_dir=${desktop_dir//\$HOME/$home_dir}
+            desktop_dir=${desktop_dir//\$\{HOME\}/$home_dir}
+        fi
+    fi
+
+    printf '%s\n' "$desktop_dir"
 }
 
 escape_desktop_exec() {
     local value=$1
     value=${value//\\/\\\\}
+    value=${value// /\\ }
+    value=${value//$'\t'/\\t}
     value=${value//\"/\\\"}
-    printf '"%s"\n' "$value"
-}
-
-have_sudo_access() {
-    if [[ $EUID -eq 0 ]]; then
-        return 0
-    fi
-
-    if ! command -v sudo >/dev/null 2>&1; then
-        return 1
-    fi
-
-    if sudo -n true 2>/dev/null; then
-        sudo_cmd="sudo"
-        return 0
-    fi
-
-    if can_prompt && sudo -v; then
-        sudo_cmd="sudo"
-        return 0
-    fi
-
-    return 1
+    printf '%s\n' "$value"
 }
 
 detect_source_layout() {
@@ -138,6 +152,7 @@ write_desktop_entry() {
     local exec_value
     exec_value=$(escape_desktop_exec "$exec_path")
 
+    local tmp_file
     tmp_file=$(mktemp)
     cat >"$tmp_file" <<EOF
 [Desktop Entry]
@@ -154,8 +169,30 @@ Categories=Education;
 Keywords=Bible;Study;SWORD;Commentary;Dictionary;
 StartupNotify=true
 EOF
-    run_with_privilege install -m 0644 "$tmp_file" "$desktop_file"
+    install -m 0644 "$tmp_file" "$desktop_file"
     rm -f "$tmp_file"
+}
+
+install_desktop_launcher() {
+    local source_desktop_file=$1
+    local owner_home
+    local owner_ids
+    local desktop_dir
+    local desktop_launcher
+
+    owner_home=$(desktop_owner_home)
+    owner_ids=$(desktop_owner_ids)
+    desktop_dir=$(desktop_dir_for_home "$owner_home")
+    desktop_launcher="$desktop_dir/verdad.desktop"
+
+    install -d "$desktop_dir"
+    install -m 0755 "$source_desktop_file" "$desktop_launcher"
+
+    if [[ $EUID -eq 0 ]]; then
+        chown "${owner_ids%:*}:${owner_ids#*:}" "$desktop_dir" "$desktop_launcher"
+    fi
+
+    printf 'Desktop launcher: %s\n' "$desktop_launcher"
 }
 
 update_desktop_cache() {
@@ -163,11 +200,11 @@ update_desktop_cache() {
     local icon_root=$2
 
     if command -v update-desktop-database >/dev/null 2>&1; then
-        run_with_privilege update-desktop-database "$applications_dir" >/dev/null 2>&1 || true
+        update-desktop-database "$applications_dir" >/dev/null 2>&1 || true
     fi
 
     if command -v gtk-update-icon-cache >/dev/null 2>&1; then
-        run_with_privilege gtk-update-icon-cache -q -t -f "$icon_root" >/dev/null 2>&1 || true
+        gtk-update-icon-cache -q -t -f "$icon_root" >/dev/null 2>&1 || true
     fi
 }
 
@@ -211,7 +248,7 @@ detect_source_layout || die "Could not find a Verdad bundle. Expected bin/verdad
 [[ -f "$source_data/verdad_icon.png" ]] || die "Missing runtime asset: $source_data/verdad_icon.png"
 
 if [[ -z "$install_mode" ]]; then
-    if have_sudo_access; then
+    if [[ $EUID -eq 0 ]]; then
         install_mode="system"
     else
         install_mode="user"
@@ -219,12 +256,8 @@ if [[ -z "$install_mode" ]]; then
 fi
 
 if [[ "$install_mode" == "system" ]]; then
+    [[ $EUID -eq 0 ]] || die "System install requires running the script with sudo or as root."
     prefix=${prefix:-/usr/local}
-    if ! have_sudo_access; then
-        printf 'No sudo access available. Falling back to a user install.\n'
-        install_mode="user"
-        sudo_cmd=""
-    fi
 fi
 
 if [[ "$install_mode" == "user" ]]; then
@@ -256,34 +289,43 @@ printf 'Install prefix: %s\n' "$prefix"
 printf 'Source executable: %s\n' "$source_bin"
 printf 'Source data: %s\n' "$source_data"
 
-run_with_privilege install -d "$dest_bin_dir" "$dest_data_dir" \
+install -d "$dest_bin_dir" "$dest_data_dir" \
     "$dest_applications_dir" "$dest_pixmaps_dir" "$dest_icon_dir"
 
-run_with_privilege install -m 0755 "$source_bin" "$dest_bin_dir/verdad"
-run_with_privilege install -m 0644 "$source_data/master.css" "$dest_data_dir/master.css"
-run_with_privilege install -m 0644 "$source_data/help.html" "$dest_data_dir/help.html"
-run_with_privilege install -m 0644 "$source_data/verdad_icon.png" "$dest_data_dir/verdad_icon.png"
+install -m 0755 "$source_bin" "$dest_bin_dir/verdad"
+install -m 0644 "$source_data/master.css" "$dest_data_dir/master.css"
+install -m 0644 "$source_data/help.html" "$dest_data_dir/help.html"
+install -m 0644 "$source_data/verdad_icon.png" "$dest_data_dir/verdad_icon.png"
 
 if [[ -f "$source_data/verdad_icon_128.png" ]]; then
-    run_with_privilege install -m 0644 "$source_data/verdad_icon_128.png" \
+    install -m 0644 "$source_data/verdad_icon_128.png" \
         "$dest_data_dir/verdad_icon_128.png"
 fi
 
 if [[ -f "$source_license" ]]; then
-    run_with_privilege install -m 0644 "$source_license" "$dest_data_dir/LICENSE"
+    install -m 0644 "$source_license" "$dest_data_dir/LICENSE"
 fi
 
 if [[ -d "$source_licenses" ]]; then
-    run_with_privilege install -d "$dest_data_dir/LICENSES"
-    run_with_privilege cp -a "$source_licenses/." "$dest_data_dir/LICENSES/"
+    install -d "$dest_data_dir/LICENSES"
+    cp -a "$source_licenses/." "$dest_data_dir/LICENSES/"
 fi
 
-run_with_privilege install -m 0644 "$icon_source" "$dest_pixmaps_dir/verdad.png"
-run_with_privilege install -m 0644 "$icon_source" "$dest_icon_dir/verdad.png"
+install -m 0644 "$icon_source" "$dest_pixmaps_dir/verdad.png"
+install -m 0644 "$icon_source" "$dest_icon_dir/verdad.png"
 
 desktop_file="$dest_applications_dir/verdad.desktop"
 write_desktop_entry "$desktop_file" "$dest_bin_dir/verdad"
 update_desktop_cache "$dest_applications_dir" "$prefix/share/icons/hicolor"
+
+if [[ $assume_yes -eq 0 ]] && can_prompt; then
+    desktop_dir=$(desktop_dir_for_home "$(desktop_owner_home)")
+    printf 'Create a desktop launcher in %s? [y/N] ' "$desktop_dir"
+    read -r reply
+    if [[ "$reply" =~ ^[Yy]$ ]]; then
+        install_desktop_launcher "$desktop_file"
+    fi
+fi
 
 printf '\nInstalled Verdad to %s\n' "$prefix"
 printf 'Binary: %s/bin/verdad\n' "$prefix"

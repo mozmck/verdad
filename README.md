@@ -64,9 +64,10 @@ Use the repo-level installer:
 ./install.sh
 ```
 
-By default, `install.sh` installs system-wide under `/usr/local` when root or
-sudo access is available. Otherwise it installs for the current user under
-`~/.local`, and that default can be accepted by pressing Enter.
+By default, `install.sh` installs for the current user under `~/.local`, and
+that default can be accepted by pressing Enter. To install system-wide under
+`/usr/local`, run it with `sudo`. The installer also prompts to add a desktop
+launcher.
 
 Useful options:
 
