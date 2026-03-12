@@ -75,6 +75,8 @@ std::string buildStudypadOdtHtml(VerdadApp* app, const std::string& bodyHtml) {
          << "body { font-family: \"" << escapeCssString(family) << "\"; font-size: "
          << size << "pt; line-height: " << lineHeight << "; margin: 0.4in; }\n"
          << "p { margin: 0 0 0.65em 0; line-height: inherit; }\n"
+         << "ul, ol { margin: 0 0 0.65em 1.4em; padding-left: 1.1em; }\n"
+         << "li { margin: 0.15em 0; }\n"
          << "hr { border: 0; border-top: 1px solid #777; margin: 0.8em 0; }\n"
          << "</style>\n"
          << "</head>\n<body>\n"

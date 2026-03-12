@@ -155,6 +155,17 @@ struct ListPrefixInfo {
     std::string indent;
 };
 
+struct HtmlListState {
+    bool ordered = false;
+    int nextNumber = 1;
+};
+
+enum class OrderedListStyle {
+    Decimal,
+    LowerAlpha,
+    LowerRoman,
+};
+
 bool isIndentChar(char c) {
     return c == ' ' || c == '\t';
 }
@@ -219,6 +230,101 @@ std::string normalizeIndentPrefix(std::string_view text, int spacesPerTab) {
     return normalized;
 }
 
+int listIndentLevel(std::string_view indentText, int indentWidth) {
+    std::string normalized = normalizeIndentPrefix(indentText, indentWidth);
+    return static_cast<int>(std::count(normalized.begin(), normalized.end(), '\t'));
+}
+
+std::string residualListIndentText(std::string_view indentText, int indentWidth) {
+    std::string normalized = normalizeIndentPrefix(indentText, indentWidth);
+    size_t level = static_cast<size_t>(std::count(normalized.begin(), normalized.end(), '\t'));
+    if (level >= normalized.size()) return "";
+    return normalized.substr(level);
+}
+
+int trailingIndentUnitLength(std::string_view indentText, int indentWidth) {
+    if (indentText.empty()) return 0;
+    if (indentText.back() == '\t') return 1;
+
+    int removable = 0;
+    for (int i = static_cast<int>(indentText.size()) - 1;
+         i >= 0 && removable < indentWidth && indentText[static_cast<size_t>(i)] == ' ';
+         --i) {
+        ++removable;
+    }
+    return removable;
+}
+
+OrderedListStyle orderedListStyleForLevel(int level) {
+    switch (level % 3) {
+    case 1:
+        return OrderedListStyle::LowerAlpha;
+    case 2:
+        return OrderedListStyle::LowerRoman;
+    default:
+        return OrderedListStyle::Decimal;
+    }
+}
+
+std::string toLowerAlpha(int value) {
+    if (value <= 0) return "a";
+
+    std::string text;
+    while (value > 0) {
+        --value;
+        text.insert(text.begin(), static_cast<char>('a' + (value % 26)));
+        value /= 26;
+    }
+    return text;
+}
+
+std::string toLowerRoman(int value) {
+    if (value <= 0) return "i";
+
+    struct RomanDigit {
+        int value;
+        const char* text;
+    };
+
+    static constexpr RomanDigit digits[] = {
+        {1000, "m"},
+        {900, "cm"},
+        {500, "d"},
+        {400, "cd"},
+        {100, "c"},
+        {90, "xc"},
+        {50, "l"},
+        {40, "xl"},
+        {10, "x"},
+        {9, "ix"},
+        {5, "v"},
+        {4, "iv"},
+        {1, "i"},
+    };
+
+    std::string text;
+    for (const auto& digit : digits) {
+        while (value >= digit.value) {
+            text += digit.text;
+            value -= digit.value;
+        }
+    }
+    return text;
+}
+
+std::string formatOrderedListMarker(int number, int level) {
+    number = std::max(1, number);
+    switch (orderedListStyleForLevel(level)) {
+    case OrderedListStyle::LowerAlpha:
+        return toLowerAlpha(number);
+    case OrderedListStyle::LowerRoman:
+        return toLowerRoman(number);
+    case OrderedListStyle::Decimal:
+    default:
+        return std::to_string(number);
+    }
+}
+
 bool parseListPrefix(std::string_view line, ListPrefixInfo* info = nullptr) {
     ListPrefixInfo parsed;
     parsed.indentLen = leadingIndentLength(line);
@@ -245,19 +351,41 @@ bool parseListPrefix(std::string_view line, ListPrefixInfo* info = nullptr) {
            std::isdigit(static_cast<unsigned char>(line[digitPos]))) {
         ++digitPos;
     }
-    if (digitPos == markerPos || digitPos + 1 >= line.size() ||
-        line[digitPos] != '.' || line[digitPos + 1] != ' ') {
+    if (digitPos > markerPos &&
+        digitPos + 1 < line.size() &&
+        line[digitPos] == '.' &&
+        line[digitPos + 1] == ' ') {
+        parsed.valid = true;
+        parsed.ordered = true;
+        parsed.markerLen = static_cast<int>(digitPos - markerPos + 2);
+        parsed.prefixLen = parsed.indentLen + parsed.markerLen;
+        parsed.number = std::atoi(std::string(line.substr(markerPos, digitPos - markerPos)).c_str());
         if (info) *info = parsed;
-        return false;
+        return true;
     }
 
-    parsed.valid = true;
-    parsed.ordered = true;
-    parsed.markerLen = static_cast<int>(digitPos - markerPos + 2);
-    parsed.prefixLen = parsed.indentLen + parsed.markerLen;
-    parsed.number = std::atoi(std::string(line.substr(markerPos, digitPos - markerPos)).c_str());
+    size_t alphaPos = markerPos;
+    while (alphaPos < line.size() &&
+           std::islower(static_cast<unsigned char>(line[alphaPos]))) {
+        ++alphaPos;
+    }
+    if (parsed.indentLen > 0 &&
+        alphaPos > markerPos &&
+        alphaPos - markerPos <= 4 &&
+        alphaPos + 1 < line.size() &&
+        line[alphaPos] == '.' &&
+        line[alphaPos + 1] == ' ') {
+        parsed.valid = true;
+        parsed.ordered = true;
+        parsed.markerLen = static_cast<int>(alphaPos - markerPos + 2);
+        parsed.prefixLen = parsed.indentLen + parsed.markerLen;
+        parsed.number = 1;
+        if (info) *info = parsed;
+        return true;
+    }
+
     if (info) *info = parsed;
-    return true;
+    return false;
 }
 
 std::string escapeHtml(const std::string& text) {
@@ -360,6 +488,40 @@ int detectListIndent(const std::string& lowerTag) {
 
 int detectListIndentTabs(const std::string& lowerTag) {
     static constexpr std::string_view key = "data-verdad-indent-tabs=\"";
+    size_t start = lowerTag.find(key);
+    if (start == std::string::npos) return 0;
+    start += key.size();
+
+    size_t end = start;
+    while (end < lowerTag.size() &&
+           std::isdigit(static_cast<unsigned char>(lowerTag[end]))) {
+        ++end;
+    }
+    if (end == start) return 0;
+
+    try {
+        return std::max(0, std::stoi(lowerTag.substr(start, end - start)));
+    } catch (...) {
+        return 0;
+    }
+}
+
+std::string explicitIndentText(const std::string& lowerTag) {
+    int indentTabs = detectListIndentTabs(lowerTag);
+    if (indentTabs > 0) {
+        return std::string(static_cast<size_t>(indentTabs), '\t');
+    }
+
+    int indentSpaces = detectListIndent(lowerTag);
+    if (indentSpaces > 0) {
+        return std::string(static_cast<size_t>(indentSpaces), ' ');
+    }
+
+    return "";
+}
+
+int detectListLevel(const std::string& lowerTag) {
+    static constexpr std::string_view key = "data-verdad-list-level=\"";
     size_t start = lowerTag.find(key);
     if (start == std::string::npos) return 0;
     start += key.size();
@@ -485,9 +647,7 @@ void parseHtmlToEditorContent(const std::string& html,
     std::vector<unsigned char> alignStack(1, kAlignLeft);
     int boldDepth = 0;
     int italicDepth = 0;
-    bool inUnorderedList = false;
-    bool inOrderedList = false;
-    int orderedIndex = 1;
+    std::vector<HtmlListState> listStack;
 
     auto refreshFormat = [&]() {
         current.bold = (boldDepth > 0);
@@ -535,16 +695,9 @@ void parseHtmlToEditorContent(const std::string& html,
                 if (!textOut.empty()) appendParagraphBreak(textOut, formatsOut);
                 alignStack.push_back(detectAlignment(lowerTag));
                 refreshFormat();
-                int indentTabs = detectListIndentTabs(lowerTag);
-                int indentSpaces = detectListIndent(lowerTag);
-                if (indentTabs > 0) {
-                    appendFormattedText(textOut, formatsOut,
-                                        std::string(static_cast<size_t>(indentTabs), '\t'),
-                                        current);
-                } else if (indentSpaces > 0) {
-                    appendFormattedText(textOut, formatsOut,
-                                        std::string(static_cast<size_t>(indentSpaces), ' '),
-                                        current);
+                std::string indent = explicitIndentText(lowerTag);
+                if (!indent.empty()) {
+                    appendFormattedText(textOut, formatsOut, indent, current);
                 }
             } else if (tag == "br") {
                 appendLineBreak(textOut, formatsOut);
@@ -553,24 +706,40 @@ void parseHtmlToEditorContent(const std::string& html,
                 appendFormattedText(textOut, formatsOut, "---", current);
                 appendParagraphBreak(textOut, formatsOut);
             } else if (tag == "ul") {
-                appendParagraphBreak(textOut, formatsOut);
-                inUnorderedList = true;
-                inOrderedList = false;
-                orderedIndex = 1;
+                if (listStack.empty() && !textOut.empty()) {
+                    appendParagraphBreak(textOut, formatsOut);
+                }
+                listStack.push_back({false, 1});
             } else if (tag == "ol") {
-                appendParagraphBreak(textOut, formatsOut);
-                inOrderedList = true;
-                inUnorderedList = false;
-                orderedIndex = 1;
+                if (listStack.empty() && !textOut.empty()) {
+                    appendParagraphBreak(textOut, formatsOut);
+                }
+                listStack.push_back({true, 1});
             } else if (tag == "li") {
                 alignStack.push_back(detectAlignment(lowerTag));
                 refreshFormat();
+                std::string explicitIndent = explicitIndentText(lowerTag);
                 std::string indent;
-                int indentTabs = detectListIndentTabs(lowerTag);
-                if (indentTabs > 0) indent.assign(static_cast<size_t>(indentTabs), '\t');
-                else indent.assign(static_cast<size_t>(detectListIndent(lowerTag)), ' ');
-                if (inOrderedList) {
-                    appendPrefixIfNeeded(indent + std::to_string(orderedIndex++) + ". ");
+                int listLevel = detectListLevel(lowerTag);
+                if (listLevel > 0) {
+                    indent.assign(static_cast<size_t>(listLevel), '\t');
+                    indent += explicitIndent;
+                } else if (!explicitIndent.empty()) {
+                    indent = explicitIndent;
+                } else if (!listStack.empty()) {
+                    indent.assign(listStack.size(), '\t');
+                }
+
+                bool ordered = !listStack.empty() && listStack.back().ordered;
+                if (ordered) {
+                    int number = listStack.back().nextNumber++;
+                    int listLevel = detectListLevel(lowerTag);
+                    if (listLevel <= 0 && !listStack.empty()) {
+                        listLevel = static_cast<int>(listStack.size());
+                    }
+                    appendPrefixIfNeeded(indent +
+                                         formatOrderedListMarker(number, std::max(0, listLevel - 1)) +
+                                         ". ");
                 } else {
                     appendPrefixIfNeeded(indent + "- ");
                 }
@@ -593,11 +762,11 @@ void parseHtmlToEditorContent(const std::string& html,
                 if (alignStack.size() > 1) alignStack.pop_back();
                 refreshFormat();
             } else if (tag == "ul") {
-                inUnorderedList = false;
-                appendParagraphBreak(textOut, formatsOut);
+                if (!listStack.empty()) listStack.pop_back();
+                if (listStack.empty()) appendParagraphBreak(textOut, formatsOut);
             } else if (tag == "ol") {
-                inOrderedList = false;
-                appendParagraphBreak(textOut, formatsOut);
+                if (!listStack.empty()) listStack.pop_back();
+                if (listStack.empty()) appendParagraphBreak(textOut, formatsOut);
             } else if (tag == "li") {
                 appendLineBreak(textOut, formatsOut);
                 if (alignStack.size() > 1) alignStack.pop_back();
@@ -731,10 +900,36 @@ bool isOrderedLine(const std::string& line,
     return true;
 }
 
+bool isListLine(const std::string& line, ListPrefixInfo* info = nullptr) {
+    return parseListPrefix(line, info);
+}
+
 std::string listItemOpenTag(std::string_view indentText,
                             int indentColumns,
-                            unsigned char align) {
-    return "<li" + blockAttributeString(indentText, indentColumns, align) + ">";
+                            unsigned char align,
+                            int listLevel) {
+    std::string attrs;
+    if (listLevel > 0) {
+        attrs += " data-verdad-list-level=\"" + std::to_string(listLevel) + "\"";
+    }
+    std::string blockAttrs = blockAttributeString(indentText, indentColumns, align);
+    if (!blockAttrs.empty()) attrs += blockAttrs;
+    return "<li" + attrs + ">";
+}
+
+std::string orderedListOpenTag(int level) {
+    switch (level % 3) {
+    case 1:
+        return "<ol type=\"a\" style=\"list-style-type: lower-alpha;\">";
+    case 2:
+        return "<ol type=\"i\" style=\"list-style-type: lower-roman;\">";
+    default:
+        return "<ol type=\"1\" style=\"list-style-type: decimal;\">";
+    }
+}
+
+std::string orderedListPrefix(std::string_view indentText, int number, int level) {
+    return std::string(indentText) + formatOrderedListMarker(number, level) + ". ";
 }
 
 std::string odtIndentTextHtml(std::string_view indentText) {
@@ -871,42 +1066,115 @@ BlockFormat blockFormatForLine(int start,
     return block;
 }
 
-std::string serializeOdtListRun(const std::vector<EditorLine>& lines,
-                                size_t& index,
-                                bool ordered,
-                                const std::string& text,
-                                const std::vector<CharFormat>& formats,
-                                int baseSize,
-                                int indentWidth) {
+struct SerializedListLine {
+    ListPrefixInfo prefix;
+    int level = 0;
+    std::string residualIndentText;
+    int residualIndentColumns = 0;
+    unsigned char align = kAlignLeft;
+};
+
+SerializedListLine buildSerializedListLine(const EditorLine& line,
+                                          const std::vector<CharFormat>& formats,
+                                          int indentWidth) {
+    SerializedListLine serialized;
+    parseListPrefix(line.text, &serialized.prefix);
+    serialized.level = listIndentLevel(serialized.prefix.indent, indentWidth);
+    serialized.residualIndentText = residualListIndentText(serialized.prefix.indent, indentWidth);
+    serialized.residualIndentColumns = indentColumns(serialized.residualIndentText);
+    serialized.align = blockFormatForLine(line.start, line.end, line.text, formats).align;
+    return serialized;
+}
+
+std::string serializeListRun(const std::vector<EditorLine>& lines,
+                             size_t& index,
+                             const std::string& text,
+                             const std::vector<CharFormat>& formats,
+                             int baseSize,
+                             int indentWidth) {
     std::string html;
+    std::vector<bool> listStack;
+    int baseLevel = -1;
+    int currentLevel = -1;
+    bool currentItemOpen = false;
+
+    auto openContainer = [&](bool ordered, int level) {
+        html += ordered ? orderedListOpenTag(level) : "<ul>";
+        listStack.push_back(ordered);
+    };
+
+    auto closeContainer = [&]() {
+        if (listStack.empty()) return;
+        html += listStack.back() ? "</ol>" : "</ul>";
+        listStack.pop_back();
+    };
+
+    auto closeCurrentItem = [&]() {
+        if (!currentItemOpen) return;
+        html += "</li>";
+        currentItemOpen = false;
+    };
+
     size_t cursor = index;
     while (cursor < lines.size()) {
         ListPrefixInfo info;
-        if (!parseListPrefix(lines[cursor].text, &info) || info.ordered != ordered) break;
+        if (!isListLine(lines[cursor].text, &info)) break;
 
-        BlockFormat block = blockFormatForLine(lines[cursor].start,
-                                               lines[cursor].end,
-                                               lines[cursor].text,
-                                               formats);
-        std::string normalizedIndent = normalizeIndentPrefix(
-            std::string_view(lines[cursor].text.data(), static_cast<size_t>(info.indentLen)),
-            indentWidth);
-        std::string markerText = lines[cursor].text.substr(
-            static_cast<size_t>(info.indentLen),
-            static_cast<size_t>(info.prefixLen - info.indentLen));
-        html += "<p" + odtParagraphAttributeString(block.align) + ">";
-        html += odtIndentTextHtml(normalizedIndent);
-        html += odtIndentTextHtml(markerText);
-        html += serializeInlineRange(text, formats,
-                                     lines[cursor].start + info.prefixLen,
-                                     lines[cursor].end,
-                                     baseSize);
-        if (lines[cursor].start + info.prefixLen >= lines[cursor].end) {
-            html += "&nbsp;";
+        SerializedListLine line = buildSerializedListLine(lines[cursor], formats, indentWidth);
+        if (baseLevel < 0) {
+            baseLevel = line.level;
         }
-        html += "</p>";
+
+        int level = std::max(0, line.level - baseLevel);
+        if (currentLevel < 0) {
+            level = 0;
+        } else {
+            level = std::max(0, std::min(level, currentLevel + 1));
+        }
+
+        if (currentLevel < 0) {
+            openContainer(line.prefix.ordered, level);
+        } else if (level > currentLevel) {
+            openContainer(line.prefix.ordered, level);
+        } else {
+            closeCurrentItem();
+            while (currentLevel > level) {
+                closeContainer();
+                --currentLevel;
+                html += "</li>";
+            }
+            if (listStack.empty()) {
+                openContainer(line.prefix.ordered, level);
+            } else if (listStack.back() != line.prefix.ordered) {
+                closeContainer();
+                openContainer(line.prefix.ordered, level);
+            }
+        }
+
+        currentLevel = level;
+        html += listItemOpenTag(line.residualIndentText,
+                                line.residualIndentColumns,
+                                line.align,
+                                level + 1);
+        std::string itemHtml = serializeInlineRange(text, formats,
+                                                    lines[cursor].start + line.prefix.prefixLen,
+                                                    lines[cursor].end,
+                                                    baseSize);
+        html += itemHtml.empty() ? "&nbsp;" : itemHtml;
+        currentItemOpen = true;
         ++cursor;
     }
+
+    closeCurrentItem();
+    while (currentLevel > 0) {
+        closeContainer();
+        --currentLevel;
+        html += "</li>";
+    }
+    while (!listStack.empty()) {
+        closeContainer();
+    }
+
     index = cursor;
     return html;
 }
@@ -942,61 +1210,8 @@ std::string serializeEditorContent(const std::string& text,
             continue;
         }
 
-        int prefixLen = 0;
-        int indentCols = 0;
-        if (isBulletLine(lines[i].text, &prefixLen, &indentCols)) {
-            if (flavor == HtmlExportFlavor::Odt) {
-                html += serializeOdtListRun(lines, i, false, text, formats, baseSize, indentWidth);
-                continue;
-            }
-            html += "<ul>";
-            while (i < lines.size() && isBulletLine(lines[i].text, &prefixLen, &indentCols)) {
-                int indentLen = leadingIndentLength(lines[i].text);
-                unsigned char align = blockFormatForLine(lines[i].start,
-                                                         lines[i].end,
-                                                         lines[i].text,
-                                                         formats).align;
-                html += listItemOpenTag(std::string_view(lines[i].text.data(),
-                                                        static_cast<size_t>(indentLen)),
-                                        indentCols,
-                                        align) +
-                        serializeInlineRange(text, formats,
-                                             lines[i].start + prefixLen,
-                                             lines[i].end,
-                                             baseSize) +
-                        "</li>";
-                ++i;
-            }
-            html += "</ul>";
-            continue;
-        }
-
-        int orderNumber = 0;
-        if (isOrderedLine(lines[i].text, &prefixLen, &indentCols, &orderNumber)) {
-            if (flavor == HtmlExportFlavor::Odt) {
-                html += serializeOdtListRun(lines, i, true, text, formats, baseSize, indentWidth);
-                continue;
-            }
-            html += "<ol>";
-            while (i < lines.size() &&
-                   isOrderedLine(lines[i].text, &prefixLen, &indentCols, &orderNumber)) {
-                int indentLen = leadingIndentLength(lines[i].text);
-                unsigned char align = blockFormatForLine(lines[i].start,
-                                                         lines[i].end,
-                                                         lines[i].text,
-                                                         formats).align;
-                html += listItemOpenTag(std::string_view(lines[i].text.data(),
-                                                        static_cast<size_t>(indentLen)),
-                                        indentCols,
-                                        align) +
-                        serializeInlineRange(text, formats,
-                                             lines[i].start + prefixLen,
-                                             lines[i].end,
-                                             baseSize) +
-                        "</li>";
-                ++i;
-            }
-            html += "</ol>";
+        if (isListLine(lines[i].text)) {
+            html += serializeListRun(lines, i, text, formats, baseSize, indentWidth);
             continue;
         }
 
@@ -1016,8 +1231,7 @@ std::string serializeEditorContent(const std::string& text,
             trimmed = trimCopy(lines[i].text);
             if (trimmed.empty() ||
                 isRuleLine(lines[i].text) ||
-                isBulletLine(lines[i].text) ||
-                isOrderedLine(lines[i].text)) {
+                isListLine(lines[i].text)) {
                 break;
             }
 
@@ -2732,7 +2946,7 @@ bool HtmlEditorWidget::handleEnterKey() {
     if (hasListPrefix) {
         continuation = normalizeIndentPrefix(listInfo.indent, indentWidth_) +
                        (listInfo.ordered
-                            ? std::to_string(std::max(1, listInfo.number + 1)) + ". "
+                            ? "1. "
                             : "- ");
     }
 
@@ -2746,12 +2960,15 @@ bool HtmlEditorWidget::handleEnterKey() {
     }
 
     if (emptyListItem && atLineEnd) {
-        textBuffer_->remove(lineStart + displayPadLen + listInfo.indentLen,
+        int indentTrim = trailingIndentUnitLength(
+            std::string_view(line.data(), static_cast<size_t>(listInfo.indentLen)),
+            indentWidth_);
+        textBuffer_->remove(lineStart + displayPadLen + listInfo.indentLen - indentTrim,
                             lineStart + displayPadLen + listInfo.prefixLen);
         if (listInfo.ordered) {
             renumberOrderedListBlocks();
         }
-        editor_->insert_position(lineStart + displayPadLen + listInfo.indentLen);
+        editor_->insert_position(lineStart + displayPadLen + listInfo.indentLen - indentTrim);
         editor_->show_insert_position();
         return true;
     }
@@ -2761,7 +2978,22 @@ bool HtmlEditorWidget::handleEnterKey() {
     if (listInfo.ordered) {
         renumberOrderedListBlocks();
     }
-    editor_->insert_position(insertPos + static_cast<int>(inserted.size()));
+    int caretPos = insertPos + static_cast<int>(inserted.size());
+    if (hasListPrefix) {
+        int newLineStart = insertPos + 1;
+        int newLineEnd = textBuffer_->line_end(newLineStart);
+        char* lineText = textBuffer_->text_range(newLineStart, newLineEnd);
+        std::string newLine = lineText ? lineText : "";
+        std::free(lineText);
+
+        ListPrefixInfo newListInfo;
+        if (parseListPrefix(newLine, &newListInfo)) {
+            caretPos = newLineStart + newListInfo.prefixLen;
+        } else {
+            caretPos = newLineStart;
+        }
+    }
+    editor_->insert_position(caretPos);
     editor_->show_insert_position();
     return true;
 }
@@ -2855,6 +3087,7 @@ bool HtmlEditorWidget::handleTabKey(bool outdent) {
         editor_->insert_position(adjustedPos);
     }
 
+    renumberOrderedListBlocks();
     editor_->show_insert_position();
     return true;
 }
@@ -2862,8 +3095,8 @@ bool HtmlEditorWidget::handleTabKey(bool outdent) {
 void HtmlEditorWidget::renumberOrderedListBlocks() {
     if (!textBuffer_) return;
 
-    bool inOrderedBlock = false;
-    int order = 1;
+    std::vector<int> nextNumbers;
+    int baseLevel = -1;
     int pos = 0;
     while (pos <= textBuffer_->length()) {
         int lineEnd = textBuffer_->line_end(pos);
@@ -2873,18 +3106,37 @@ void HtmlEditorWidget::renumberOrderedListBlocks() {
 
         ListPrefixInfo info;
         if (parseListPrefix(line, &info) && info.ordered) {
-            if (!inOrderedBlock) {
-                inOrderedBlock = true;
-                order = 1;
+            int absoluteLevel = listIndentLevel(info.indent, indentWidth_);
+            if (baseLevel < 0) {
+                baseLevel = absoluteLevel;
             }
-            std::string desiredPrefix = info.indent + std::to_string(order++) + ". ";
+            int level = std::max(0, absoluteLevel - baseLevel);
+            if (static_cast<int>(nextNumbers.size()) > level + 1) {
+                nextNumbers.resize(static_cast<size_t>(level + 1));
+            }
+            if (static_cast<int>(nextNumbers.size()) <= level) {
+                nextNumbers.resize(static_cast<size_t>(level + 1), 1);
+            }
+
+            int order = nextNumbers[static_cast<size_t>(level)]++;
+            std::string desiredPrefix = orderedListPrefix(info.indent, order, level);
             std::string currentPrefix = line.substr(0, static_cast<size_t>(info.prefixLen));
             if (currentPrefix != desiredPrefix) {
                 textBuffer_->replace(pos, pos + info.prefixLen, desiredPrefix.c_str());
                 lineEnd = textBuffer_->line_end(pos);
             }
+        } else if (parseListPrefix(line, &info)) {
+            int absoluteLevel = listIndentLevel(info.indent, indentWidth_);
+            if (baseLevel < 0) {
+                baseLevel = absoluteLevel;
+            }
+            int level = std::max(0, absoluteLevel - baseLevel);
+            if (static_cast<int>(nextNumbers.size()) >= level + 1) {
+                nextNumbers.resize(static_cast<size_t>(level));
+            }
         } else {
-            inOrderedBlock = false;
+            nextNumbers.clear();
+            baseLevel = -1;
         }
 
         if (lineEnd >= textBuffer_->length()) break;
@@ -3090,12 +3342,18 @@ void HtmlEditorWidget::applyLinePrefixes(
         bool bullet = hasPrefix && !prefixInfo.ordered;
         bool ordered = hasPrefix && prefixInfo.ordered;
         if (removeMatching && bullet) {
-            textBuffer_->remove(lineStartPos + prefixInfo.indentLen,
+            int indentTrim = trailingIndentUnitLength(
+                std::string_view(line.data(), static_cast<size_t>(prefixInfo.indentLen)),
+                indentWidth_);
+            textBuffer_->remove(lineStartPos + prefixInfo.indentLen - indentTrim,
                                 lineStartPos + prefixInfo.prefixLen);
             continue;
         }
         if (removeNumbered && ordered) {
-            textBuffer_->remove(lineStartPos + prefixInfo.indentLen,
+            int indentTrim = trailingIndentUnitLength(
+                std::string_view(line.data(), static_cast<size_t>(prefixInfo.indentLen)),
+                indentWidth_);
+            textBuffer_->remove(lineStartPos + prefixInfo.indentLen - indentTrim,
                                 lineStartPos + prefixInfo.prefixLen);
             continue;
         }
@@ -3109,9 +3367,13 @@ void HtmlEditorWidget::applyLinePrefixes(
         }
 
         std::string prefix = formatter(line, order--);
+        if (!hasPrefix) {
+            prefix = "\t" + prefix;
+        }
         textBuffer_->insert(lineStartPos + prefixInfo.indentLen, prefix.c_str());
     }
 
+    renumberOrderedListBlocks();
     modified_ = true;
     rebuildStyleBuffer();
     emitChanged();
