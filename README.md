@@ -77,4 +77,14 @@ Project layout:
 
 ## License
 
-See [LICENSE](LICENSE).
+Except where a file or directory says otherwise, Verdad-authored code in this
+repository is dual-licensed under `GPL-2.0-only OR Unlicense`. See
+[LICENSE](LICENSE), [LICENSES/GPL-2.0-only.txt](LICENSES/GPL-2.0-only.txt), and
+[LICENSES/Unlicense.txt](LICENSES/Unlicense.txt).
+
+Third-party license texts and notices are bundled under
+[LICENSES/README.md](LICENSES/README.md).
+
+For distributed builds, the important practical constraint is CrossWire SWORD:
+Verdad links against SWORD, so distributions that ship that combined program
+need to comply with GPL-2.0 terms.

@@ -1,0 +1,13 @@
+SQLite
+======
+
+Upstream SQLite is in the public domain.
+
+Source used for this notice:
+
+- `/usr/share/doc/sqlite3/copyright`
+
+Relevant upstream statement:
+
+"The files listed have been put on the public domain by the sqlite3
+contributors."
