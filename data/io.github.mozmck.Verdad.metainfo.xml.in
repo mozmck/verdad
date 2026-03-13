@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>io.github.mozmck.Verdad</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>GPL-2.0-only</project_license>
+  <name>Verdad</name>
+  <summary>Bible study application for CrossWire SWORD modules</summary>
+  <developer_name>Verdad contributors</developer_name>
+  <launchable type="desktop-id">verdad.desktop</launchable>
+  <provides>
+    <binary>verdad</binary>
+  </provides>
+  <url type="homepage">https://github.com/mozmck/verdad</url>
+  <url type="bugtracker">https://github.com/mozmck/verdad/issues</url>
+  <description>
+    <p>
+      Verdad is a desktop Bible study application built around CrossWire SWORD
+      modules. It combines Bible text, commentary, dictionary, search, and
+      note-taking panes in a single study workspace.
+    </p>
+    <p>
+      The application supports parallel Bible columns, commentary and dictionary
+      browsing, SQLite-backed searching, verse tagging, and persistent study
+      tabs. It is designed for local module libraries and offline study.
+    </p>
+  </description>
+  <releases>
+    <release version="@PROJECT_VERSION@" date="2026-03-13" />
+  </releases>
+  <content_rating type="oars-1.1" />
+  <!--
+    Add screenshots later by replacing this comment with entries like:
+    <screenshots>
+      <screenshot type="default">
+        <caption>Main study window</caption>
+        <image>https://example.com/verdad-main.png</image>
+      </screenshot>
+    </screenshots>
+  -->
+</component>

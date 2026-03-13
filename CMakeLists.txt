@@ -168,6 +168,12 @@ configure_file(
     @ONLY
 )
 
+configure_file(
+    "${CMAKE_SOURCE_DIR}/data/io.github.mozmck.Verdad.metainfo.xml.in"
+    "${CMAKE_BINARY_DIR}/io.github.mozmck.Verdad.metainfo.xml"
+    @ONLY
+)
+
 set(VERDAD_BUNDLE_NAME
     "verdad-${PROJECT_VERSION}-${CMAKE_SYSTEM_NAME}-${CMAKE_SYSTEM_PROCESSOR}")
 set(VERDAD_BUNDLE_DIR "${CMAKE_BINARY_DIR}/${VERDAD_BUNDLE_NAME}")
@@ -191,6 +197,9 @@ add_custom_target(copy_runtime_assets ALL
     COMMAND ${CMAKE_COMMAND} -E copy
             "${CMAKE_SOURCE_DIR}/data/verdad_icon_24.png"
             "${CMAKE_BINARY_DIR}/data/verdad_icon_24.png"
+    COMMAND ${CMAKE_COMMAND} -E copy
+            "${CMAKE_BINARY_DIR}/io.github.mozmck.Verdad.metainfo.xml"
+            "${CMAKE_BINARY_DIR}/data/io.github.mozmck.Verdad.metainfo.xml"
     VERBATIM
 )
 add_dependencies(verdad copy_runtime_assets)
@@ -209,6 +218,8 @@ install(DIRECTORY LICENSES
     DESTINATION ${CMAKE_INSTALL_DATADIR}/verdad)
 install(FILES "${CMAKE_BINARY_DIR}/verdad.desktop"
     DESTINATION ${CMAKE_INSTALL_DATADIR}/applications)
+install(FILES "${CMAKE_BINARY_DIR}/io.github.mozmck.Verdad.metainfo.xml"
+    DESTINATION ${CMAKE_INSTALL_DATADIR}/metainfo)
 install(FILES data/verdad_icon_128.png
     DESTINATION ${CMAKE_INSTALL_DATADIR}/pixmaps
     RENAME verdad.png)
@@ -225,6 +236,7 @@ add_custom_command(
     COMMAND ${CMAKE_COMMAND} -E rm -f "${VERDAD_BUNDLE_ARCHIVE}"
     COMMAND ${CMAKE_COMMAND} -E make_directory "${VERDAD_BUNDLE_DIR}/bin"
     COMMAND ${CMAKE_COMMAND} -E make_directory "${VERDAD_BUNDLE_DIR}/share/verdad"
+    COMMAND ${CMAKE_COMMAND} -E make_directory "${VERDAD_BUNDLE_DIR}/share/metainfo"
     COMMAND ${CMAKE_COMMAND} -E copy "$<TARGET_FILE:verdad>"
             "${VERDAD_BUNDLE_DIR}/bin/verdad"
     COMMAND ${CMAKE_COMMAND} -E copy "${CMAKE_SOURCE_DIR}/LICENSE"
@@ -239,6 +251,8 @@ add_custom_command(
             "${VERDAD_BUNDLE_DIR}/share/verdad/verdad_icon_128.png"
     COMMAND ${CMAKE_COMMAND} -E copy "${CMAKE_SOURCE_DIR}/data/verdad_icon_24.png"
             "${VERDAD_BUNDLE_DIR}/share/verdad/verdad_icon_24.png"
+    COMMAND ${CMAKE_COMMAND} -E copy "${CMAKE_BINARY_DIR}/io.github.mozmck.Verdad.metainfo.xml"
+            "${VERDAD_BUNDLE_DIR}/share/metainfo/io.github.mozmck.Verdad.metainfo.xml"
     COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/LICENSES"
             "${VERDAD_BUNDLE_DIR}/share/verdad/LICENSES"
     COMMAND ${CMAKE_COMMAND} -E copy "${CMAKE_SOURCE_DIR}/install.sh"
