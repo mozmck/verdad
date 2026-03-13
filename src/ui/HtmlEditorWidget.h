@@ -175,6 +175,7 @@ private:
     void applyLinePrefixes(const std::function<std::string(const std::string&, int)>& formatter,
                            bool removeMatching,
                            bool removeNumbered);
+    void restoreCaretAfterLinePrefixEdit(int lineStart, int contentOffset);
 
     static void onToolbarButton(Fl_Widget* w, void* data);
     static void onTextModified(int pos,

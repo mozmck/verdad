@@ -3404,13 +3404,40 @@ void HtmlEditorWidget::applyLinePrefixes(
     emitChanged();
 }
 
+void HtmlEditorWidget::restoreCaretAfterLinePrefixEdit(int lineStart, int contentOffset) {
+    if (!textBuffer_ || !editor_) return;
+
+    lineStart = std::clamp(lineStart, 0, textBuffer_->length());
+    int lineEnd = textBuffer_->line_end(lineStart);
+    char* lineText = textBuffer_->text_range(lineStart, lineEnd);
+    std::string line = lineText ? lineText : "";
+    std::free(lineText);
+
+    ListPrefixInfo prefixInfo;
+    bool hasPrefix = parseListPrefix(line, &prefixInfo);
+    int contentStart = lineStart + (hasPrefix ? prefixInfo.prefixLen : 0);
+    editor_->insert_position(std::min(lineEnd, contentStart + std::max(0, contentOffset)));
+    textBuffer_->unselect();
+    editor_->show_insert_position();
+}
+
 void HtmlEditorWidget::toggleUnorderedList() {
     std::string text = bufferText();
     int start = 0;
     int end = 0;
-    if (!selectionRange(start, end) && editor_) {
+    bool hadSelection = selectionRange(start, end);
+    int caretLineStart = 0;
+    int caretContentOffset = 0;
+    if (!hadSelection && editor_) {
         start = editor_->insert_position();
         end = start;
+        caretLineStart = textBuffer_->line_start(start);
+        int caretLineEnd = textBuffer_->line_end(start);
+        std::string caretLine = text.substr(caretLineStart, caretLineEnd - caretLineStart);
+        ListPrefixInfo prefixInfo;
+        bool hasPrefix = parseListPrefix(caretLine, &prefixInfo);
+        int contentStart = caretLineStart + (hasPrefix ? prefixInfo.prefixLen : 0);
+        caretContentOffset = std::max(0, start - contentStart);
     }
     int lineStart = textBuffer_->line_start(start);
     int lineEnd = textBuffer_->line_end(end);
@@ -3430,15 +3457,26 @@ void HtmlEditorWidget::toggleUnorderedList() {
         [](const std::string&, int) { return std::string("- "); },
         allBullets,
         false);
+    if (!hadSelection) restoreCaretAfterLinePrefixEdit(caretLineStart, caretContentOffset);
 }
 
 void HtmlEditorWidget::toggleOrderedList() {
     std::string text = bufferText();
     int start = 0;
     int end = 0;
-    if (!selectionRange(start, end) && editor_) {
+    bool hadSelection = selectionRange(start, end);
+    int caretLineStart = 0;
+    int caretContentOffset = 0;
+    if (!hadSelection && editor_) {
         start = editor_->insert_position();
         end = start;
+        caretLineStart = textBuffer_->line_start(start);
+        int caretLineEnd = textBuffer_->line_end(start);
+        std::string caretLine = text.substr(caretLineStart, caretLineEnd - caretLineStart);
+        ListPrefixInfo prefixInfo;
+        bool hasPrefix = parseListPrefix(caretLine, &prefixInfo);
+        int contentStart = caretLineStart + (hasPrefix ? prefixInfo.prefixLen : 0);
+        caretContentOffset = std::max(0, start - contentStart);
     }
     int lineStart = textBuffer_->line_start(start);
     int lineEnd = textBuffer_->line_end(end);
@@ -3460,6 +3498,7 @@ void HtmlEditorWidget::toggleOrderedList() {
         },
         false,
         allOrdered);
+    if (!hadSelection) restoreCaretAfterLinePrefixEdit(caretLineStart, caretContentOffset);
 }
 
 void HtmlEditorWidget::insertHorizontalRule() {
@@ -3480,7 +3519,10 @@ void HtmlEditorWidget::insertHorizontalRule() {
 }
 
 void HtmlEditorWidget::focusEditor() {
-    if (editor_) editor_->take_focus();
+    if (!editor_) return;
+    editor_->take_focus();
+    editor_->show_insert_position();
+    syncToolbarState();
 }
 
 void HtmlEditorWidget::onToolbarButton(Fl_Widget* w, void* data) {
@@ -3500,6 +3542,8 @@ void HtmlEditorWidget::onToolbarButton(Fl_Widget* w, void* data) {
     else if (w == self->unorderedListButton_) self->toggleUnorderedList();
     else if (w == self->orderedListButton_) self->toggleOrderedList();
     else if (w == self->ruleButton_) self->insertHorizontalRule();
+
+    self->focusEditor();
 }
 
 void HtmlEditorWidget::onTextModified(int pos,
