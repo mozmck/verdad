@@ -907,7 +907,14 @@ bool isListLine(const std::string& line, ListPrefixInfo* info = nullptr) {
 std::string listItemOpenTag(std::string_view indentText,
                             int indentColumns,
                             unsigned char align,
-                            int listLevel) {
+                            int listLevel,
+                            HtmlExportFlavor flavor) {
+    if (flavor == HtmlExportFlavor::Odt) {
+        // LibreOffice imports li-level block styling as list-position changes.
+        // Keep ODT list items plain and let the nested list structure set indent.
+        return "<li>";
+    }
+
     std::string attrs;
     if (listLevel > 0) {
         attrs += " data-verdad-list-level=\"" + std::to_string(listLevel) + "\"";
@@ -915,6 +922,12 @@ std::string listItemOpenTag(std::string_view indentText,
     std::string blockAttrs = blockAttributeString(indentText, indentColumns, align);
     if (!blockAttrs.empty()) attrs += blockAttrs;
     return "<li" + attrs + ">";
+}
+
+std::string odtListItemContentOpenTag() {
+    // Writer keeps list siblings aligned when each item's text lives in a
+    // zero-margin block, but applying alignment here reintroduces bad indents.
+    return "<div style=\"margin: 0;\">";
 }
 
 std::string orderedListOpenTag(int level) {
@@ -1091,7 +1104,8 @@ std::string serializeListRun(const std::vector<EditorLine>& lines,
                              const std::string& text,
                              const std::vector<CharFormat>& formats,
                              int baseSize,
-                             int indentWidth) {
+                             int indentWidth,
+                             HtmlExportFlavor flavor) {
     std::string html;
     std::vector<bool> listStack;
     int baseLevel = -1;
@@ -1155,12 +1169,23 @@ std::string serializeListRun(const std::vector<EditorLine>& lines,
         html += listItemOpenTag(line.residualIndentText,
                                 line.residualIndentColumns,
                                 line.align,
-                                level + 1);
+                                level + 1,
+                                flavor);
+        if (flavor == HtmlExportFlavor::Odt) {
+            html += odtListItemContentOpenTag();
+        }
+        if (flavor == HtmlExportFlavor::Odt &&
+            !line.residualIndentText.empty()) {
+            html += odtIndentTextHtml(line.residualIndentText);
+        }
         std::string itemHtml = serializeInlineRange(text, formats,
                                                     lines[cursor].start + line.prefix.prefixLen,
                                                     lines[cursor].end,
                                                     baseSize);
         html += itemHtml.empty() ? "&nbsp;" : itemHtml;
+        if (flavor == HtmlExportFlavor::Odt) {
+            html += "</div>";
+        }
         currentItemOpen = true;
         ++cursor;
     }
@@ -1211,7 +1236,7 @@ std::string serializeEditorContent(const std::string& text,
         }
 
         if (isListLine(lines[i].text)) {
-            html += serializeListRun(lines, i, text, formats, baseSize, indentWidth);
+            html += serializeListRun(lines, i, text, formats, baseSize, indentWidth, flavor);
             continue;
         }
 
