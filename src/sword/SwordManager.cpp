@@ -123,6 +123,16 @@ bool moduleHasFeature(sword::SWModule* mod, const char* value) {
     return moduleHasConfigValue(mod, "Feature", value);
 }
 
+bool sameBookChapter(const sword::VerseKey* vk,
+                     char testament,
+                     char book,
+                     int chapter) {
+    return vk &&
+           vk->getTestament() == testament &&
+           vk->getBook() == book &&
+           vk->getChapter() == chapter;
+}
+
 class ScopedGlobalOptionOverride {
 public:
     ScopedGlobalOptionOverride(sword::SWMgr* mgr,
@@ -2732,7 +2742,9 @@ std::string SwordManager::getChapterText(const std::string& moduleName,
         renderedChapterHeadingLocked(mod, book, chapter);
     vk->setText(ref.c_str());
 
-    int currentChapter = vk->getChapter();
+    const char currentTestament = vk->getTestament();
+    const char currentBook = vk->getBook();
+    const int currentChapter = vk->getChapter();
     if (chapterHeadingHtml.empty()) {
         html << "<div class=\"chapter-heading\">CHAPTER "
              << chapter << ".</div>\n";
@@ -2779,7 +2791,8 @@ std::string SwordManager::getChapterText(const std::string& moduleName,
         }
     };
 
-    while (!mod->popError() && vk->getChapter() == currentChapter) {
+    while (!mod->popError() &&
+           sameBookChapter(vk, currentTestament, currentBook, currentChapter)) {
         int verse = vk->getVerse();
         std::string verseRef = book + " " + std::to_string(chapter) +
                                ":" + std::to_string(verse);
@@ -3046,14 +3059,16 @@ std::string SwordManager::getCommentaryText(const std::string& moduleName,
         return "<p><i>No commentary available for " + key + "</i></p>";
     }
 
-    int chapter = vk->getChapter();
+    const char testament = vk->getTestament();
+    const char book = vk->getBook();
+    const int chapter = vk->getChapter();
     std::ostringstream html;
     html << "<div class=\"commentary-heading\"><h3>"
          << htmlEscapeAttr(ref.book) << " " << ref.chapter
          << "</h3></div>\n";
     html << "<div class=\"commentary\">\n";
 
-    while (!mod->popError() && vk->getChapter() == chapter) {
+    while (!mod->popError() && sameBookChapter(vk, testament, book, chapter)) {
         int verse = vk->getVerse();
         std::string verseText = commentaryEntryHtml(mod);
         bool separated = verse > 1;
