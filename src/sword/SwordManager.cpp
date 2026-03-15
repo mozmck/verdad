@@ -3417,9 +3417,76 @@ std::vector<std::string> SwordManager::verseReferencesFromLink(
         return parsed;
     };
 
+    auto parseClauseRefs = [&](const std::string& refText,
+                               const std::string& clauseDefaultRef) {
+        auto parseWithDefault = [&](const std::string& candidate) {
+            std::vector<std::string> parsed;
+            sword::ListKey refs = vk.parseVerseList(
+                candidate.c_str(),
+                clauseDefaultRef.empty() ? nullptr : clauseDefaultRef.c_str(),
+                true);
+            for (refs = sword::TOP; !refs.popError(); refs++) {
+                const char* current = refs.getText();
+                if (!current || !*current) continue;
+                std::string normalized = trimCopy(current);
+                if (!normalized.empty()) parsed.push_back(std::move(normalized));
+            }
+            return parsed;
+        };
+
+        std::string normalizedClause = normalizeLinkedVerseRef(refText);
+        std::string repairedClause =
+            repairLinkedVerseRef(normalizedClause, versificationName);
+
+        std::vector<std::string> parsed = parseWithDefault(refText);
+        if (!parsed.empty() &&
+            resolvedRefsMatchExpected(parsed, repairedClause, versificationName)) {
+            return parsed;
+        }
+
+        if (!repairedClause.empty() && repairedClause != refText) {
+            std::vector<std::string> repairedParsed = parseWithDefault(repairedClause);
+            if (!repairedParsed.empty() &&
+                resolvedRefsMatchExpected(repairedParsed,
+                                          repairedClause,
+                                          versificationName)) {
+                return repairedParsed;
+            }
+            if (!repairedParsed.empty()) {
+                return repairedParsed;
+            }
+        }
+
+        if (!parsed.empty()) {
+            return parsed;
+        }
+
+        if (!repairedClause.empty()) {
+            return std::vector<std::string>{repairedClause};
+        }
+        if (!normalizedClause.empty()) {
+            return std::vector<std::string>{normalizedClause};
+        }
+        return std::vector<std::string>{};
+    };
+
     std::string normalizedRawRefs = normalizeLinkedVerseRef(rawRefs);
     std::string repairedRefs =
         repairLinkedVerseRef(normalizedRawRefs, versificationName);
+
+    if (rawRefs.find(';') != std::string::npos) {
+        std::vector<std::string> out;
+        std::string clauseDefaultRef = defaultRef;
+        std::vector<std::string> clauses = splitList(rawRefs, ';');
+        for (const auto& clause : clauses) {
+            std::vector<std::string> clauseRefs =
+                parseClauseRefs(clause, clauseDefaultRef);
+            if (clauseRefs.empty()) continue;
+            clauseDefaultRef = clauseRefs.back();
+            out.insert(out.end(), clauseRefs.begin(), clauseRefs.end());
+        }
+        if (!out.empty()) return out;
+    }
 
     std::vector<std::string> out = parseRefs(rawRefs);
     if (!out.empty() &&
@@ -3631,6 +3698,9 @@ std::vector<SearchResult> SwordManager::search(
         SearchResult result;
         result.key = keyText;
         result.module = moduleName;
+        result.title = keyText;
+        result.resourceType = searchResourceTypeTokenForModuleType(
+            mod->getType() ? mod->getType() : "");
 
         // Get preview text
         mod->setKey(keyText);
@@ -3670,6 +3740,9 @@ std::vector<SearchResult> SwordManager::searchStrongs(
         SearchResult result;
         result.key = keyText;
         result.module = moduleName;
+        result.title = keyText;
+        result.resourceType = searchResourceTypeTokenForModuleType(
+            mod->getType() ? mod->getType() : "");
 
         mod->setKey(keyText);
         std::string rendered = std::string(mod->renderText().c_str());

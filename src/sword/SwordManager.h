@@ -6,6 +6,7 @@
 #include <memory>
 #include <functional>
 #include <map>
+#include <cctype>
 #include <mutex>
 #include <list>
 #include <unordered_map>
@@ -40,11 +41,52 @@ struct ModuleInfo {
     bool hasMorph = false;
 };
 
+inline std::string searchResourceTypeTokenForModuleType(const std::string& type) {
+    std::string lower;
+    lower.reserve(type.size());
+    for (char c : type) {
+        lower.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(c))));
+    }
+
+    if (lower == "biblical texts") return "bible";
+    if (lower == "commentaries") return "commentary";
+    if (lower == "lexicons / dictionaries") return "dictionary";
+    if (lower == "genbook" ||
+        lower.find("genbook") != std::string::npos ||
+        lower.find("general book") != std::string::npos ||
+        lower.find("generic book") != std::string::npos) {
+        return "general_book";
+    }
+
+    return "";
+}
+
+inline bool isSearchableResourceTypeToken(const std::string& token) {
+    return token == "bible" ||
+           token == "commentary" ||
+           token == "dictionary" ||
+           token == "general_book";
+}
+
+inline bool isBibleSearchResourceTypeToken(const std::string& token) {
+    return token == "bible";
+}
+
+inline std::string searchResourceTypeLabel(const std::string& token) {
+    if (token == "bible") return "Bible";
+    if (token == "commentary") return "Commentary";
+    if (token == "dictionary") return "Dictionary";
+    if (token == "general_book") return "General Book";
+    return "Resource";
+}
+
 /// A single search result
 struct SearchResult {
     std::string key;            // e.g. "Genesis 1:1"
     std::string text;           // Preview text
     std::string module;         // Source module name
+    std::string resourceType;   // bible/commentary/dictionary/general_book
+    std::string title;          // Display title/location
 };
 
 struct GeneralBookTocEntry {

@@ -18,6 +18,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <map>
 #include <regex>
 #include <sstream>
 #include <unordered_set>
@@ -358,6 +359,8 @@ std::string truncateSnippetWords(const std::string& text, size_t maxWords = 18) 
 constexpr int kResultRefColumnWidth = 100;
 constexpr int kResultLinePadding = 4;
 constexpr int kResultColumnGap = 8;
+constexpr const char* kCurrentBibleModuleToken = "__current_bible__";
+constexpr const char* kAllModulesToken = "__all_modules__";
 
 struct MarkupChunk {
     std::string text;
@@ -370,6 +373,31 @@ std::string lowerAsciiCopy(std::string text) {
                        return static_cast<char>(std::tolower(c));
                    });
     return text;
+}
+
+std::string htmlEscape(const std::string& text) {
+    std::string out;
+    out.reserve(text.size() + 16);
+    for (char c : text) {
+        switch (c) {
+        case '&':
+            out += "&amp;";
+            break;
+        case '<':
+            out += "&lt;";
+            break;
+        case '>':
+            out += "&gt;";
+            break;
+        case '"':
+            out += "&quot;";
+            break;
+        default:
+            out.push_back(c);
+            break;
+        }
+    }
+    return out;
 }
 
 bool isWordByte(unsigned char c) {
@@ -730,8 +758,12 @@ void SearchResultBrowser::item_draw(void* item,
 SearchPanel::SearchPanel(VerdadApp* app, int X, int Y, int W, int H)
     : Fl_Group(X, Y, W, H)
     , app_(app)
+    , targetChoice_(nullptr)
     , moduleChoice_(nullptr)
+    , resourceTypeChoice_(nullptr)
+    , bibleScopeChoice_(nullptr)
     , searchType_(nullptr)
+    , sortChoice_(nullptr)
     , resultStatus_(nullptr)
     , searchProgress_(nullptr)
     , resultBrowser_(nullptr) {
@@ -740,21 +772,49 @@ SearchPanel::SearchPanel(VerdadApp* app, int X, int Y, int W, int H)
 
     int padding = 2;
     int choiceH = 25;
+    int colGap = 2;
+    int colW = (W - 2 * padding - colGap) / 2;
 
     int cy = Y + padding;
 
-    // Module to search
-    moduleChoice_ = new Fl_Choice(X + padding, cy, (W - 2 * padding) / 2, choiceH);
-    moduleChoice_->tooltip("Module to search in");
+    targetChoice_ = new Fl_Choice(X + padding, cy, colW, choiceH);
+    targetChoice_->add("Bible only");
+    targetChoice_->add("Library only");
+    targetChoice_->add("All resources");
+    targetChoice_->value(0);
+    targetChoice_->tooltip("Search target");
+    targetChoice_->callback(onFilterChoiceChanged, this);
 
-    // Search type
-    searchType_ = new Fl_Choice(X + padding + (W - 2 * padding) / 2 + 2, cy,
-                                 (W - 2 * padding) / 2 - 2, choiceH);
+    moduleChoice_ = new Fl_Choice(X + padding + colW + colGap, cy, colW, choiceH);
+    moduleChoice_->tooltip("Module filter");
+    moduleChoice_->callback(onFilterChoiceChanged, this);
+
+    cy += choiceH + padding;
+
+    resourceTypeChoice_ = new Fl_Choice(X + padding, cy, colW, choiceH);
+    resourceTypeChoice_->tooltip("Resource type filter");
+    resourceTypeChoice_->callback(onFilterChoiceChanged, this);
+
+    searchType_ = new Fl_Choice(X + padding + colW + colGap, cy, colW, choiceH);
     searchType_->add("Multi-word");
     searchType_->add("Exact phrase");
     searchType_->add("Regex");
     searchType_->value(0);
     searchType_->tooltip("Search type");
+
+    cy += choiceH + padding;
+
+    bibleScopeChoice_ = new Fl_Choice(X + padding, cy, colW, choiceH);
+    bibleScopeChoice_->tooltip("Bible scope");
+    bibleScopeChoice_->callback(onFilterChoiceChanged, this);
+
+    sortChoice_ = new Fl_Choice(X + padding + colW + colGap, cy, colW, choiceH);
+    sortChoice_->add("Relevance");
+    sortChoice_->add("Canonical");
+    sortChoice_->add("By module");
+    sortChoice_->value(0);
+    sortChoice_->tooltip("Result ordering");
+    sortChoice_->callback(onSortChoiceChanged, this);
 
     cy += choiceH + padding;
 
@@ -787,7 +847,10 @@ SearchPanel::SearchPanel(VerdadApp* app, int X, int Y, int W, int H)
     end();
     resizable(resultBrowser_);
 
+    populateResourceTypes();
+    populateBibleScopes();
     populateModules();
+    updateFilterControls();
 
     if (app_ && app_->searchIndexer()) {
         indexingIndicatorActive_ = true;
@@ -805,6 +868,15 @@ SearchPanel::~SearchPanel() {
     }
 }
 
+void SearchPanel::refresh() {
+    populateResourceTypes();
+    populateBibleScopes();
+    populateModules();
+    updateFilterControls();
+    updateIndexingIndicator();
+    redraw();
+}
+
 void SearchPanel::setResultLineSpacing(int pixels) {
     if (!resultBrowser_) return;
     const int spacing = std::clamp(pixels, 0, 16);
@@ -816,6 +888,8 @@ void SearchPanel::setResultLineSpacing(int pixels) {
 void SearchPanel::resetResultView() {
     pendingPreviewModule_.clear();
     pendingPreviewKey_.clear();
+    pendingPreviewResourceType_.clear();
+    pendingPreviewTitle_.clear();
     lastPreviewModule_.clear();
     lastPreviewKey_.clear();
     resultDisplayKeys_.clear();
@@ -840,15 +914,11 @@ void SearchPanel::finalizeSearchResults(const std::string& moduleName,
                                         bool indexingPending,
                                         bool fallbackDeferred) {
     statusResultCountOverride_ = -1;
-
-    verse_reference_sort::sortSearchResultsCanonical(
-        app_->swordManager(), moduleName, results_);
+    sortResultsForDisplay(moduleName);
 
     resultDisplayKeys_.clear();
     for (const auto& r : results_) {
-        const std::string& resultModule = r.module.empty() ? moduleName : r.module;
-        std::string shortKey = app_->swordManager().getShortReference(resultModule, r.key);
-        resultDisplayKeys_.push_back(shortKey.empty() ? r.key : shortKey);
+        resultDisplayKeys_.push_back(resultDisplayLabel(r));
     }
     rebuildResultBrowserItems();
 
@@ -859,6 +929,11 @@ void SearchPanel::finalizeSearchResults(const std::string& moduleName,
     if (fallbackDeferred) {
         if (!labelSuffix.empty()) labelSuffix += " ";
         labelSuffix += "(regex requires module index)";
+    }
+    std::string summary = resultSummarySuffix();
+    if (!summary.empty()) {
+        if (!labelSuffix.empty()) labelSuffix += " ";
+        labelSuffix += summary;
     }
     setResultCountLabel(labelSuffix);
 
@@ -871,7 +946,7 @@ void SearchPanel::finalizeSearchResults(const std::string& moduleName,
 
     if (app_ && app_->mainWindow()) {
         std::string mod = trimCopy(moduleName);
-        if (mod.empty()) mod = "module";
+        if (mod.empty()) mod = "search";
         app_->mainWindow()->showTransientStatus(
             "Search (" + mod + "): " + std::to_string(results_.size()) + " result(s)",
             2.6);
@@ -891,7 +966,8 @@ void SearchPanel::cancelActiveSearch() {
     asyncSearchState_ = AsyncSearchState{};
 }
 
-void SearchPanel::startAsyncRegexSearch(const std::string& moduleName,
+void SearchPanel::startAsyncRegexSearch(const SearchIndexer::SearchRequest& request,
+                                        const std::string& moduleName,
                                         const std::string& query,
                                         bool indexingPending,
                                         SearchIndexer* indexer) {
@@ -916,9 +992,9 @@ void SearchPanel::startAsyncRegexSearch(const std::string& moduleName,
     }
 
     cancelAsyncSearch_.store(false);
-    searchThread_ = std::thread([this, moduleName, query, indexingPending, indexer]() {
+    searchThread_ = std::thread([this, request, moduleName, query, indexingPending, indexer]() {
         std::vector<SearchResult> results = indexer->searchRegex(
-            moduleName, query, false, 0,
+            request, query, false, 0,
             [this](const SearchIndexer::RegexSearchProgress& progress) {
                 if (cancelAsyncSearch_.load()) return false;
 
@@ -1025,36 +1101,47 @@ void SearchPanel::search(const std::string& query,
     cancelPendingPreviewUpdate();
     resetHighlightState();
     resetResultView();
+    populateBibleScopes();
+    populateModules();
+    updateFilterControls();
 
     std::string trimmedQuery = trimCopy(query);
     if (trimmedQuery.empty()) return;
 
-    // Module selection precedence:
-    // 1) explicit override (context menu / module-aware action)
-    // 2) search panel module dropdown (manual search)
-    // 3) active Bible tab module (fallback)
-    std::string moduleName = trimCopy(moduleOverride);
-    if (moduleName.empty()) {
-        moduleName = module_choice::selectedModuleName(
-            moduleChoice_, moduleChoiceModules_);
+    std::string moduleName = effectiveModuleSelection(moduleOverride);
+    if (!moduleName.empty()) {
+        setSelectedModule(moduleName);
     }
-    if (moduleName.empty() &&
-        app_->mainWindow() && app_->mainWindow()->biblePane()) {
-        moduleName = trimCopy(app_->mainWindow()->biblePane()->currentModule());
-    }
-    if (moduleName.empty()) {
-        fl_alert("No active Bible module to search.");
-        return;
-    }
+    std::vector<std::string> resourceTypes = effectiveResourceTypes();
+    moduleName = effectiveModuleSelection(moduleOverride);
 
-    module_choice::applyChoiceValue(moduleChoice_, moduleChoiceModules_,
-                                    moduleChoiceLabels_, moduleName);
+    SearchIndexer::SearchRequest request;
+    request.resourceTypes = resourceTypes;
+    request.moduleName = moduleName;
+    if (bibleScopeActive() && bibleScopeChoice_) {
+        switch (bibleScopeChoice_->value()) {
+        case 1:
+            request.bibleScope = SearchIndexer::SearchRequest::BibleScope::OldTestament;
+            break;
+        case 2:
+            request.bibleScope = SearchIndexer::SearchRequest::BibleScope::NewTestament;
+            break;
+        case 3:
+            request.bibleScope = SearchIndexer::SearchRequest::BibleScope::CurrentBook;
+            request.currentBook = currentBibleScopeBook();
+            break;
+        case 0:
+        default:
+            request.bibleScope = SearchIndexer::SearchRequest::BibleScope::All;
+            break;
+        }
+    }
 
     // Get search type
     const bool exactPhrase = (searchType_->value() == 1);
     const bool regexSearch = (searchType_->value() == 2);
     std::string strongsQuery = normalizeStrongsQuery(trimmedQuery);
-    bool isStrongs = !strongsQuery.empty();
+    bool isStrongs = !strongsQuery.empty() && requestCanUseStrongs(resourceTypes);
     if (isStrongs) trimmedQuery = strongsQuery;
 
     if (regexSearch && !isStrongs) {
@@ -1088,17 +1175,33 @@ void SearchPanel::search(const std::string& query,
     bool indexingPending = false;
     bool usedIndexer = false;
     bool fallbackDeferred = false;
-    bool moduleIndexed = false;
     SearchIndexer* indexer = app_->searchIndexer();
     if (indexer) {
-        indexer->queueModuleIndex(moduleName);
-        moduleIndexed = indexer->isModuleIndexed(moduleName);
-        indexingPending = !moduleIndexed;
+        std::vector<std::string> relevantModules;
+        if (!moduleName.empty()) {
+            relevantModules.push_back(moduleName);
+        } else {
+            for (const auto& module : searchableModules_) {
+                std::string resourceType =
+                    searchResourceTypeTokenForModuleType(module.type);
+                if (!resourceTypes.empty() &&
+                    std::find(resourceTypes.begin(), resourceTypes.end(), resourceType) ==
+                        resourceTypes.end()) {
+                    continue;
+                }
+                relevantModules.push_back(module.name);
+            }
+        }
+
+        for (const auto& name : relevantModules) {
+            indexer->queueModuleIndex(name);
+            if (!indexer->isModuleIndexed(name)) indexingPending = true;
+        }
     }
 
-    if (indexer && regexSearch && moduleIndexed && !isStrongs) {
+    if (indexer && regexSearch && !isStrongs) {
         stopIndexingIndicator();
-        startAsyncRegexSearch(moduleName, trimmedQuery, indexingPending, indexer);
+        startAsyncRegexSearch(request, moduleName, trimmedQuery, indexingPending, indexer);
         redraw();
         return;
     }
@@ -1107,18 +1210,20 @@ void SearchPanel::search(const std::string& query,
     if (indexer) {
         usedIndexer = true;
         if (isStrongs) {
-            results_ = indexer->searchStrongs(moduleName, strongsQuery);
+            results_ = indexer->searchStrongs(request, strongsQuery);
         } else if (regexSearch) {
             fallbackDeferred = true;
         } else {
-            results_ = indexer->searchWord(moduleName, trimmedQuery, exactPhrase);
+            results_ = indexer->searchWord(request, trimmedQuery, exactPhrase);
         }
     }
 
     bool runSwordFallback = false;
     int swordSearchType = -1;
     std::string swordQuery = isStrongs ? strongsQuery : trimmedQuery;
-    if (!indexer) {
+    const bool canRunSwordFallback = !moduleName.empty() &&
+                                     (resourceTypes.size() == 1 && resourceTypes.front() == "bible");
+    if (!indexer && canRunSwordFallback) {
         if (isStrongs) {
             runSwordFallback = true;
         } else if (regexSearch) {
@@ -1128,7 +1233,7 @@ void SearchPanel::search(const std::string& query,
             runSwordFallback = true;
             swordSearchType = exactPhrase ? 1 : -1;
         }
-    } else if (isStrongs && results_.empty() && !moduleIndexed) {
+    } else if (isStrongs && results_.empty() && indexingPending && canRunSwordFallback) {
         // Allow immediate Strong's lookups before initial module indexing finishes.
         runSwordFallback = true;
     }
@@ -1138,11 +1243,26 @@ void SearchPanel::search(const std::string& query,
         setResultCountLabel("(searching...)");
         Fl::flush();
 
+        std::string scope;
+        switch (request.bibleScope) {
+        case SearchIndexer::SearchRequest::BibleScope::OldTestament:
+            scope = "Genesis-Malachi";
+            break;
+        case SearchIndexer::SearchRequest::BibleScope::NewTestament:
+            scope = "Matthew-Revelation";
+            break;
+        case SearchIndexer::SearchRequest::BibleScope::CurrentBook:
+            scope = request.currentBook;
+            break;
+        case SearchIndexer::SearchRequest::BibleScope::All:
+            break;
+        }
+
         if (isStrongs) {
             results_ = app_->swordManager().searchStrongs(moduleName, swordQuery);
         } else {
             results_ = app_->swordManager().search(
-                moduleName, swordQuery, swordSearchType, "",
+                moduleName, swordQuery, swordSearchType, scope,
                 [this](float progress) {
                     int pct = static_cast<int>(
                         std::clamp(progress, 0.0f, 1.0f) * 100.0f);
@@ -1167,6 +1287,8 @@ void SearchPanel::search(const std::string& query,
             result.text = highlightPlainSnippetMarkup(
                 snippet, highlightTerms_, highlightPhrase_,
                 regexPattern, phraseMode);
+            if (result.title.empty()) result.title = result.key;
+            if (result.resourceType.empty()) result.resourceType = "bible";
         }
     }
     finalizeSearchResults(moduleName, usedIndexer, indexingPending, fallbackDeferred);
@@ -1198,8 +1320,10 @@ void SearchPanel::showReferenceResults(const std::string& moduleName,
         if (ref.empty()) continue;
 
         SearchResult result;
+        result.resourceType = "bible";
         result.module = module;
         result.key = ref;
+        result.title = ref;
         result.text = truncateSnippetWords(
             app_->swordManager().getVersePlainText(module, ref));
         if (result.text.empty()) result.text = ref;
@@ -1207,8 +1331,7 @@ void SearchPanel::showReferenceResults(const std::string& moduleName,
     }
 
     for (const auto& r : results_) {
-        std::string shortKey = app_->swordManager().getShortReference(r.module, r.key);
-        resultDisplayKeys_.push_back(shortKey.empty() ? r.key : shortKey);
+        resultDisplayKeys_.push_back(resultDisplayLabel(r));
     }
     rebuildResultBrowserItems();
 
@@ -1261,15 +1384,354 @@ const SearchResult* SearchPanel::selectedResult() const {
 void SearchPanel::populateModules() {
     if (!moduleChoice_) return;
 
-    // Search targets Bible modules.
-    auto bibles = app_->swordManager().getBibleModules();
-    module_choice::populateChoice(moduleChoice_, bibles,
-                                  moduleChoiceModules_, moduleChoiceLabels_);
+    const std::string previousSelection =
+        module_choice::selectedModuleName(moduleChoice_, moduleChoiceModules_);
+
+    searchableModules_.clear();
+    if (app_) {
+        searchableModules_ = app_->swordManager().getModules();
+        searchableModules_.erase(
+            std::remove_if(searchableModules_.begin(), searchableModules_.end(),
+                           [](const ModuleInfo& module) {
+                               return module.name.empty() ||
+                                      !isSearchableResourceTypeToken(
+                                          searchResourceTypeTokenForModuleType(module.type));
+                           }),
+            searchableModules_.end());
+    }
+
+    SearchDomain domain = searchDomain();
+    std::vector<std::string> allowedTypes = effectiveResourceTypes();
+
+    moduleChoice_->clear();
+    moduleChoiceModules_.clear();
+    moduleChoiceLabels_.clear();
+
+    if (domain == SearchDomain::BibleOnly) {
+        std::string currentModule;
+        if (app_ && app_->mainWindow() && app_->mainWindow()->biblePane()) {
+            currentModule = trimCopy(app_->mainWindow()->biblePane()->currentModule());
+        }
+        std::string currentLabel = "Current Bible module";
+        if (!currentModule.empty()) currentLabel += " (" + currentModule + ")";
+        moduleChoice_->add(currentLabel.c_str());
+        moduleChoiceModules_.push_back(kCurrentBibleModuleToken);
+        moduleChoiceLabels_.push_back(std::move(currentLabel));
+
+        moduleChoice_->add("All Bible modules");
+        moduleChoiceModules_.push_back(kAllModulesToken);
+        moduleChoiceLabels_.push_back("All Bible modules");
+    } else if (domain == SearchDomain::LibraryOnly) {
+        moduleChoice_->add("All library modules");
+        moduleChoiceModules_.push_back(kAllModulesToken);
+        moduleChoiceLabels_.push_back("All library modules");
+    } else {
+        moduleChoice_->add("All searchable modules");
+        moduleChoiceModules_.push_back(kAllModulesToken);
+        moduleChoiceLabels_.push_back("All searchable modules");
+    }
+
+    for (const auto& module : searchableModules_) {
+        std::string resourceType = searchResourceTypeTokenForModuleType(module.type);
+        if (!allowedTypes.empty() &&
+            std::find(allowedTypes.begin(), allowedTypes.end(), resourceType) ==
+                allowedTypes.end()) {
+            continue;
+        }
+        std::string label = module_choice::formatLabel(module);
+        moduleChoice_->add(module_choice::escapeMenuLabel(label).c_str());
+        moduleChoiceModules_.push_back(module.name);
+        moduleChoiceLabels_.push_back(std::move(label));
+    }
+
+    if (!previousSelection.empty() &&
+        module_choice::applyChoiceValue(moduleChoice_,
+                                        moduleChoiceModules_,
+                                        moduleChoiceLabels_,
+                                        previousSelection)) {
+        return;
+    }
+
+    if (moduleChoice_->size() > 0) {
+        moduleChoice_->value(0);
+        module_choice::syncTooltipToSelection(moduleChoice_, moduleChoiceLabels_);
+    }
+}
+
+void SearchPanel::populateResourceTypes() {
+    if (!resourceTypeChoice_) return;
+
+    const int previous = resourceTypeChoice_->value();
+    resourceTypeChoice_->clear();
+    resourceTypeChoiceTokens_.clear();
+    resourceTypeChoiceLabels_.clear();
+
+    SearchDomain domain = searchDomain();
+    auto addTypeChoice = [&](const std::string& label, const std::string& token) {
+        resourceTypeChoice_->add(label.c_str());
+        resourceTypeChoiceTokens_.push_back(token);
+        resourceTypeChoiceLabels_.push_back(label);
+    };
+
+    if (domain == SearchDomain::BibleOnly) {
+        addTypeChoice("Bible", "bible");
+    } else if (domain == SearchDomain::LibraryOnly) {
+        addTypeChoice("All library types", "");
+        addTypeChoice("Commentaries", "commentary");
+        addTypeChoice("Dictionaries", "dictionary");
+        addTypeChoice("General books", "general_book");
+    } else {
+        addTypeChoice("All types", "");
+        addTypeChoice("Bible", "bible");
+        addTypeChoice("Commentaries", "commentary");
+        addTypeChoice("Dictionaries", "dictionary");
+        addTypeChoice("General books", "general_book");
+    }
+
+    int index = previous;
+    if (index < 0 || index >= resourceTypeChoice_->size()) index = 0;
+    resourceTypeChoice_->value(index);
+}
+
+void SearchPanel::populateBibleScopes() {
+    if (!bibleScopeChoice_) return;
+
+    const int previous = bibleScopeChoice_->value();
+    bibleScopeChoice_->clear();
+    bibleScopeChoice_->add("All Bible");
+    bibleScopeChoice_->add("Old Testament");
+    bibleScopeChoice_->add("New Testament");
+
+    std::string currentBookLabel = "Current Book";
+    std::string currentBook = currentBibleScopeBook();
+    if (!currentBook.empty()) currentBookLabel += " (" + currentBook + ")";
+    bibleScopeChoice_->add(currentBookLabel.c_str());
+
+    int index = previous;
+    if (index < 0 || index >= bibleScopeChoice_->size()) index = 0;
+    bibleScopeChoice_->value(index);
+}
+
+void SearchPanel::updateFilterControls() {
+    if (!resourceTypeChoice_ || !bibleScopeChoice_) return;
+
+    if (searchDomain() == SearchDomain::BibleOnly) {
+        resourceTypeChoice_->deactivate();
+    } else {
+        resourceTypeChoice_->activate();
+    }
+
+    if (bibleScopeActive()) {
+        bibleScopeChoice_->activate();
+    } else {
+        bibleScopeChoice_->deactivate();
+        bibleScopeChoice_->value(0);
+    }
+}
+
+SearchPanel::SearchDomain SearchPanel::searchDomain() const {
+    if (!targetChoice_) return SearchDomain::BibleOnly;
+    switch (targetChoice_->value()) {
+    case 1:
+        return SearchDomain::LibraryOnly;
+    case 2:
+        return SearchDomain::AllResources;
+    case 0:
+    default:
+        return SearchDomain::BibleOnly;
+    }
+}
+
+SearchPanel::ResultSort SearchPanel::resultSort() const {
+    if (!sortChoice_) return ResultSort::Relevance;
+    switch (sortChoice_->value()) {
+    case 1:
+        return ResultSort::Canonical;
+    case 2:
+        return ResultSort::Module;
+    case 0:
+    default:
+        return ResultSort::Relevance;
+    }
+}
+
+std::vector<std::string> SearchPanel::effectiveResourceTypes() const {
+    SearchDomain domain = searchDomain();
+    if (domain == SearchDomain::BibleOnly) {
+        return {"bible"};
+    }
+
+    std::string selectedType;
+    if (resourceTypeChoice_) {
+        int index = resourceTypeChoice_->value();
+        if (index >= 0 && index < static_cast<int>(resourceTypeChoiceTokens_.size())) {
+            selectedType = resourceTypeChoiceTokens_[static_cast<size_t>(index)];
+        }
+    }
+
+    if (!selectedType.empty()) {
+        return {selectedType};
+    }
+    if (domain == SearchDomain::LibraryOnly) {
+        return {"commentary", "dictionary", "general_book"};
+    }
+    return {};
+}
+
+std::string SearchPanel::effectiveModuleSelection(const std::string& moduleOverride) const {
+    std::string explicitModule = trimCopy(moduleOverride);
+    if (!explicitModule.empty()) return explicitModule;
+
+    std::string selected = module_choice::selectedModuleName(moduleChoice_, moduleChoiceModules_);
+    if (selected == kCurrentBibleModuleToken) {
+        if (app_ && app_->mainWindow() && app_->mainWindow()->biblePane()) {
+            return trimCopy(app_->mainWindow()->biblePane()->currentModule());
+        }
+        return "";
+    }
+    if (selected == kAllModulesToken) return "";
+    return selected;
+}
+
+std::string SearchPanel::currentBibleScopeBook() const {
+    if (!app_ || !app_->mainWindow() || !app_->mainWindow()->biblePane()) return "";
+    return trimCopy(app_->mainWindow()->biblePane()->currentBook());
+}
+
+bool SearchPanel::bibleScopeActive() const {
+    return searchDomain() == SearchDomain::BibleOnly;
+}
+
+bool SearchPanel::requestCanUseStrongs(const std::vector<std::string>& resourceTypes) const {
+    if (resourceTypes.empty()) return true;
+    return std::find(resourceTypes.begin(), resourceTypes.end(), "bible") != resourceTypes.end();
+}
+
+bool SearchPanel::resultIsBibleLike(const SearchResult& result) const {
+    return result.resourceType.empty() || result.resourceType == "bible";
+}
+
+std::string SearchPanel::resultLocationLabel(const SearchResult& result) const {
+    if (!result.title.empty()) return result.title;
+    return result.key;
+}
+
+std::string SearchPanel::resultDisplayLabel(const SearchResult& result) const {
+    std::string location = resultLocationLabel(result);
+    if (resultIsBibleLike(result) && app_) {
+        std::string shortKey = app_->swordManager().getShortReference(result.module, result.key);
+        if (!shortKey.empty()) location = shortKey;
+    }
+
+    std::string label = result.module;
+    if (!label.empty()) label += " ";
+    label += "[" + searchResourceTypeLabel(
+        result.resourceType.empty() ? "bible" : result.resourceType) + "]";
+    if (!location.empty()) {
+        label += " ";
+        label += location;
+    }
+    return label;
+}
+
+std::string SearchPanel::resultSummarySuffix() const {
+    if (results_.empty()) return "";
+
+    std::map<std::string, int> typeCounts;
+    std::map<std::string, int> moduleCounts;
+    for (const auto& result : results_) {
+        std::string type = result.resourceType.empty() ? "bible" : result.resourceType;
+        ++typeCounts[type];
+        if (!result.module.empty()) ++moduleCounts[result.module];
+    }
+
+    std::ostringstream out;
+    out << "(";
+    int shownModules = 0;
+    for (const auto& [module, count] : moduleCounts) {
+        if (shownModules > 0) out << ", ";
+        out << module << " " << count;
+        ++shownModules;
+        if (shownModules >= 3) break;
+    }
+    if (static_cast<int>(moduleCounts.size()) > shownModules) {
+        out << ", +" << (static_cast<int>(moduleCounts.size()) - shownModules)
+            << " more";
+    }
+
+    bool firstType = true;
+    for (const auto& [type, count] : typeCounts) {
+        out << (firstType ? "; " : ", ")
+            << searchResourceTypeLabel(type) << " " << count;
+        firstType = false;
+    }
+    out << ")";
+    return out.str();
+}
+
+void SearchPanel::sortResultsForDisplay(const std::string& canonicalModuleHint) {
+    if (results_.size() < 2 || !app_) return;
+
+    switch (resultSort()) {
+    case ResultSort::Relevance:
+        return;
+    case ResultSort::Canonical: {
+        std::vector<SearchResult> verseLike;
+        std::vector<SearchResult> other;
+        verseLike.reserve(results_.size());
+        other.reserve(results_.size());
+        for (const auto& result : results_) {
+            if (resultIsBibleLike(result)) {
+                verseLike.push_back(result);
+            } else {
+                other.push_back(result);
+            }
+        }
+
+        std::string canonicalModule = canonicalModuleHint;
+        if (canonicalModule.empty() &&
+            app_->mainWindow() && app_->mainWindow()->biblePane()) {
+            canonicalModule = trimCopy(app_->mainWindow()->biblePane()->currentModule());
+        }
+        if (!canonicalModule.empty()) {
+            verse_reference_sort::sortSearchResultsCanonical(
+                app_->swordManager(), canonicalModule, verseLike);
+        }
+        std::stable_sort(other.begin(), other.end(),
+                         [](const SearchResult& lhs, const SearchResult& rhs) {
+                             if (lhs.module != rhs.module) return lhs.module < rhs.module;
+                             return lhs.title < rhs.title;
+                         });
+        results_.clear();
+        results_.insert(results_.end(), verseLike.begin(), verseLike.end());
+        results_.insert(results_.end(), other.begin(), other.end());
+        return;
+    }
+    case ResultSort::Module:
+        std::stable_sort(results_.begin(), results_.end(),
+                         [this](const SearchResult& lhs, const SearchResult& rhs) {
+                             if (lhs.module != rhs.module) return lhs.module < rhs.module;
+                             return resultLocationLabel(lhs) < resultLocationLabel(rhs);
+                         });
+        return;
+    }
 }
 
 void SearchPanel::setSelectedModule(const std::string& moduleName) {
     std::string name = trimCopy(moduleName);
     if (!moduleChoice_ || name.empty()) return;
+    for (const auto& module : searchableModules_) {
+        if (module.name != name) continue;
+        if (targetChoice_) {
+            targetChoice_->value(
+                searchResourceTypeTokenForModuleType(module.type) == "bible" ? 0 : 1);
+        }
+        populateResourceTypes();
+        populateBibleScopes();
+        populateModules();
+        updateFilterControls();
+        break;
+    }
     module_choice::applyChoiceValue(moduleChoice_, moduleChoiceModules_,
                                     moduleChoiceLabels_, name);
 }
@@ -1482,6 +1944,13 @@ void SearchPanel::updateIndexingIndicator() {
     }
 
     if (displayModule.empty() || progress < 0 || progress >= 100) {
+        std::string selected = effectiveModuleSelection();
+        std::string error = selected.empty() ? "" : indexer->moduleIndexError(selected);
+        if (!error.empty()) {
+            if (error.size() > 64) error = error.substr(0, 64) + "...";
+            setResultCountLabel("(index error: " + error + ")");
+            return;
+        }
         setResultCountLabel();
         return;
     }
@@ -1506,6 +1975,8 @@ void SearchPanel::cancelPendingPreviewUpdate() {
 void SearchPanel::schedulePreviewUpdate(const SearchResult& result) {
     pendingPreviewModule_ = result.module;
     pendingPreviewKey_ = result.key;
+    pendingPreviewResourceType_ = result.resourceType;
+    pendingPreviewTitle_ = result.title;
     if (previewUpdateScheduled_) {
         Fl::remove_timeout(onDeferredPreviewUpdate, this);
     }
@@ -1525,11 +1996,41 @@ void SearchPanel::applyPendingPreviewUpdate() {
     }
     if (!app_ || !app_->mainWindow() || !app_->mainWindow()->leftPane()) return;
 
-    std::string html = app_->swordManager().getVerseText(
-        pendingPreviewModule_, pendingPreviewKey_);
+    std::string html;
+    std::string resourceType = pendingPreviewResourceType_.empty()
+                                   ? "bible"
+                                   : pendingPreviewResourceType_;
+    if (resourceType == "commentary") {
+        html = app_->swordManager().getCommentaryText(
+            pendingPreviewModule_, pendingPreviewKey_);
+    } else if (resourceType == "dictionary") {
+        html = app_->swordManager().getDictionaryEntry(
+            pendingPreviewModule_, pendingPreviewKey_);
+    } else if (resourceType == "general_book") {
+        html = app_->swordManager().getGeneralBookEntry(
+            pendingPreviewModule_, pendingPreviewKey_);
+    } else {
+        html = app_->swordManager().getVerseText(
+            pendingPreviewModule_, pendingPreviewKey_);
+    }
     html = applyPreviewHighlights(html);
-    app_->mainWindow()->leftPane()->setVersePreviewText(
-        html, pendingPreviewModule_, pendingPreviewKey_);
+    if (resourceType == "bible") {
+        app_->mainWindow()->leftPane()->setVersePreviewText(
+            html, pendingPreviewModule_, pendingPreviewKey_);
+    } else {
+        std::ostringstream wrapped;
+        wrapped << "<div class=\"preview-verse-block\">\n";
+        wrapped << "<div class=\"preview-verse-ref\">"
+                << htmlEscape(pendingPreviewModule_);
+        if (!pendingPreviewTitle_.empty()) {
+            wrapped << " [" << htmlEscape(searchResourceTypeLabel(resourceType))
+                    << "] " << htmlEscape(pendingPreviewTitle_);
+        }
+        wrapped << "</div>\n";
+        wrapped << html << "\n</div>\n";
+        app_->mainWindow()->leftPane()->setPreviewText(
+            wrapped.str(), pendingPreviewModule_, pendingPreviewKey_);
+    }
     lastPreviewModule_ = pendingPreviewModule_;
     lastPreviewKey_ = pendingPreviewKey_;
 }
@@ -1541,17 +2042,34 @@ void SearchPanel::activateResultLine(int line, int mouseButton, bool isDoubleCli
     const SearchResult& result = results_[line - 1];
 
     if (mouseButton == FL_MIDDLE_MOUSE) {
-        app_->mainWindow()->openInNewStudyTab(result.module, result.key);
+        if (resultIsBibleLike(result)) {
+            app_->mainWindow()->openInNewStudyTab(result.module, result.key);
+        }
         return;
     }
 
     if (mouseButton == FL_LEFT_MOUSE && isDoubleClick) {
-        app_->mainWindow()->navigateTo(result.module, result.key);
+        if (result.resourceType == "commentary") {
+            app_->mainWindow()->showCommentary(result.module, result.key);
+        } else if (result.resourceType == "dictionary") {
+            app_->mainWindow()->showDictionaryEntry(result.module, result.key);
+        } else if (result.resourceType == "general_book") {
+            app_->mainWindow()->showGeneralBookEntry(result.module, result.key);
+        } else {
+            app_->mainWindow()->navigateTo(result.module, result.key);
+        }
     }
 }
 
 void SearchPanel::showVerseListContextMenu(int screenX, int screenY) {
     if (!app_ || results_.empty()) return;
+
+    if (std::any_of(results_.begin(), results_.end(),
+                    [this](const SearchResult& result) {
+                        return !resultIsBibleLike(result);
+                    })) {
+        return;
+    }
 
     std::vector<verse_list_copy::Entry> entries;
     entries.reserve(results_.size());
@@ -1582,6 +2100,34 @@ void SearchPanel::onDeferredPreviewUpdate(void* data) {
     self->applyPendingPreviewUpdate();
 }
 
+void SearchPanel::onFilterChoiceChanged(Fl_Widget* /*w*/, void* data) {
+    auto* self = static_cast<SearchPanel*>(data);
+    if (!self) return;
+    self->populateResourceTypes();
+    self->populateBibleScopes();
+    self->populateModules();
+    self->updateFilterControls();
+    self->updateIndexingIndicator();
+    self->redraw();
+}
+
+void SearchPanel::onSortChoiceChanged(Fl_Widget* /*w*/, void* data) {
+    auto* self = static_cast<SearchPanel*>(data);
+    if (!self || self->results_.empty()) return;
+    std::string canonicalModule;
+    if (self->app_ && self->app_->mainWindow() && self->app_->mainWindow()->biblePane()) {
+        canonicalModule = trimCopy(self->app_->mainWindow()->biblePane()->currentModule());
+    }
+    self->sortResultsForDisplay(canonicalModule);
+    self->resultDisplayKeys_.clear();
+    for (const auto& result : self->results_) {
+        self->resultDisplayKeys_.push_back(self->resultDisplayLabel(result));
+    }
+    self->rebuildResultBrowserItems();
+    self->setResultCountLabel(self->resultSummarySuffix());
+    self->redraw();
+}
+
 void SearchPanel::onResultSelect(Fl_Widget* /*w*/, void* data) {
     auto* self = static_cast<SearchPanel*>(data);
 
@@ -1599,9 +2145,16 @@ void SearchPanel::onResultDoubleClick(Fl_Widget* /*w*/, void* data) {
     const SearchResult* result = self->selectedResult();
     if (!result) return;
 
-    // Navigate to the verse
     if (self->app_->mainWindow()) {
-        self->app_->mainWindow()->navigateTo(result->module, result->key);
+        if (result->resourceType == "commentary") {
+            self->app_->mainWindow()->showCommentary(result->module, result->key);
+        } else if (result->resourceType == "dictionary") {
+            self->app_->mainWindow()->showDictionaryEntry(result->module, result->key);
+        } else if (result->resourceType == "general_book") {
+            self->app_->mainWindow()->showGeneralBookEntry(result->module, result->key);
+        } else {
+            self->app_->mainWindow()->navigateTo(result->module, result->key);
+        }
     }
 }
 

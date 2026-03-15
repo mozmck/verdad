@@ -402,6 +402,7 @@ void LeftPane::redrawChrome() {
 
 void LeftPane::refresh() {
     if (modulePanel_) modulePanel_->refresh();
+    if (searchPanel_) searchPanel_->refresh();
     if (tagPanel_) tagPanel_->refresh();
 }
 

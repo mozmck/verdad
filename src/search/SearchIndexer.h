@@ -8,6 +8,7 @@
 #include <mutex>
 #include <string>
 #include <thread>
+#include <unordered_map>
 #include <unordered_set>
 #include <vector>
 
@@ -17,10 +18,25 @@ struct sqlite3;
 
 namespace verdad {
 
-/// SQLite FTS5-backed search index for Bible modules.
+/// SQLite FTS5-backed search index for searchable SWORD modules.
 /// The database only stores module index data (no tags/settings data).
 class SearchIndexer {
 public:
+    struct SearchRequest {
+        enum class BibleScope {
+            All,
+            OldTestament,
+            NewTestament,
+            CurrentBook,
+        };
+
+        std::vector<std::string> resourceTypes;
+        std::string moduleName;
+        BibleScope bibleScope = BibleScope::All;
+        std::string currentBook;
+        int maxResults = 0;
+    };
+
     struct RegexSearchProgress {
         int scanned = 0;
         int total = 0;
@@ -41,6 +57,9 @@ public:
     /// Queue multiple modules for background indexing.
     void queueModuleIndex(const std::vector<std::string>& moduleNames);
 
+    /// Refresh cached searchable-module metadata and prune removed modules.
+    void synchronizeModules(const std::vector<ModuleInfo>& modules);
+
     /// True if module has a completed index entry.
     bool isModuleIndexed(const std::string& moduleName) const;
 
@@ -55,33 +74,52 @@ public:
     /// Returns true if a module is actively indexing.
     bool activeIndexingTask(std::string& moduleName, int& percent) const;
 
-    /// Search plain verse text (multi-word or exact phrase).
+    /// Return the last indexing error for a module, if any.
+    std::string moduleIndexError(const std::string& moduleName) const;
+
+    /// Search plain indexed text (multi-word or exact phrase).
     /// maxResults <= 0 means no result limit.
-    std::vector<SearchResult> searchWord(const std::string& moduleName,
+    std::vector<SearchResult> searchWord(const SearchRequest& request,
                                          const std::string& query,
                                          bool exactPhrase = false,
                                          int maxResults = 0) const;
 
     /// Search for Strong's/Lemma references in indexed XHTML.
     /// maxResults <= 0 means no result limit.
-    std::vector<SearchResult> searchStrongs(const std::string& moduleName,
+    std::vector<SearchResult> searchStrongs(const SearchRequest& request,
                                             const std::string& strongsQuery,
                                             int maxResults = 0) const;
 
-    /// Search plain verse text using a regex pattern.
+    /// Search indexed plain text using a regex pattern.
     /// maxResults <= 0 means no result limit.
-    std::vector<SearchResult> searchRegex(const std::string& moduleName,
+    std::vector<SearchResult> searchRegex(const SearchRequest& request,
                                           const std::string& pattern,
                                           bool caseSensitive = false,
                                           int maxResults = 0,
                                           RegexProgressCallback progressCallback = {}) const;
 
 private:
+    struct IndexTask {
+        std::string moduleName;
+        bool force = false;
+    };
+
+    struct ModuleCatalogEntry {
+        ModuleInfo info;
+        std::string resourceType;
+        std::string moduleToken;
+        std::string signature;
+    };
+
     void workerLoop();
     void indexModuleNow(const std::string& moduleName);
 
-    static std::string buildWordFtsQuery(const std::string& query, bool exactPhrase);
-    static std::string buildStrongsFtsQuery(const std::string& query);
+    static std::string buildFilterFtsQuery(const SearchRequest& request);
+    static std::string buildWordFtsQuery(const SearchRequest& request,
+                                         const std::string& query,
+                                         bool exactPhrase);
+    static std::string buildStrongsFtsQuery(const SearchRequest& request,
+                                            const std::string& query);
 
     static void applyPragmas(sqlite3* db);
     static bool ensureSchema(sqlite3* db);
@@ -94,12 +132,15 @@ private:
     std::thread workerThread_;
     mutable std::mutex workerMutex_;
     std::condition_variable workerCv_;
-    std::deque<std::string> pendingModules_;
-    std::unordered_set<std::string> pendingSet_;
+    std::deque<IndexTask> pendingModules_;
+    std::unordered_map<std::string, bool> pendingForces_;
 
     std::atomic<bool> indexing_{false};
     std::atomic<bool> stopRequested_{false};
     bool stopWorker_ = false;
+
+    mutable std::mutex catalogMutex_;
+    std::unordered_map<std::string, ModuleCatalogEntry> moduleCatalog_;
 
     mutable std::mutex statusMutex_;
     std::string activeModule_;

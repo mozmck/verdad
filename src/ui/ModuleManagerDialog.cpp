@@ -1502,8 +1502,14 @@ void ModuleManagerDialog::installOrUpdateSelectedModule() {
         app_->mainWindow()->refresh();
     }
 
-    // Rebuild indexed Bible module content when needed.
-    if (row.isBible && app_->searchIndexer()) {
+    if (app_) {
+        app_->refreshSearchIndexCatalog(false);
+    }
+
+    // Rebuild indexed searchable module content when needed.
+    if (app_->searchIndexer() &&
+        isSearchableResourceTypeToken(
+            searchResourceTypeTokenForModuleType(row.moduleType))) {
         app_->searchIndexer()->queueModuleIndex(row.moduleName, true);
     }
 

@@ -483,22 +483,7 @@ bool VerdadApp::initialize(int argc, char* argv[]) {
         }
     }
 
-    // Index current Bible first, then queue remaining Bible modules.
-    if (searchIndexer_) {
-        std::string activeModule;
-        if (mainWindow_ && mainWindow_->biblePane()) {
-            activeModule = trimCopy(mainWindow_->biblePane()->currentModule());
-        }
-        if (!activeModule.empty()) {
-            searchIndexer_->queueModuleIndex(activeModule);
-        }
-
-        std::vector<std::string> bibleModules;
-        for (const auto& mod : swordMgr_->getBibleModules()) {
-            if (!mod.name.empty()) bibleModules.push_back(mod.name);
-        }
-        searchIndexer_->queueModuleIndex(bibleModules);
-    }
+    refreshSearchIndexCatalog(true);
 
     return true;
 }
@@ -508,6 +493,33 @@ int VerdadApp::run() {
         mainWindow_->show();
     }
     return Fl::run();
+}
+
+void VerdadApp::refreshSearchIndexCatalog(bool prioritizeActiveBible) {
+    if (!searchIndexer_ || !swordMgr_) return;
+
+    std::vector<ModuleInfo> modules = swordMgr_->getModules();
+    searchIndexer_->synchronizeModules(modules);
+
+    std::string activeModule;
+    if (prioritizeActiveBible && mainWindow_ && mainWindow_->biblePane()) {
+        activeModule = trimCopy(mainWindow_->biblePane()->currentModule());
+        if (!activeModule.empty()) {
+            searchIndexer_->queueModuleIndex(activeModule);
+        }
+    }
+
+    std::vector<std::string> searchableModules;
+    searchableModules.reserve(modules.size());
+    for (const auto& module : modules) {
+        if (module.name.empty()) continue;
+        if (!isSearchableResourceTypeToken(
+                searchResourceTypeTokenForModuleType(module.type))) {
+            continue;
+        }
+        searchableModules.push_back(module.name);
+    }
+    searchIndexer_->queueModuleIndex(searchableModules);
 }
 
 std::string VerdadApp::getDataDir() const {

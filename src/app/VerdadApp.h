@@ -74,6 +74,9 @@ public:
     /// Get the singleton instance
     static VerdadApp* instance() { return instance_; }
 
+    /// Refresh searchable-module metadata and queue background indexing.
+    void refreshSearchIndexCatalog(bool prioritizeActiveBible = false);
+
     /// Current appearance settings.
     const AppearanceSettings& appearanceSettings() const { return appearanceSettings_; }
 

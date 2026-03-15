@@ -1593,9 +1593,25 @@ void MainWindow::showCommentary(const std::string& reference) {
     }
 }
 
+void MainWindow::showCommentary(const std::string& module,
+                                const std::string& reference) {
+    if (rightPane_) {
+        rightPane_->showCommentary(module, reference);
+        if (!applyingTabState_) captureActiveTabState();
+    }
+}
+
 void MainWindow::showDictionary(const std::string& key) {
     if (rightPane_) {
         rightPane_->showDictionaryEntry(key);
+        if (!applyingTabState_) captureActiveTabState();
+    }
+}
+
+void MainWindow::showDictionaryEntry(const std::string& module,
+                                     const std::string& key) {
+    if (rightPane_) {
+        rightPane_->showDictionaryEntry(module, key);
         if (!applyingTabState_) captureActiveTabState();
     }
 }
@@ -1604,6 +1620,14 @@ void MainWindow::showDictionary(const std::string& key,
                                 const std::string& contextModule) {
     if (rightPane_) {
         rightPane_->showDictionaryLookup(key, contextModule);
+        if (!applyingTabState_) captureActiveTabState();
+    }
+}
+
+void MainWindow::showGeneralBookEntry(const std::string& module,
+                                      const std::string& key) {
+    if (rightPane_) {
+        rightPane_->showGeneralBookEntry(module, key);
         if (!applyingTabState_) captureActiveTabState();
     }
 }

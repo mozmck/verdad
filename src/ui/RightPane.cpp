@@ -1,5 +1,6 @@
 #include "ui/RightPane.h"
 #include "app/VerdadApp.h"
+#include "search/SearchIndexer.h"
 #include "ui/BiblePane.h"
 #include "ui/FilterableChoiceWidget.h"
 #include "ui/HtmlEditorWidget.h"
@@ -2559,6 +2560,9 @@ bool RightPane::saveCommentaryEdit(bool exitEditMode) {
 
     commentaryEditor_->setModified(false);
     invalidateCommentaryCache(module, reference);
+    if (app_ && app_->searchIndexer()) {
+        app_->searchIndexer()->queueModuleIndex(module, true);
+    }
 
     if (exitEditMode) {
         commentaryEditing_ = false;

@@ -13,12 +13,12 @@
 #include <string>
 #include <thread>
 #include <vector>
+#include "search/SearchIndexer.h"
 #include "sword/SwordManager.h"
 
 namespace verdad {
 
 class VerdadApp;
-class SearchIndexer;
 class SearchResultBrowser;
 
 /// Panel for displaying search results within the left pane tabs
@@ -26,6 +26,9 @@ class SearchPanel : public Fl_Group {
 public:
     SearchPanel(VerdadApp* app, int X, int Y, int W, int H);
     ~SearchPanel() override;
+
+    /// Refresh module/filter choices after library changes.
+    void refresh();
 
     /// Execute a search and display results
     void search(const std::string& query,
@@ -54,6 +57,18 @@ public:
 private:
     friend class SearchResultBrowser;
 
+    enum class SearchDomain {
+        BibleOnly,
+        LibraryOnly,
+        AllResources
+    };
+
+    enum class ResultSort {
+        Relevance,
+        Canonical,
+        Module
+    };
+
     enum class HighlightMode {
         None,
         Terms,
@@ -79,12 +94,19 @@ private:
     };
 
     // Module to search in
+    Fl_Choice* targetChoice_;
     Fl_Choice* moduleChoice_;
+    Fl_Choice* resourceTypeChoice_;
+    Fl_Choice* bibleScopeChoice_;
     std::vector<std::string> moduleChoiceModules_;
     std::vector<std::string> moduleChoiceLabels_;
+    std::vector<std::string> resourceTypeChoiceTokens_;
+    std::vector<std::string> resourceTypeChoiceLabels_;
+    std::vector<ModuleInfo> searchableModules_;
 
     // Search type selector
     Fl_Choice* searchType_;
+    Fl_Choice* sortChoice_;
 
     // Result status line
     Fl_Box* resultStatus_;
@@ -108,6 +130,8 @@ private:
     bool previewUpdateScheduled_ = false;
     std::string pendingPreviewModule_;
     std::string pendingPreviewKey_;
+    std::string pendingPreviewResourceType_;
+    std::string pendingPreviewTitle_;
     std::string lastPreviewModule_;
     std::string lastPreviewKey_;
     HighlightMode highlightMode_ = HighlightMode::None;
@@ -124,6 +148,21 @@ private:
 
     /// Populate module choices
     void populateModules();
+    void populateResourceTypes();
+    void populateBibleScopes();
+    void updateFilterControls();
+    SearchDomain searchDomain() const;
+    ResultSort resultSort() const;
+    std::vector<std::string> effectiveResourceTypes() const;
+    std::string effectiveModuleSelection(const std::string& moduleOverride = "") const;
+    std::string currentBibleScopeBook() const;
+    bool bibleScopeActive() const;
+    bool requestCanUseStrongs(const std::vector<std::string>& resourceTypes) const;
+    bool resultIsBibleLike(const SearchResult& result) const;
+    std::string resultLocationLabel(const SearchResult& result) const;
+    std::string resultDisplayLabel(const SearchResult& result) const;
+    std::string resultSummarySuffix() const;
+    void sortResultsForDisplay(const std::string& canonicalModuleHint);
     void setResultCountLabel(const std::string& suffix = "");
     void resetResultView();
     void finalizeSearchResults(const std::string& moduleName,
@@ -131,7 +170,8 @@ private:
                                bool indexingPending,
                                bool fallbackDeferred);
     void cancelActiveSearch();
-    void startAsyncRegexSearch(const std::string& moduleName,
+    void startAsyncRegexSearch(const SearchIndexer::SearchRequest& request,
+                               const std::string& moduleName,
                                const std::string& query,
                                bool indexingPending,
                                SearchIndexer* indexer);
@@ -157,6 +197,8 @@ private:
     static void onResultDoubleClick(Fl_Widget* w, void* data);
     static void onIndexingPoll(void* data);
     static void onDeferredPreviewUpdate(void* data);
+    static void onFilterChoiceChanged(Fl_Widget* w, void* data);
+    static void onSortChoiceChanged(Fl_Widget* w, void* data);
 };
 
 } // namespace verdad

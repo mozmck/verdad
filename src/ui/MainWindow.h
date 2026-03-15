@@ -83,13 +83,18 @@ public:
 
     /// Show commentary for a verse in the active workspace tab
     void showCommentary(const std::string& reference);
+    void showCommentary(const std::string& module, const std::string& reference);
 
     /// Show dictionary entry in the active workspace tab
     void showDictionary(const std::string& key);
+    void showDictionaryEntry(const std::string& module, const std::string& key);
 
     /// Show dictionary entry using the best default for the source module.
     void showDictionary(const std::string& key,
                         const std::string& contextModule);
+
+    /// Show a general-book entry in the active workspace tab.
+    void showGeneralBookEntry(const std::string& module, const std::string& key);
 
     /// Queue Mag viewer info update in the left pane preview.
     void showWordInfo(const std::string& word, const std::string& href,
