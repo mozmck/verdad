@@ -293,7 +293,7 @@ std::string shellQuote(const std::string& text) {
 std::string makeUniqueTempDir(const std::string& prefix) {
     std::error_code ec;
     fs::path base = fs::temp_directory_path(ec);
-    if (ec) base = fs::path("/tmp");
+    if (ec) base = fs::path(".");
 
     for (int i = 0; i < 100; ++i) {
         auto now = std::chrono::high_resolution_clock::now().time_since_epoch().count();

@@ -2478,6 +2478,16 @@ bool SwordManager::initialize() {
             bundledSysConfig_->setValue("Install", "DataPath", bundlePath.c_str());
 
             auto& install = bundledSysConfig_->getSection("Install");
+#if defined(__APPLE__)
+            if (bundlePath != "/usr/local/share/sword") {
+                install.insert({sword::SWBuf("AugmentPath"),
+                                sword::SWBuf("/usr/local/share/sword")});
+            }
+            if (bundlePath != "/opt/homebrew/share/sword") {
+                install.insert({sword::SWBuf("AugmentPath"),
+                                sword::SWBuf("/opt/homebrew/share/sword")});
+            }
+#elif !defined(_WIN32)
             if (bundlePath != "/usr/share/sword") {
                 install.insert({sword::SWBuf("AugmentPath"),
                                 sword::SWBuf("/usr/share/sword")});
@@ -2486,6 +2496,7 @@ bool SwordManager::initialize() {
                 install.insert({sword::SWBuf("AugmentPath"),
                                 sword::SWBuf("/usr/local/share/sword")});
             }
+#endif
 
             mgr_ = std::make_unique<sword::SWMgr>(
                 nullptr, bundledSysConfig_.get(), true, filterMgr);

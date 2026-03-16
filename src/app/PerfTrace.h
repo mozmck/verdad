@@ -5,6 +5,7 @@
 #include <cstdarg>
 #include <cstdio>
 #include <cstdlib>
+#include <filesystem>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -25,7 +26,15 @@ inline bool enabled() {
 inline FILE* logFile() {
     static FILE* fp = []() -> FILE* {
         const char* path = std::getenv("VERDAD_PERF_LOG");
-        if (!path || !*path) path = "/tmp/verdad_perf.log";
+        if (!path || !*path) {
+            static std::string defaultPath = [] {
+                std::error_code ec;
+                auto tmp = std::filesystem::temp_directory_path(ec);
+                if (ec) tmp = std::filesystem::path(".");
+                return (tmp / "verdad_perf.log").string();
+            }();
+            path = defaultPath.c_str();
+        }
         FILE* f = std::fopen(path, "a");
         if (!f) return stderr;
         return f;

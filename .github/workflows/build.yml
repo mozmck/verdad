@@ -1,0 +1,189 @@
+name: Build
+
+on:
+  workflow_dispatch:
+
+env:
+  SWORD_SVN_URL: https://crosswire.org/svn/sword/trunk
+
+jobs:
+  # ===========================================================================
+  # Linux
+  # ===========================================================================
+  build-linux:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libsword-dev libsqlite3-dev \
+            libx11-dev libxft-dev libxrender-dev libfontconfig1-dev \
+            libxinerama-dev libxcursor-dev libxfixes-dev \
+            libpng-dev libjpeg-dev zlib1g-dev \
+            cmake g++ pkg-config
+
+      - name: Configure
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        run: cmake --build build -j$(nproc)
+
+      - name: Package (tar.gz)
+        run: cmake --build build --target bundle
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: verdad-linux-x86_64
+          path: build/verdad-*.tar.gz
+
+  # ===========================================================================
+  # macOS (ARM64)
+  # ===========================================================================
+  build-macos:
+    runs-on: macos-14
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install system dependencies
+        run: |
+          brew install pkg-config subversion
+
+      - name: Checkout SWORD source
+        run: svn export "$SWORD_SVN_URL" sword-src --quiet
+
+      - name: Build SWORD from source
+        run: |
+          cmake -S sword-src -B sword-build \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DLIBSWORD_LIBRARY_TYPE=Static \
+            -DSWORD_BUILD_UTILS=No \
+            -DSWORD_BUILD_EXAMPLES=No \
+            -DSWORD_BUILD_TESTS=OFF \
+            -DSWORD_NO_CLUCENE=Yes \
+            -DCMAKE_INSTALL_PREFIX="${{ github.workspace }}/deps/sword" \
+            -DCMAKE_OSX_DEPLOYMENT_TARGET=11.0
+          cmake --build sword-build -j$(sysctl -n hw.logicalcpu)
+          cmake --install sword-build
+
+      - name: Configure Verdad
+        run: |
+          cmake -S . -B build \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_PREFIX_PATH="${{ github.workspace }}/deps/sword" \
+            -DCMAKE_OSX_DEPLOYMENT_TARGET=11.0
+
+      - name: Build Verdad
+        run: cmake --build build -j$(sysctl -n hw.logicalcpu)
+
+      - name: Package (.app bundle)
+        run: cmake --build build --target app
+
+      - name: Copy SWORD data into bundle
+        run: |
+          SWORD_SHARE="${{ github.workspace }}/deps/sword/share/sword"
+          RESOURCES="build/Verdad.app/Contents/Resources/sword"
+          if [ -d "$SWORD_SHARE" ]; then
+            mkdir -p "$RESOURCES"
+            cp -R "$SWORD_SHARE/locales.d" "$RESOURCES/"
+            if [ -d "$SWORD_SHARE/mods.d" ]; then
+              cp -R "$SWORD_SHARE/mods.d" "$RESOURCES/"
+            fi
+          fi
+
+      - name: Create DMG
+        run: cmake --build build --target dmg
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: verdad-macos-arm64
+          path: build/verdad-*.dmg
+
+  # ===========================================================================
+  # Windows (x64, MSVC)
+  # ===========================================================================
+  build-windows:
+    runs-on: windows-latest
+    env:
+      VCPKG_DEFAULT_TRIPLET: x64-windows
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install vcpkg dependencies
+        run: |
+          vcpkg install sqlite3:x64-windows curl:x64-windows zlib:x64-windows
+
+      - name: Install Subversion
+        run: choco install svn -y --no-progress
+
+      - name: Checkout SWORD source
+        shell: cmd
+        run: svn export "%SWORD_SVN_URL%" sword-src --quiet
+
+      - name: Build SWORD from source
+        shell: cmd
+        run: |
+          cmake -S sword-src -B sword-build ^
+            -DCMAKE_BUILD_TYPE=Release ^
+            -DLIBSWORD_LIBRARY_TYPE=Static ^
+            -DSWORD_BUILD_UTILS=No ^
+            -DSWORD_BUILD_EXAMPLES=No ^
+            -DSWORD_BUILD_TESTS=OFF ^
+            -DSWORD_NO_CLUCENE=Yes ^
+            -DCMAKE_TOOLCHAIN_FILE=C:/vcpkg/scripts/buildsystems/vcpkg.cmake ^
+            -DCMAKE_INSTALL_PREFIX=%GITHUB_WORKSPACE%\deps\sword
+          cmake --build sword-build --config Release
+          cmake --install sword-build --config Release
+
+      - name: Configure Verdad
+        shell: cmd
+        run: |
+          cmake -S . -B build ^
+            -DCMAKE_BUILD_TYPE=Release ^
+            -DCMAKE_TOOLCHAIN_FILE=C:/vcpkg/scripts/buildsystems/vcpkg.cmake ^
+            -DCMAKE_PREFIX_PATH=%GITHUB_WORKSPACE%\deps\sword
+
+      - name: Build Verdad
+        run: cmake --build build --config Release
+
+      - name: Package (zip)
+        shell: pwsh
+        run: |
+          # Copy SWORD data into the bundle directory before zipping
+          $swordShare = "${{ github.workspace }}\deps\sword\share\sword"
+          $bundleDir = (Get-ChildItem -Directory build\verdad-*-Windows-* | Select-Object -First 1)
+          if (!$bundleDir) {
+            # winzip hasn't created the dir yet; build it first to establish layout
+            cmake --build build --config Release --target winzip
+            $bundleDir = (Get-ChildItem -Directory build\verdad-*-Windows-* | Select-Object -First 1)
+          }
+          if ($bundleDir -and (Test-Path $swordShare)) {
+            $dest = Join-Path $bundleDir.FullName "sword"
+            Copy-Item -Recurse $swordShare $dest
+          }
+          # Re-create the zip with SWORD data included
+          $bundleName = $bundleDir.Name
+          $zipFile = "build\${bundleName}.zip"
+          Remove-Item -Force $zipFile -ErrorAction SilentlyContinue
+          Push-Location build
+          cmake -E tar cf "$zipFile" --format=zip "$bundleName"
+          Pop-Location
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: verdad-windows-x64
+          path: build/verdad-*.zip

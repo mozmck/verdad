@@ -1,35 +1,46 @@
 #include "sword/SwordPaths.h"
+#include "app/PlatformPaths.h"
 
 #include <filesystem>
 #include <vector>
 
-#ifdef __linux__
-#include <limits.h>
-#include <unistd.h>
-#endif
-
 namespace verdad {
 namespace {
 
-bool looksLikeBundledSwordData(const std::filesystem::path& path) {
+namespace fs = std::filesystem;
+
+bool looksLikeBundledSwordData(const fs::path& path) {
     if (path.empty()) return false;
 
     std::error_code ec;
-    return std::filesystem::is_directory(path / "locales.d", ec) &&
-           std::filesystem::exists(path / "mods.d" / "globals.conf", ec);
+    return fs::is_directory(path / "locales.d", ec) &&
+           fs::exists(path / "mods.d" / "globals.conf", ec);
 }
 
-std::vector<std::filesystem::path> candidateSwordDataDirs() {
-    std::vector<std::filesystem::path> dirs;
+std::vector<fs::path> candidateSwordDataDirs() {
+    std::vector<fs::path> dirs;
 
-#ifdef __linux__
-    char exePath[PATH_MAX];
-    ssize_t pathLen = readlink("/proc/self/exe", exePath, sizeof(exePath) - 1);
-    if (pathLen > 0) {
-        exePath[pathLen] = '\0';
-        std::filesystem::path exeDir = std::filesystem::path(exePath).parent_path();
-        dirs.push_back(exeDir.parent_path() / "share" / "sword");
+    std::string exeDir = executableDir();
+    if (!exeDir.empty()) {
+        fs::path dir(exeDir);
+#if defined(__APPLE__)
+        // Inside .app bundle: Contents/MacOS/../Resources/sword
+        dirs.push_back(dir.parent_path() / "Resources" / "sword");
+#endif
+        // FHS-like install or bundled layout
+        dirs.push_back(dir.parent_path() / "share" / "sword");
+#if defined(_WIN32)
+        // Windows: sword data alongside the executable
+        dirs.push_back(dir / "sword");
+#endif
     }
+
+#if defined(__APPLE__)
+    dirs.push_back("/usr/local/share/sword");
+    dirs.push_back("/opt/homebrew/share/sword");
+#elif !defined(_WIN32)
+    dirs.push_back("/usr/local/share/sword");
+    dirs.push_back("/usr/share/sword");
 #endif
 
     return dirs;

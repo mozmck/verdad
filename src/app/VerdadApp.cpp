@@ -1,4 +1,5 @@
 #include "app/VerdadApp.h"
+#include "app/PlatformPaths.h"
 #include "sword/SwordManager.h"
 #include "search/SearchIndexer.h"
 #include "tags/TagManager.h"
@@ -12,8 +13,6 @@
 
 #include <cstdlib>
 #include <filesystem>
-#include <limits.h>
-#include <sys/stat.h>
 #include <fstream>
 #include <algorithm>
 #include <cctype>
@@ -259,26 +258,35 @@ bool readPreferencesFile(const std::string& prefFile, PreferenceMap& prefsOut) {
 }
 
 bool directoryExists(const std::string& path) {
-    struct stat st;
-    return !path.empty() && stat(path.c_str(), &st) == 0 && S_ISDIR(st.st_mode);
+    if (path.empty()) return false;
+    std::error_code ec;
+    return std::filesystem::is_directory(path, ec);
 }
 
 std::vector<std::string> candidateDataDirs() {
     std::vector<std::string> dirs;
 
-#if defined(__linux__)
-    char exePath[PATH_MAX];
-    ssize_t pathLen = readlink("/proc/self/exe", exePath, sizeof(exePath) - 1);
-    if (pathLen > 0) {
-        exePath[pathLen] = '\0';
-        std::filesystem::path exeDir = std::filesystem::path(exePath).parent_path();
-        dirs.push_back((exeDir / "data").string());
-        dirs.push_back((exeDir.parent_path() / "share" / "verdad").string());
-    }
+    std::string exeDir = executableDir();
+    if (!exeDir.empty()) {
+        namespace fs = std::filesystem;
+        fs::path dir(exeDir);
+#if defined(__APPLE__)
+        // Inside .app bundle: Contents/MacOS/../Resources
+        dirs.push_back((dir.parent_path() / "Resources").string());
 #endif
+        // Build tree or portable install
+        dirs.push_back((dir / "data").string());
+        // FHS-like install
+        dirs.push_back((dir.parent_path() / "share" / "verdad").string());
+    }
 
+#if defined(__APPLE__)
+    dirs.push_back("/usr/local/share/verdad");
+    dirs.push_back("/opt/homebrew/share/verdad");
+#elif !defined(_WIN32)
     dirs.push_back("/usr/local/share/verdad");
     dirs.push_back("/usr/share/verdad");
+#endif
     dirs.push_back("./data");
     return dirs;
 }
@@ -539,6 +547,12 @@ std::string VerdadApp::getConfigDir() const {
         return std::string(path) + "\\Verdad";
     }
     return ".\\verdad_config";
+#elif defined(__APPLE__)
+    const char* home = getenv("HOME");
+    if (home) {
+        return std::string(home) + "/Library/Application Support/Verdad";
+    }
+    return "./verdad_config";
 #else
     const char* home = getenv("HOME");
     if (!home) {

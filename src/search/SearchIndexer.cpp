@@ -1607,6 +1607,16 @@ void SearchIndexer::indexModuleNow(const std::string& moduleName) {
         bundledSysConfig->setValue("Install", "DataPath", bundlePath.c_str());
 
         auto& install = bundledSysConfig->getSection("Install");
+#if defined(__APPLE__)
+        if (bundlePath != "/usr/local/share/sword") {
+            install.insert({sword::SWBuf("AugmentPath"),
+                            sword::SWBuf("/usr/local/share/sword")});
+        }
+        if (bundlePath != "/opt/homebrew/share/sword") {
+            install.insert({sword::SWBuf("AugmentPath"),
+                            sword::SWBuf("/opt/homebrew/share/sword")});
+        }
+#elif !defined(_WIN32)
         if (bundlePath != "/usr/share/sword") {
             install.insert({sword::SWBuf("AugmentPath"),
                             sword::SWBuf("/usr/share/sword")});
@@ -1615,6 +1625,7 @@ void SearchIndexer::indexModuleNow(const std::string& moduleName) {
             install.insert({sword::SWBuf("AugmentPath"),
                             sword::SWBuf("/usr/local/share/sword")});
         }
+#endif
 
         mgr = std::unique_ptr<sword::SWMgr>(new sword::SWMgr(
             nullptr, bundledSysConfig.get(), true,

@@ -26,10 +26,10 @@
 #include <algorithm>
 #include <cctype>
 #include <cstdlib>
+#include <filesystem>
 #include <map>
 #include <sstream>
 #include <set>
-#include <sys/stat.h>
 
 namespace verdad {
 namespace {
@@ -145,13 +145,18 @@ std::string truncateWithEllipsis(const std::string& text, size_t maxLen) {
 
 bool ensureDir(const std::string& path) {
     if (path.empty()) return false;
-    struct stat st;
-    if (stat(path.c_str(), &st) == 0) return S_ISDIR(st.st_mode);
-    return mkdir(path.c_str(), 0755) == 0;
+    std::error_code ec;
+    std::filesystem::create_directories(path, ec);
+    return std::filesystem::is_directory(path, ec);
 }
 
 std::string userHomeDir() {
+#ifdef _WIN32
+    const char* home = std::getenv("USERPROFILE");
+    if (!home) home = std::getenv("HOME");
+#else
     const char* home = std::getenv("HOME");
+#endif
     return home ? std::string(home) : std::string();
 }
 
