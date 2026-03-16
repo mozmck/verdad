@@ -69,6 +69,10 @@ jobs:
         if: steps.cache-sword.outputs.cache-hit != 'true'
         run: git clone --depth=1 https://github.com/bibletime/crosswire-sword-mirror sword-src
 
+      - name: Patch SWORD CMakeLists.txt
+        if: steps.cache-sword.outputs.cache-hit != 'true'
+        run: sed -i '' '/include(FindSubversion)/d; /Subversion_WC_INFO/d' sword-src/CMakeLists.txt
+
       - name: Build SWORD from source
         if: steps.cache-sword.outputs.cache-hit != 'true'
         run: |
@@ -146,6 +150,10 @@ jobs:
       - name: Clone SWORD mirror
         if: steps.cache-sword.outputs.cache-hit != 'true'
         run: git clone --depth=1 https://github.com/bibletime/crosswire-sword-mirror sword-src
+
+      - name: Patch SWORD CMakeLists.txt
+        if: steps.cache-sword.outputs.cache-hit != 'true'
+        run: sed -i '' '/include(FindSubversion)/d; /Subversion_WC_INFO/d' sword-src/CMakeLists.txt
 
       - name: Build SWORD from source
         if: steps.cache-sword.outputs.cache-hit != 'true'
@@ -230,6 +238,13 @@ jobs:
       - name: Clone SWORD mirror
         if: steps.cache-sword.outputs.cache-hit != 'true'
         run: git clone --depth=1 https://github.com/bibletime/crosswire-sword-mirror sword-src
+
+      - name: Patch SWORD CMakeLists.txt
+        if: steps.cache-sword.outputs.cache-hit != 'true'
+        shell: pwsh
+        run: |
+          $f = 'sword-src/CMakeLists.txt'
+          (Get-Content $f) | Where-Object { $_ -notmatch 'FindSubversion|Subversion_WC_INFO' } | Set-Content $f
 
       - name: Build SWORD from source
         if: steps.cache-sword.outputs.cache-hit != 'true'
