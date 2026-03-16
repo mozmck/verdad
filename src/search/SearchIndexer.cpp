@@ -323,25 +323,6 @@ StrongsLanguageHint detectStrongsLanguageHint(const std::string& text) {
     return StrongsLanguageHint::Any;
 }
 
-std::vector<std::string> collectBookNames() {
-    std::vector<std::string> books;
-
-    sword::VerseKey vk;
-    vk.setAutoNormalize(true);
-
-    for (int testament = 1; testament <= 2; ++testament) {
-        vk.setTestament(testament);
-        int maxBook = vk.getBookMax();
-        for (int book = 1; book <= maxBook; ++book) {
-            vk.setBook(book);
-            const char* name = vk.getBookName();
-            if (name && *name) books.emplace_back(name);
-        }
-    }
-
-    return books;
-}
-
 std::string normalizeFilterToken(const std::string& text) {
     std::string out;
     out.reserve(text.size());
@@ -1682,6 +1663,8 @@ void SearchIndexer::indexModuleNow(const std::string& moduleName) {
         if (!target) return;
         std::unique_ptr<sword::SWKey> restoreKey(
             target->getKey() ? target->getKey()->clone() : nullptr);
+        const bool hadSkipConsecutiveLinks = target->isSkipConsecutiveLinks();
+        target->setSkipConsecutiveLinks(true);
         target->setPosition(sword::TOP);
         if (!target->popError()) {
             std::string lastKey;
@@ -1696,6 +1679,7 @@ void SearchIndexer::indexModuleNow(const std::string& moduleName) {
                 if (target->popError()) break;
             }
         }
+        target->setSkipConsecutiveLinks(hadSkipConsecutiveLinks);
         if (restoreKey) {
             target->setKey(*restoreKey);
             target->popError();
@@ -1704,17 +1688,9 @@ void SearchIndexer::indexModuleNow(const std::string& moduleName) {
 
     std::vector<std::string> keyedEntries;
     std::unordered_map<std::string, std::string> entryTitles;
-    std::vector<std::string> bibleBooks;
 
-    if (resourceType == "bible") {
-        bibleBooks = collectBookNames();
-        if (bibleBooks.empty()) {
-            writeError("Bible module has no traversable books.");
-            sqlite3_close(writeDb);
-            return;
-        }
-    } else {
-        std::unique_ptr<sword::SWKey> createdKey(mod->createKey());
+    std::unique_ptr<sword::SWKey> createdKey(mod->createKey());
+    if (resourceType == "general_book") {
         if (auto* treeKey = dynamic_cast<sword::TreeKey*>(createdKey.get())) {
             std::vector<GeneralBookTocEntry> toc;
             treeKey->root();
@@ -1731,34 +1707,19 @@ void SearchIndexer::indexModuleNow(const std::string& moduleName) {
         } else {
             collectSequentialKeys(mod, keyedEntries, entryTitles);
         }
-
-        if (keyedEntries.empty()) {
-            writeError("Module has no traversable entries to index.");
-            sqlite3_close(writeDb);
-            return;
-        }
-    }
-
-    int totalEntries = 0;
-    if (resourceType == "bible") {
-        sword::VerseKey countVk;
-        countVk.setAutoNormalize(true);
-        for (const auto& book : bibleBooks) {
-            std::string chapterRef = book + " 1:1";
-            countVk.setText(chapterRef.c_str());
-            if (countVk.popError()) continue;
-
-            int maxChapter = countVk.getChapterMax();
-            for (int chapter = 1; chapter <= maxChapter; ++chapter) {
-                std::string verseRef = book + " " + std::to_string(chapter) + ":1";
-                countVk.setText(verseRef.c_str());
-                if (countVk.popError()) continue;
-                totalEntries += std::max(1, countVk.getVerseMax());
-            }
-        }
     } else {
-        totalEntries = static_cast<int>(keyedEntries.size());
+        collectSequentialKeys(mod, keyedEntries, entryTitles);
     }
+
+    if (keyedEntries.empty()) {
+        writeError(resourceType == "bible"
+                       ? "Bible module has no traversable entries."
+                       : "Module has no traversable entries to index.");
+        sqlite3_close(writeDb);
+        return;
+    }
+
+    int totalEntries = static_cast<int>(keyedEntries.size());
     if (totalEntries <= 0) totalEntries = 1;
 
     int processedEntries = 0;
@@ -1850,73 +1811,48 @@ void SearchIndexer::indexModuleNow(const std::string& moduleName) {
     std::string failureMessage;
 
     if (resourceType == "bible") {
-        sword::VerseKey vk;
-        vk.setAutoNormalize(true);
-
-        for (const auto& book : bibleBooks) {
+        for (const auto& key : keyedEntries) {
             if (stopRequested_.load()) {
                 cancelled = true;
                 break;
             }
 
-            std::string chapterRef = book + " 1:1";
-            vk.setText(chapterRef.c_str());
-            if (vk.popError()) continue;
+            ++processedEntries;
+            if ((processedEntries % 128) == 0) bumpProgress();
 
-            int maxChapter = vk.getChapterMax();
-            for (int chapter = 1; chapter <= maxChapter; ++chapter) {
-                if (stopRequested_.load()) {
-                    cancelled = true;
-                    break;
-                }
+            mod->setKey(key.c_str());
+            if (mod->popError()) continue;
 
-                std::string verseRef = book + " " + std::to_string(chapter) + ":1";
-                vk.setText(verseRef.c_str());
-                if (vk.popError()) continue;
+            mgr->setGlobalOption("Strong's Numbers", "Off");
+            mgr->setGlobalOption("Morphological Tags", "Off");
+            mgr->setGlobalOption("Footnotes", "Off");
+            mgr->setGlobalOption("Cross-references", "Off");
+            mgr->setGlobalOption("Headings", "Off");
+            const char* plainRaw = mod->stripText();
+            std::string plain = trimCopy(plainRaw ? plainRaw : "");
 
-                int maxVerse = vk.getVerseMax();
-                for (int verse = 1; verse <= maxVerse; ++verse) {
-                    if (stopRequested_.load()) {
-                        cancelled = true;
-                        break;
-                    }
+            mgr->setGlobalOption("Strong's Numbers", "On");
+            mgr->setGlobalOption("Morphological Tags", "On");
+            mgr->setGlobalOption("Footnotes", "On");
+            mgr->setGlobalOption("Cross-references", "On");
+            mgr->setGlobalOption("Headings", "On");
+            std::string xhtml = std::string(mod->renderText().c_str());
 
-                    ++processedEntries;
-                    if ((processedEntries % 128) == 0) bumpProgress();
+            std::string keyText = trimCopy(mod->getKeyText() ? mod->getKeyText() : "");
+            if (keyText.empty()) keyText = key;
 
-                    vk.setVerse(verse);
-                    mod->setKey(vk);
-                    if (mod->popError()) continue;
-
-                    mgr->setGlobalOption("Strong's Numbers", "Off");
-                    mgr->setGlobalOption("Morphological Tags", "Off");
-                    mgr->setGlobalOption("Footnotes", "Off");
-                    mgr->setGlobalOption("Cross-references", "Off");
-                    mgr->setGlobalOption("Headings", "Off");
-                    const char* plainRaw = mod->stripText();
-                    std::string plain = trimCopy(plainRaw ? plainRaw : "");
-
-                    mgr->setGlobalOption("Strong's Numbers", "On");
-                    mgr->setGlobalOption("Morphological Tags", "On");
-                    mgr->setGlobalOption("Footnotes", "On");
-                    mgr->setGlobalOption("Cross-references", "On");
-                    mgr->setGlobalOption("Headings", "On");
-                    std::string xhtml = std::string(mod->renderText().c_str());
-
-                    std::string keyText = vk.getText() ? vk.getText() : verseRef;
-                    std::string title = keyText;
-                    std::string scopeToken = makeBibleScopeToken(vk.getTestament(), book);
-                    if (!insertCurrentRow(scopeToken, title, plain, xhtml, keyText)) {
-                        failed = true;
-                        failureMessage = "Failed to insert indexed Bible verse.";
-                        break;
-                    }
-                }
-
-                if (cancelled || failed) break;
+            std::string title = keyText;
+            std::string scopeToken;
+            if (auto* vk = dynamic_cast<sword::VerseKey*>(mod->getKey())) {
+                const char* bookName = vk->getBookName();
+                scopeToken = makeBibleScopeToken(
+                    vk->getTestament(), bookName ? bookName : "");
             }
-
-            if (cancelled || failed) break;
+            if (!insertCurrentRow(scopeToken, title, plain, xhtml, keyText)) {
+                failed = true;
+                failureMessage = "Failed to insert indexed Bible verse.";
+                break;
+            }
         }
     } else {
         for (const auto& key : keyedEntries) {

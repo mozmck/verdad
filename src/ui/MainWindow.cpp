@@ -671,6 +671,7 @@ void MainWindow::addStudyTab(const std::string& module,
                                 1, 1);
     ctx.tabGroup->copy_label(studyTabLabel(ctx.state).c_str());
     ctx.tabGroup->end();
+    ui_font::applyCurrentAppUiFont(ctx.tabGroup);
     studyTabsWidget_->end();
 
     studyTabs_.push_back(std::move(ctx));
@@ -702,6 +703,7 @@ void MainWindow::duplicateActiveStudyTab() {
                                 1, 1);
     dst.tabGroup->copy_label(studyTabLabel(dst.state).c_str());
     dst.tabGroup->end();
+    ui_font::applyCurrentAppUiFont(dst.tabGroup);
     studyTabsWidget_->end();
 
     studyTabs_.push_back(std::move(dst));
@@ -1960,6 +1962,7 @@ void MainWindow::restoreSessionState(const SessionState& state) {
                                     1, 1);
         ctx.tabGroup->copy_label(studyTabLabel(ctx.state).c_str());
         ctx.tabGroup->end();
+        ui_font::applyCurrentAppUiFont(ctx.tabGroup);
         studyTabsWidget_->end();
 
         studyTabs_.push_back(std::move(ctx));

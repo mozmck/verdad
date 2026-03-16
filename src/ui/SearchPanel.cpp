@@ -812,7 +812,7 @@ SearchPanel::SearchPanel(VerdadApp* app, int X, int Y, int W, int H)
     sortChoice_->add("Relevance");
     sortChoice_->add("Canonical");
     sortChoice_->add("By module");
-    sortChoice_->value(0);
+    sortChoice_->value(1);
     sortChoice_->tooltip("Result ordering");
     sortChoice_->callback(onSortChoiceChanged, this);
 
