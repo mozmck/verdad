@@ -298,15 +298,18 @@ jobs:
             cmake --build build --config Release --target winzip
             $bundleDir = (Get-ChildItem -Directory build\verdad-*-Windows-* | Select-Object -First 1)
           }
+          if (!$bundleDir) {
+            throw "Windows bundle directory was not created."
+          }
           if ($bundleDir -and (Test-Path $swordShare)) {
             $dest = Join-Path $bundleDir.FullName "sword"
             Copy-Item -Recurse $swordShare $dest
           }
           # Re-create the zip with SWORD data included
           $bundleName = $bundleDir.Name
-          $zipFile = "build\${bundleName}.zip"
-          Remove-Item -Force $zipFile -ErrorAction SilentlyContinue
           Push-Location build
+          $zipFile = "${bundleName}.zip"
+          Remove-Item -Force $zipFile -ErrorAction SilentlyContinue
           cmake -E tar cf "$zipFile" --format=zip "$bundleName"
           Pop-Location
 

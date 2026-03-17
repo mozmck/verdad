@@ -4,9 +4,8 @@
 `src/` contains the application code. Major areas are `src/app/` for app startup and preferences, `src/ui/` for FLTK panes and widgets, `src/sword/` for SWORD integration and HTML generation, `src/search/` for SQLite-backed search, and `src/tags/` for verse tagging. Runtime styling lives in `data/master.css`. Reference notes and screenshots live in `doc/`. `cmake/` holds custom find modules, and `libs/litehtml/` is a vendored dependency that should only be changed when the issue is clearly inside litehtml.
 
 ## Local Upstream Sources
-When work touches FLTK, SWORD, BibleTime, or Xiphos behavior or APIs, check these local source trees before using the web. Only fall back to web lookup if the local tree is missing or clearly does not answer the question.
+When work touches SWORD, BibleTime, or Xiphos behavior or APIs, check these local source trees before using the web. Only fall back to web lookup if the local tree is missing or clearly does not answer the question.
 
-- FLTK: `/home/moses/Projects/CandCNC/software/fltk-1.4.3`
 - Xiphos: `/home/moses/Projects/bible/xiphos`
 - BibleTime: `/home/moses/Projects/bible/bibletime`
 - SWORD: `/home/moses/Projects/bible/sword`
@@ -15,7 +14,7 @@ When work touches FLTK, SWORD, BibleTime, or Xiphos behavior or APIs, check thes
 Configure a local build with:
 
 ```bash
-cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
 ```
 
 Build with:
