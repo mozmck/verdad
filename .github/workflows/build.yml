@@ -239,7 +239,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: deps/sword
-          key: sword-windows-x64-static-md-${{ steps.sword-sha.outputs.sha }}
+          key: sword-windows-x64-static-md-v2-${{ steps.sword-sha.outputs.sha }}
 
       - name: Clone SWORD mirror
         if: steps.cache-sword.outputs.cache-hit != 'true'
@@ -258,6 +258,8 @@ jobs:
         run: |
           cmake -S sword-src -B sword-build ^
             -DCMAKE_BUILD_TYPE=Release ^
+            -DCMAKE_POLICY_DEFAULT_CMP0091=NEW ^
+            -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreadedDLL ^
             -DCMAKE_POLICY_VERSION_MINIMUM=3.5 ^
             -DCMAKE_CXX_STANDARD=11 ^
             -DLIBSWORD_LIBRARY_TYPE=Static ^
@@ -280,6 +282,7 @@ jobs:
         run: |
           cmake -S . -B build ^
             -DCMAKE_BUILD_TYPE=Release ^
+            -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreadedDLL ^
             -DVCPKG_TARGET_TRIPLET=x64-windows-static-md ^
             -DCMAKE_TOOLCHAIN_FILE=C:/vcpkg/scripts/buildsystems/vcpkg.cmake ^
             -DCMAKE_PREFIX_PATH=%GITHUB_WORKSPACE%\deps\sword
