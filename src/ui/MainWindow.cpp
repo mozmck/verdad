@@ -47,6 +47,7 @@ namespace {
 
 namespace fs = std::filesystem;
 constexpr const char* kVerdadProjectUrl = "https://github.com/mozmck/verdad";
+constexpr int kDefaultMaxCachedTabDocs = 4;
 
 std::string trimCopy(const std::string& s) {
     size_t start = 0;
@@ -60,6 +61,21 @@ std::string trimCopy(const std::string& s) {
         --end;
     }
     return s.substr(start, end - start);
+}
+
+int configuredMaxCachedTabDocs() {
+    static const int value = []() {
+        const char* env = std::getenv("VERDAD_MAX_CACHED_TAB_DOCS");
+        if (!env || !*env) return kDefaultMaxCachedTabDocs;
+
+        char* end = nullptr;
+        long parsed = std::strtol(env, &end, 10);
+        if (end == env) return kDefaultMaxCachedTabDocs;
+        if (parsed < 0) return 0;
+        if (parsed > 1024) return 1024;
+        return static_cast<int>(parsed);
+    }();
+    return value;
 }
 
 std::string htmlEscape(const std::string& text) {
@@ -602,6 +618,10 @@ MainWindow::~MainWindow() {
         Fl::remove_timeout(onHoverDelayTimeout, this);
         hoverDelayScheduled_ = false;
     }
+    if (tabCacheEvictionScheduled_) {
+        Fl::remove_timeout(onDeferredTabSnapshotEviction, this);
+        tabCacheEvictionScheduled_ = false;
+    }
     if (documentRestoreScheduled_) {
         Fl::remove_timeout(onDeferredDocumentRestore, this);
         documentRestoreScheduled_ = false;
@@ -826,8 +846,13 @@ void MainWindow::activateStudyTab(int index) {
     perf::logf("activateStudyTab from=%d to=%d captureActiveTabState: %.3f ms",
                from, index, step.elapsedMs());
     step.reset();
-    captureActiveTabDisplayBuffers();
-    evictOldTabSnapshots();
+    const bool cacheDocs = configuredMaxCachedTabDocs() > 0;
+    if (cacheDocs) {
+        captureActiveTabDisplayBuffers();
+        scheduleTabSnapshotEviction();
+    } else {
+        evictOldTabSnapshots();
+    }
     perf::logf("activateStudyTab from=%d to=%d captureActiveTabDisplayBuffers: %.3f ms",
                from, index, step.elapsedMs());
     step.reset();
@@ -1196,12 +1221,41 @@ void MainWindow::captureActiveTabDisplayBuffers() {
 }
 
 void MainWindow::evictOldTabSnapshots() {
+    const int maxCachedDocs = configuredMaxCachedTabDocs();
+    auto clearBuffer = [](auto& buf) {
+        buf.doc.reset();
+        buf.html.clear();
+        buf.baseUrl.clear();
+        buf.scrollY = 0;
+        buf.contentHeight = 0;
+        buf.renderWidth = 0;
+        buf.scrollbarVisible = false;
+        buf.valid = false;
+    };
+
+    if (maxCachedDocs <= 0) {
+        for (int i = 0; i < static_cast<int>(studyTabs_.size()); ++i) {
+            if (i == activeStudyTab_) continue;
+            auto& t = studyTabs_[i];
+            if (t.hasBibleBuffer) {
+                clearBuffer(t.bibleBuffer);
+                t.hasBibleBuffer = false;
+            }
+            if (t.hasRightBuffer) {
+                clearBuffer(t.rightBuffer.commentary);
+                clearBuffer(t.rightBuffer.dictionary);
+                t.hasRightBuffer = false;
+            }
+        }
+        return;
+    }
+
     // Count tabs that hold a cached litehtml doc (bible or right pane).
     int cached = 0;
     for (const auto& t : studyTabs_) {
         if (t.hasBibleBuffer || t.hasRightBuffer) ++cached;
     }
-    if (cached <= kMaxCachedTabDocs) return;
+    if (cached <= maxCachedDocs) return;
 
     // Build list of candidate tabs sorted by lastUsed (oldest first).
     std::vector<int> candidates;
@@ -1217,20 +1271,18 @@ void MainWindow::evictOldTabSnapshots() {
               });
 
     // Evict docs from oldest tabs until we're within budget.
-    // Keep HTML + scroll position so re-render on switch is possible.
+    // The uncached restore path rebuilds from study state, so once a tab falls
+    // out of the doc cache budget we can drop the stored HTML as well.
     for (int idx : candidates) {
-        if (cached <= kMaxCachedTabDocs) break;
+        if (cached <= maxCachedDocs) break;
         auto& t = studyTabs_[idx];
-        auto clearDoc = [](HtmlDocBuffer& buf) {
-            buf.doc.reset();
-        };
         if (t.hasBibleBuffer) {
-            clearDoc(t.bibleBuffer);
+            clearBuffer(t.bibleBuffer);
             t.hasBibleBuffer = false;
         }
         if (t.hasRightBuffer) {
-            clearDoc(t.rightBuffer.commentary);
-            clearDoc(t.rightBuffer.dictionary);
+            clearBuffer(t.rightBuffer.commentary);
+            clearBuffer(t.rightBuffer.dictionary);
             t.hasRightBuffer = false;
         }
         --cached;
@@ -1942,6 +1994,20 @@ void MainWindow::onStatusPoll(void* data) {
     self->updateStatusBar();
     Fl::repeat_timeout(0.25, onStatusPoll, self);
     self->statusPollScheduled_ = true;
+}
+
+void MainWindow::scheduleTabSnapshotEviction() {
+    if (tabCacheEvictionScheduled_) return;
+    Fl::add_timeout(0.0, onDeferredTabSnapshotEviction, this);
+    tabCacheEvictionScheduled_ = true;
+}
+
+void MainWindow::onDeferredTabSnapshotEviction(void* data) {
+    auto* self = static_cast<MainWindow*>(data);
+    if (!self) return;
+
+    self->tabCacheEvictionScheduled_ = false;
+    self->evictOldTabSnapshots();
 }
 
 int MainWindow::handle(int event) {

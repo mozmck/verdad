@@ -2064,7 +2064,18 @@ bool RightPane::lookupCommentaryCache(const std::string& cacheKey,
 
 void RightPane::storeCommentaryCache(const std::string& cacheKey,
                                      const std::string& html) {
-    commentaryChapterCache_[cacheKey] = html;
+    auto cachedBytes = [](const std::string& key, const std::string& value) {
+        return key.size() + value.size();
+    };
+
+    auto existing = commentaryChapterCache_.find(cacheKey);
+    if (existing != commentaryChapterCache_.end()) {
+        commentaryChapterCacheBytes_ -= cachedBytes(existing->first, existing->second);
+        existing->second = html;
+    } else {
+        commentaryChapterCache_.emplace(cacheKey, html);
+    }
+    commentaryChapterCacheBytes_ += cachedBytes(cacheKey, html);
 
     auto ordIt = std::find(commentaryChapterCacheOrder_.begin(),
                            commentaryChapterCacheOrder_.end(),
@@ -2074,23 +2085,37 @@ void RightPane::storeCommentaryCache(const std::string& cacheKey,
     }
     commentaryChapterCacheOrder_.push_back(cacheKey);
 
-    while (commentaryChapterCacheOrder_.size() > kCommentaryChapterCacheLimit) {
+    while (commentaryChapterCacheOrder_.size() > kCommentaryChapterCacheLimit ||
+           commentaryChapterCacheBytes_ > kCommentaryChapterCacheByteLimit) {
         const std::string evict = commentaryChapterCacheOrder_.front();
         commentaryChapterCacheOrder_.pop_front();
-        commentaryChapterCache_.erase(evict);
+        auto it = commentaryChapterCache_.find(evict);
+        if (it == commentaryChapterCache_.end()) continue;
+        commentaryChapterCacheBytes_ -= cachedBytes(it->first, it->second);
+        commentaryChapterCache_.erase(it);
     }
 }
 
 void RightPane::invalidateCommentaryCache(const std::string& moduleName,
                                           const std::string& reference) {
+    auto cachedBytes = [](const std::string& key, const std::string& value) {
+        return key.size() + value.size();
+    };
+
     int verse = 0;
     std::string chapterKey = commentaryChapterKeyForReference(reference, &verse);
     if (chapterKey.empty()) {
         commentaryChapterCache_.clear();
         commentaryChapterCacheOrder_.clear();
+        commentaryChapterCacheBytes_ = 0;
     } else {
         std::string cacheKey = moduleName + "|" + chapterKey;
-        commentaryChapterCache_.erase(cacheKey);
+        auto cacheIt = commentaryChapterCache_.find(cacheKey);
+        if (cacheIt != commentaryChapterCache_.end()) {
+            commentaryChapterCacheBytes_ -=
+                cachedBytes(cacheIt->first, cacheIt->second);
+            commentaryChapterCache_.erase(cacheIt);
+        }
         auto it = std::find(commentaryChapterCacheOrder_.begin(),
                             commentaryChapterCacheOrder_.end(),
                             cacheKey);

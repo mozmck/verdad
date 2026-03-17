@@ -221,7 +221,6 @@ private:
     int activeStudyTab_ = -1;
     Fl_Widget* appliedStudyTabGroup_ = nullptr;
     uint64_t tabUseCounter_ = 0;
-    static constexpr int kMaxCachedTabDocs = 4;
     static constexpr int kMaxStudyHistoryEntries = 30;
     bool applyingTabState_ = false;
     bool suppressHistoryRecording_ = false;
@@ -234,6 +233,7 @@ private:
     PendingWordInfo pendingWordInfo_;
     bool hoverDelayScheduled_ = false;
 
+    bool tabCacheEvictionScheduled_ = false;
     bool statusPollScheduled_ = false;
     std::string lastStatusBarText_;
     std::string transientStatusText_;
@@ -288,6 +288,12 @@ private:
 
     /// Periodic status poll callback.
     static void onStatusPoll(void* data);
+
+    /// Schedule eviction of old tab render buffers after the current UI work.
+    void scheduleTabSnapshotEviction();
+
+    /// Timeout callback used to evict old tab render buffers after tab switch.
+    static void onDeferredTabSnapshotEviction(void* data);
 
     /// Apply the currently queued word info to the MAG viewer.
     void applyPendingWordInfo();
