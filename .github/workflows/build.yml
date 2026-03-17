@@ -216,7 +216,7 @@ jobs:
   build-windows:
     runs-on: windows-latest
     env:
-      VCPKG_DEFAULT_TRIPLET: x64-windows-static
+      VCPKG_DEFAULT_TRIPLET: x64-windows-static-md
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -225,7 +225,7 @@ jobs:
 
       - name: Install vcpkg dependencies
         run: |
-          vcpkg install sqlite3:x64-windows-static curl:x64-windows-static zlib:x64-windows-static bzip2:x64-windows-static
+          vcpkg install sqlite3:x64-windows-static-md curl:x64-windows-static-md zlib:x64-windows-static-md bzip2:x64-windows-static-md
 
       - name: Get SWORD mirror commit SHA
         id: sword-sha
@@ -239,7 +239,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: deps/sword
-          key: sword-windows-x64-static-${{ steps.sword-sha.outputs.sha }}
+          key: sword-windows-x64-static-md-${{ steps.sword-sha.outputs.sha }}
 
       - name: Clone SWORD mirror
         if: steps.cache-sword.outputs.cache-hit != 'true'
@@ -266,9 +266,10 @@ jobs:
             -DSWORD_BUILD_TESTS=OFF ^
             -DSWORD_NO_CLUCENE=Yes ^
             -DSWORD_NO_XZ=Yes ^
-            -DZLIB_ROOT=C:/vcpkg/installed/x64-windows-static ^
-            -DCURL_ROOT=C:/vcpkg/installed/x64-windows-static ^
-            -DBZip2_ROOT=C:/vcpkg/installed/x64-windows-static ^
+            -DZLIB_ROOT=C:/vcpkg/installed/x64-windows-static-md ^
+            -DCURL_ROOT=C:/vcpkg/installed/x64-windows-static-md ^
+            -DBZip2_ROOT=C:/vcpkg/installed/x64-windows-static-md ^
+            -DVCPKG_TARGET_TRIPLET=x64-windows-static-md ^
             -DCMAKE_TOOLCHAIN_FILE=C:/vcpkg/scripts/buildsystems/vcpkg.cmake ^
             -DCMAKE_INSTALL_PREFIX=%GITHUB_WORKSPACE%\deps\sword
           cmake --build sword-build --config Release
@@ -279,7 +280,7 @@ jobs:
         run: |
           cmake -S . -B build ^
             -DCMAKE_BUILD_TYPE=Release ^
-            -DVCPKG_TARGET_TRIPLET=x64-windows-static ^
+            -DVCPKG_TARGET_TRIPLET=x64-windows-static-md ^
             -DCMAKE_TOOLCHAIN_FILE=C:/vcpkg/scripts/buildsystems/vcpkg.cmake ^
             -DCMAKE_PREFIX_PATH=%GITHUB_WORKSPACE%\deps\sword
 
