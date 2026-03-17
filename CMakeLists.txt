@@ -134,6 +134,8 @@ add_executable(verdad ${SOURCES} ${HEADERS})
 
 if(WIN32)
     set_target_properties(verdad PROPERTIES WIN32_EXECUTABLE TRUE)
+    # Prevent windows.h from defining min/max macros that conflict with std::min/std::max
+    target_compile_definitions(verdad PRIVATE NOMINMAX)
 endif()
 
 target_include_directories(verdad PRIVATE

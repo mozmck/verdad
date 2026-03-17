@@ -497,7 +497,8 @@ std::string readLexiconEntry(sword::SWModule* lex, const std::string& key) {
     const char* resolvedKey = lex->getKeyText();
     if (!resolvedKey || !keyMatchesRequest(key, resolvedKey)) return "";
 
-    return cleanupLexiconText(lex->stripText());
+    const char* stripped = lex->stripText();
+    return cleanupLexiconText(stripped ? stripped : "");
 }
 
 char toLowerAsciiChar(char c) {
