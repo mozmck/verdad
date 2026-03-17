@@ -70,7 +70,15 @@ if(NOT WIN32)
 endif()
 
 # SQLite3 (FTS5 search index)
-find_package(SQLite3 REQUIRED)
+# vcpkg installs sqlite3 under the 'unofficial-sqlite3' cmake package name.
+if(WIN32)
+    find_package(unofficial-sqlite3 CONFIG REQUIRED)
+    if(NOT TARGET SQLite::SQLite3)
+        add_library(SQLite::SQLite3 ALIAS unofficial::sqlite3::sqlite3)
+    endif()
+else()
+    find_package(SQLite3 REQUIRED)
+endif()
 
 # litehtml (built as submodule)
 set(LITEHTML_BUILD_TESTING OFF CACHE BOOL "Disable litehtml tests")
