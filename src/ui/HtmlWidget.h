@@ -238,7 +238,11 @@ private:
         bool italic;
         int decorationLine;
     };
-    std::map<litehtml::uint_ptr, FontInfo> fonts_;
+    struct CachedFont {
+        FontInfo info;
+        litehtml::font_metrics metrics;
+    };
+    std::map<litehtml::uint_ptr, std::shared_ptr<const CachedFont>> fonts_;
     litehtml::uint_ptr nextFontId_ = 1;
 
     // Scrollbar
@@ -295,7 +299,7 @@ private:
     void renderDocument();
 
     /// Update scrollbar range
-    void updateScrollbar();
+    void updateScrollbar(bool layoutFresh = false);
 
     /// Static scrollbar callback
     static void scrollbarCallback(Fl_Widget* w, void* data);

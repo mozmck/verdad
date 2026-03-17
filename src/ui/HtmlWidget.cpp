@@ -100,10 +100,22 @@ std::string normalizeFontVariantFamily(const char* name, bool stripRegularSuffix
 
 Fl_Font findFontVariant(Fl_Font baseFont, int targetAttrs) {
     constexpr Fl_Font kInvalidFont = static_cast<Fl_Font>(-1);
+    static std::map<std::string, Fl_Font> variantCache;
+
+    const std::string cacheKey =
+        std::to_string(static_cast<int>(baseFont)) + ":" +
+        std::to_string(targetAttrs);
+    auto cached = variantCache.find(cacheKey);
+    if (cached != variantCache.end()) {
+        return cached->second;
+    }
 
     int baseAttrs = 0;
     const char* baseName = Fl::get_font_name(baseFont, &baseAttrs);
-    if (!baseName || !baseName[0]) return kInvalidFont;
+    if (!baseName || !baseName[0]) {
+        variantCache.emplace(cacheKey, kInvalidFont);
+        return kInvalidFont;
+    }
 
     Fl_Font count = Fl::set_fonts("-*");
     for (bool stripRegularSuffixes : {false, true}) {
@@ -113,11 +125,13 @@ Fl_Font findFontVariant(Fl_Font baseFont, int targetAttrs) {
             const char* name = Fl::get_font_name(f, &attrs);
             if (!name || !name[0] || attrs != targetAttrs) continue;
             if (normalizeFontVariantFamily(name, stripRegularSuffixes) == familyKey) {
+                variantCache.emplace(cacheKey, f);
                 return f;
             }
         }
     }
 
+    variantCache.emplace(cacheKey, kInvalidFont);
     return kInvalidFont;
 }
 
@@ -156,6 +170,15 @@ Fl_Font styledFontVariant(Fl_Font base, int weight, bool italic) {
     }
 
     return base;
+}
+
+std::string fontDescriptionCacheKey(const litehtml::font_description& descr) {
+    std::string key = descr.family;
+    key += ":sz=" + std::to_string(descr.size);
+    key += ":st=" + std::to_string(static_cast<int>(descr.style));
+    key += ":w=" + std::to_string(descr.weight);
+    key += ":dl=" + std::to_string(descr.decoration_line);
+    return key;
 }
 
 bool containsWhitespace(const std::string& text) {
@@ -1134,7 +1157,7 @@ void HtmlWidget::setHtml(const std::string& html, const std::string& baseUrl) {
     renderDocument();
     perf::logf("HtmlWidget::setHtml renderDocument: %.3f ms", step.elapsedMs());
     step.reset();
-    updateScrollbar();
+    updateScrollbar(true);
     perf::logf("HtmlWidget::setHtml updateScrollbar: %.3f ms", step.elapsedMs());
     redraw();
 }
@@ -1172,7 +1195,7 @@ void HtmlWidget::setAllowHorizontalScroll(bool allow) {
 
     if (doc_) {
         renderDocument();
-        updateScrollbar();
+        updateScrollbar(true);
     } else {
         redraw();
     }
@@ -1204,7 +1227,7 @@ void HtmlWidget::updateElementClassById(const std::string& removeId,
     root->refresh_styles();
     root->compute_styles();
     renderDocument();
-    updateScrollbar();
+    updateScrollbar(true);
     setScrollX(oldScrollX);
     setScrollY(oldScroll);
     redraw();
@@ -1386,7 +1409,7 @@ void HtmlWidget::restoreSnapshot(const Snapshot& snapshot) {
         if (doc_) {
             renderDocument();
         }
-        updateScrollbar();
+        updateScrollbar(true);
     }
     setScrollX(scrollX_);
     setScrollY(scrollY_);
@@ -1459,7 +1482,7 @@ void HtmlWidget::restoreSnapshot(Snapshot&& snapshot) {
         if (doc_) {
             renderDocument();
         }
-        updateScrollbar();
+        updateScrollbar(true);
     }
     setScrollX(scrollX_);
     setScrollY(scrollY_);
@@ -1477,7 +1500,7 @@ void HtmlWidget::renderDocument() {
     contentHeight_ = std::max(0, static_cast<int>(doc_->height()));
 }
 
-void HtmlWidget::updateScrollbar() {
+void HtmlWidget::updateScrollbar(bool layoutFresh) {
     perf::ScopeTimer timer("HtmlWidget::updateScrollbar");
     if (!doc_) {
         scrollbar_->hide();
@@ -1489,16 +1512,20 @@ void HtmlWidget::updateScrollbar() {
 
     bool needV = scrollbar_ && scrollbar_->visible();
     bool needH = allowHorizontalScroll_ && hScrollbar_ && hScrollbar_->visible();
-
-    for (int iter = 0; iter < 4; ++iter) {
-        if (needV) scrollbar_->show();
+    auto applyVisibility = [&](bool vertical, bool horizontal) {
+        if (vertical) scrollbar_->show();
         else scrollbar_->hide();
 
-        if (allowHorizontalScroll_ && needH) hScrollbar_->show();
+        if (allowHorizontalScroll_ && horizontal) hScrollbar_->show();
         else if (hScrollbar_) hScrollbar_->hide();
+    };
 
+    if (!layoutFresh) {
+        applyVisibility(needV, needH);
         renderDocument();
+    }
 
+    for (int iter = 0; iter < 4; ++iter) {
         bool newNeedH = allowHorizontalScroll_ &&
                         contentWidth_ > viewportWidth();
         bool newNeedV = contentHeight_ > viewportHeight();
@@ -1509,13 +1536,11 @@ void HtmlWidget::updateScrollbar() {
         }
         needH = newNeedH;
         needV = newNeedV;
+        applyVisibility(needV, needH);
+        renderDocument();
     }
 
-    if (needV) scrollbar_->show();
-    else scrollbar_->hide();
-
-    if (allowHorizontalScroll_ && needH) hScrollbar_->show();
-    else if (hScrollbar_) hScrollbar_->hide();
+    applyVisibility(needV, needH);
 
     int viewW = viewportWidth();
     int viewH = viewportHeight();
@@ -1633,7 +1658,8 @@ int HtmlWidget::handle(int event) {
                     if (word.empty()) {
                         auto fontIt = fonts_.find(el->css().get_font());
                         if (fontIt != fonts_.end()) {
-                            fl_font(fontIt->second.flFont, fontIt->second.size);
+                            fl_font(fontIt->second->info.flFont,
+                                    fontIt->second->info.size);
                         } else {
                             fl_font(FL_TIMES, static_cast<int>(get_default_font_size()));
                         }
@@ -2007,7 +2033,7 @@ void HtmlWidget::dispatchDeferredReflow(void* data) {
     if (!self->doc_) return;
 
     self->renderDocument();
-    self->updateScrollbar();
+    self->updateScrollbar(true);
     self->redraw();
 }
 
@@ -2016,26 +2042,39 @@ void HtmlWidget::dispatchDeferredReflow(void* data) {
 litehtml::uint_ptr HtmlWidget::create_font(const litehtml::font_description& descr,
                                              const litehtml::document* /*doc*/,
                                              litehtml::font_metrics* fm) {
-    FontInfo fi;
-    fi.flFont = mapFont(descr.family.c_str(), descr.weight,
-                         descr.style == litehtml::font_style_italic);
-    fi.size = static_cast<int>(descr.size);
-    fi.weight = descr.weight;
-    fi.italic = (descr.style == litehtml::font_style_italic);
-    fi.decorationLine = descr.decoration_line;
+    static std::map<std::string, std::shared_ptr<const CachedFont>> fontCache;
 
-    // Measure font metrics
-    fl_font(fi.flFont, fi.size);
-    if (fm) {
-        fm->height = static_cast<litehtml::pixel_t>(fl_height());
-        fm->ascent = static_cast<litehtml::pixel_t>(fl_height() - fl_descent());
-        fm->descent = static_cast<litehtml::pixel_t>(fl_descent());
-        fm->x_height = fm->ascent * 0.5f;
-        fm->draw_spaces = (descr.decoration_line != 0);
+    const std::string cacheKey = fontDescriptionCacheKey(descr);
+    std::shared_ptr<const CachedFont> cachedFont;
+    auto cached = fontCache.find(cacheKey);
+    if (cached != fontCache.end()) {
+        cachedFont = cached->second;
+    } else {
+        auto entry = std::make_shared<CachedFont>();
+        entry->info.flFont = mapFont(descr.family.c_str(), descr.weight,
+                                     descr.style == litehtml::font_style_italic);
+        entry->info.size = static_cast<int>(descr.size);
+        entry->info.weight = descr.weight;
+        entry->info.italic = (descr.style == litehtml::font_style_italic);
+        entry->info.decorationLine = descr.decoration_line;
+
+        fl_font(entry->info.flFont, entry->info.size);
+        entry->metrics.height = static_cast<litehtml::pixel_t>(fl_height());
+        entry->metrics.ascent =
+            static_cast<litehtml::pixel_t>(fl_height() - fl_descent());
+        entry->metrics.descent = static_cast<litehtml::pixel_t>(fl_descent());
+        entry->metrics.x_height = entry->metrics.ascent * 0.5f;
+        entry->metrics.draw_spaces = (descr.decoration_line != 0);
+
+        cachedFont = entry;
+        fontCache.emplace(cacheKey, cachedFont);
     }
 
     litehtml::uint_ptr id = nextFontId_++;
-    fonts_[id] = fi;
+    fonts_[id] = cachedFont;
+    if (fm) {
+        *fm = cachedFont->metrics;
+    }
     return id;
 }
 
@@ -2047,7 +2086,7 @@ litehtml::pixel_t HtmlWidget::text_width(const char* text, litehtml::uint_ptr hF
     auto it = fonts_.find(hFont);
     if (it == fonts_.end()) return 0;
 
-    fl_font(it->second.flFont, it->second.size);
+    fl_font(it->second->info.flFont, it->second->info.size);
     return static_cast<litehtml::pixel_t>(fl_width(text));
 }
 
@@ -2058,7 +2097,7 @@ void HtmlWidget::draw_text(litehtml::uint_ptr hdc, const char* text,
     auto it = fonts_.find(hFont);
     if (it == fonts_.end()) return;
 
-    fl_font(it->second.flFont, it->second.size);
+    fl_font(it->second->info.flFont, it->second->info.size);
 
     TextFragment fragment;
     fragment.text = text ? text : "";
@@ -2135,12 +2174,14 @@ void HtmlWidget::draw_text(litehtml::uint_ptr hdc, const char* text,
     }
 
     // Draw decorations
-    if (it->second.decorationLine & litehtml::text_decoration_line_underline) {
+    if (it->second->info.decorationLine &
+        litehtml::text_decoration_line_underline) {
         int lineY = static_cast<int>(pos.y + pos.height) - fl_descent() + 2;
         fl_line(static_cast<int>(pos.x), lineY,
                 static_cast<int>(pos.x + pos.width), lineY);
     }
-    if (it->second.decorationLine & litehtml::text_decoration_line_line_through) {
+    if (it->second->info.decorationLine &
+        litehtml::text_decoration_line_line_through) {
         int lineY = static_cast<int>(pos.y + pos.height / 2);
         fl_line(static_cast<int>(pos.x), lineY,
                 static_cast<int>(pos.x + pos.width), lineY);
