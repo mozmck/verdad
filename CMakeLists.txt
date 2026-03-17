@@ -13,6 +13,15 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
+# On Windows with MSVC, align Verdad, FLTK, litehtml, and vcpkg static
+# dependencies on the static CRT (/MT). FLTK otherwise resets itself to /MD
+# inside its own CMake options.
+if(MSVC)
+    set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+    set(FLTK_MSVC_RUNTIME_DLL OFF CACHE BOOL
+        "Use the static MSVC runtime for FLTK" FORCE)
+endif()
+
 # Add cmake module path
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_SOURCE_DIR}/cmake")
 

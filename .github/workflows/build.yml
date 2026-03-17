@@ -216,7 +216,7 @@ jobs:
   build-windows:
     runs-on: windows-latest
     env:
-      VCPKG_DEFAULT_TRIPLET: x64-windows-static-md
+      VCPKG_DEFAULT_TRIPLET: x64-windows-static
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -225,7 +225,7 @@ jobs:
 
       - name: Install vcpkg dependencies
         run: |
-          vcpkg install sqlite3:x64-windows-static-md curl:x64-windows-static-md zlib:x64-windows-static-md bzip2:x64-windows-static-md
+          vcpkg install sqlite3:x64-windows-static curl:x64-windows-static zlib:x64-windows-static bzip2:x64-windows-static
 
       - name: Get SWORD mirror commit SHA
         id: sword-sha
@@ -239,7 +239,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: deps/sword
-          key: sword-windows-x64-static-md-v2-${{ steps.sword-sha.outputs.sha }}
+          key: sword-windows-x64-static-v3-${{ steps.sword-sha.outputs.sha }}
 
       - name: Clone SWORD mirror
         if: steps.cache-sword.outputs.cache-hit != 'true'
@@ -258,8 +258,6 @@ jobs:
         run: |
           cmake -S sword-src -B sword-build ^
             -DCMAKE_BUILD_TYPE=Release ^
-            -DCMAKE_POLICY_DEFAULT_CMP0091=NEW ^
-            -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreadedDLL ^
             -DCMAKE_POLICY_VERSION_MINIMUM=3.5 ^
             -DCMAKE_CXX_STANDARD=11 ^
             -DLIBSWORD_LIBRARY_TYPE=Static ^
@@ -268,10 +266,10 @@ jobs:
             -DSWORD_BUILD_TESTS=OFF ^
             -DSWORD_NO_CLUCENE=Yes ^
             -DSWORD_NO_XZ=Yes ^
-            -DZLIB_ROOT=C:/vcpkg/installed/x64-windows-static-md ^
-            -DCURL_ROOT=C:/vcpkg/installed/x64-windows-static-md ^
-            -DBZip2_ROOT=C:/vcpkg/installed/x64-windows-static-md ^
-            -DVCPKG_TARGET_TRIPLET=x64-windows-static-md ^
+            -DZLIB_ROOT=C:/vcpkg/installed/x64-windows-static ^
+            -DCURL_ROOT=C:/vcpkg/installed/x64-windows-static ^
+            -DBZip2_ROOT=C:/vcpkg/installed/x64-windows-static ^
+            -DVCPKG_TARGET_TRIPLET=x64-windows-static ^
             -DCMAKE_TOOLCHAIN_FILE=C:/vcpkg/scripts/buildsystems/vcpkg.cmake ^
             -DCMAKE_INSTALL_PREFIX=%GITHUB_WORKSPACE%\deps\sword
           cmake --build sword-build --config Release
@@ -282,8 +280,7 @@ jobs:
         run: |
           cmake -S . -B build ^
             -DCMAKE_BUILD_TYPE=Release ^
-            -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreadedDLL ^
-            -DVCPKG_TARGET_TRIPLET=x64-windows-static-md ^
+            -DVCPKG_TARGET_TRIPLET=x64-windows-static ^
             -DCMAKE_TOOLCHAIN_FILE=C:/vcpkg/scripts/buildsystems/vcpkg.cmake ^
             -DCMAKE_PREFIX_PATH=%GITHUB_WORKSPACE%\deps\sword
 
