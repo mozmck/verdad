@@ -1043,8 +1043,8 @@ void forEachBookAlias(const sword::VersificationMgr::System* system,
     if (!system) return;
 
     const int bookCount = system->getBookCount();
-    for (int bookNumber = 1; bookNumber <= bookCount; ++bookNumber) {
-        const sword::VersificationMgr::Book* book = system->getBook(bookNumber);
+    for (int bookIndex = 0; bookIndex < bookCount; ++bookIndex) {
+        const sword::VersificationMgr::Book* book = system->getBook(bookIndex);
         if (!book) continue;
 
         const char* aliases[] = {
@@ -1054,7 +1054,7 @@ void forEachBookAlias(const sword::VersificationMgr::System* system,
         };
         for (const char* alias : aliases) {
             if (!alias || !*alias) continue;
-            callback(bookNumber, alias, book);
+            callback(bookIndex + 1, alias, book);
         }
     }
 }
@@ -1122,7 +1122,7 @@ std::string canonicalBookTokenForNumber(
         int bookNumber,
         const sword::VersificationMgr::System* system) {
     if (!system || bookNumber <= 0) return "";
-    const sword::VersificationMgr::Book* book = system->getBook(bookNumber);
+    const sword::VersificationMgr::Book* book = system->getBook(bookNumber - 1);
     if (!book) return "";
 
     const char* candidates[] = {
@@ -1134,6 +1134,57 @@ std::string canonicalBookTokenForNumber(
         if (candidate && *candidate) return candidate;
     }
     return "";
+}
+
+std::string linkedVerseBookOverride(const std::string& bookName) {
+    const std::string wanted = normalizeBookLookupKey(bookName);
+    if (wanted == "jud") return "Judges";
+    return "";
+}
+
+bool bookSupportsChapter(int bookNumber,
+                         int chapter,
+                         const sword::VersificationMgr::System* system) {
+    if (!system || bookNumber <= 0 || chapter <= 0) return true;
+    const sword::VersificationMgr::Book* book = system->getBook(bookNumber - 1);
+    return book && book->getChapterMax() >= chapter;
+}
+
+void appendBookCandidate(std::vector<int>& candidates, int bookNumber) {
+    if (bookNumber <= 0) return;
+    if (std::find(candidates.begin(), candidates.end(), bookNumber) ==
+        candidates.end()) {
+        candidates.push_back(bookNumber);
+    }
+}
+
+int resolveBookNumberByPrefix(const std::string& bookName,
+                              int chapter,
+                              const sword::VersificationMgr::System* system) {
+    const std::string wanted = normalizeBookLookupKey(bookName);
+    if (wanted.empty() || !system) return -1;
+
+    const std::string wantedDigits = leadingDigits(wanted);
+    std::vector<int> candidates;
+    forEachBookAlias(system,
+                     [&](int bookNumber, const char* alias,
+                         const sword::VersificationMgr::Book* /*book*/) {
+        std::string aliasKey = normalizeBookLookupKey(alias);
+        if (aliasKey.empty()) return;
+        if (!wantedDigits.empty() && leadingDigits(aliasKey) != wantedDigits) {
+            return;
+        }
+        if (aliasKey.rfind(wanted, 0) != 0 &&
+            wanted.rfind(aliasKey, 0) != 0) {
+            return;
+        }
+        if (!bookSupportsChapter(bookNumber, chapter, system)) {
+            return;
+        }
+        appendBookCandidate(candidates, bookNumber);
+    });
+
+    return (candidates.size() == 1) ? candidates.front() : -1;
 }
 
 std::string repairSingleLinkedVerseRef(const std::string& rawRef,
@@ -1156,7 +1207,23 @@ std::string repairSingleLinkedVerseRef(const std::string& rawRef,
 
     const auto* system = versificationSystemForName(versificationName);
     if (!system) return ref;
+
+    if (std::string overrideBook = linkedVerseBookOverride(parsed.book);
+        !overrideBook.empty()) {
+        return normalizeSingleLinkedVerseRef(overrideBook + " " + tail);
+    }
+
     if (resolveBookNumberExact(parsed.book, system) >= 0) return ref;
+
+    if (int prefixBook = resolveBookNumberByPrefix(parsed.book,
+                                                   parsed.chapter,
+                                                   system);
+        prefixBook > 0) {
+        std::string repairedBook = canonicalBookTokenForNumber(prefixBook, system);
+        if (!repairedBook.empty()) {
+            return normalizeSingleLinkedVerseRef(repairedBook + " " + tail);
+        }
+    }
 
     const std::string wanted = normalizeBookLookupKey(parsed.book);
     if (wanted.empty()) return ref;
@@ -1175,6 +1242,9 @@ std::string repairSingleLinkedVerseRef(const std::string& rawRef,
         std::string aliasKey = normalizeBookLookupKey(alias);
         if (aliasKey.empty()) return;
         if (!wantedDigits.empty() && leadingDigits(aliasKey) != wantedDigits) {
+            return;
+        }
+        if (!bookSupportsChapter(bookNumber, parsed.chapter, system)) {
             return;
         }
 
@@ -3490,11 +3560,12 @@ std::vector<std::string> SwordManager::verseReferencesFromLink(
 
     auto parseClauseRefs = [&](const std::string& refText,
                                const std::string& clauseDefaultRef) {
-        auto parseWithDefault = [&](const std::string& candidate) {
+        auto parseWithDefault = [&](const std::string& candidate,
+                                    const std::string& currentDefaultRef) {
             std::vector<std::string> parsed;
             sword::ListKey refs = vk.parseVerseList(
                 candidate.c_str(),
-                clauseDefaultRef.empty() ? nullptr : clauseDefaultRef.c_str(),
+                currentDefaultRef.empty() ? nullptr : currentDefaultRef.c_str(),
                 true);
             for (refs = sword::TOP; !refs.popError(); refs++) {
                 const char* current = refs.getText();
@@ -3505,47 +3576,74 @@ std::vector<std::string> SwordManager::verseReferencesFromLink(
             return parsed;
         };
 
-        std::string normalizedClause = normalizeLinkedVerseRef(refText);
-        std::string repairedClause =
-            repairLinkedVerseRef(normalizedClause, versificationName);
+        std::vector<std::string> out;
+        std::string itemDefaultRef = clauseDefaultRef;
+        std::vector<std::string> items = splitList(refText, ',');
+        if (items.empty()) items.push_back(refText);
 
-        std::vector<std::string> parsed = parseWithDefault(refText);
-        if (!parsed.empty() &&
-            resolvedRefsMatchExpected(parsed, repairedClause, versificationName)) {
-            return parsed;
-        }
+        for (const auto& item : items) {
+            std::string normalizedItem = normalizeLinkedVerseRef(item);
+            if (normalizedItem.empty()) continue;
 
-        if (!repairedClause.empty() && repairedClause != refText) {
-            std::vector<std::string> repairedParsed = parseWithDefault(repairedClause);
-            if (!repairedParsed.empty() &&
-                resolvedRefsMatchExpected(repairedParsed,
-                                          repairedClause,
-                                          versificationName)) {
-                return repairedParsed;
+            std::string repairedItem =
+                repairLinkedVerseRef(normalizedItem, versificationName);
+
+            std::vector<std::string> parsed =
+                parseWithDefault(normalizedItem, itemDefaultRef);
+            if (!parsed.empty() &&
+                resolvedRefsMatchExpected(parsed, repairedItem, versificationName)) {
+                itemDefaultRef = parsed.back();
+                out.insert(out.end(), parsed.begin(), parsed.end());
+                continue;
             }
-            if (!repairedParsed.empty()) {
-                return repairedParsed;
+
+            if (!repairedItem.empty() && repairedItem != normalizedItem) {
+                std::vector<std::string> repairedParsed =
+                    parseWithDefault(repairedItem, itemDefaultRef);
+                if (!repairedParsed.empty() &&
+                    resolvedRefsMatchExpected(repairedParsed,
+                                              repairedItem,
+                                              versificationName)) {
+                    itemDefaultRef = repairedParsed.back();
+                    out.insert(out.end(),
+                               repairedParsed.begin(),
+                               repairedParsed.end());
+                    continue;
+                }
+                if (!repairedParsed.empty()) {
+                    itemDefaultRef = repairedParsed.back();
+                    out.insert(out.end(),
+                               repairedParsed.begin(),
+                               repairedParsed.end());
+                    continue;
+                }
             }
+
+            if (!parsed.empty()) {
+                itemDefaultRef = parsed.back();
+                out.insert(out.end(), parsed.begin(), parsed.end());
+                continue;
+            }
+
+            if (!repairedItem.empty()) {
+                itemDefaultRef = repairedItem;
+                out.push_back(repairedItem);
+                continue;
+            }
+
+            itemDefaultRef = normalizedItem;
+            out.push_back(normalizedItem);
         }
 
-        if (!parsed.empty()) {
-            return parsed;
-        }
-
-        if (!repairedClause.empty()) {
-            return std::vector<std::string>{repairedClause};
-        }
-        if (!normalizedClause.empty()) {
-            return std::vector<std::string>{normalizedClause};
-        }
-        return std::vector<std::string>{};
+        return out;
     };
 
     std::string normalizedRawRefs = normalizeLinkedVerseRef(rawRefs);
     std::string repairedRefs =
         repairLinkedVerseRef(normalizedRawRefs, versificationName);
 
-    if (rawRefs.find(';') != std::string::npos) {
+    if (rawRefs.find(';') != std::string::npos ||
+        rawRefs.find(',') != std::string::npos) {
         std::vector<std::string> out;
         std::string clauseDefaultRef = defaultRef;
         std::vector<std::string> clauses = splitList(rawRefs, ';');
