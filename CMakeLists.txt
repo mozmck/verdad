@@ -92,6 +92,7 @@ endif()
 # litehtml (built as submodule)
 set(LITEHTML_BUILD_TESTING OFF CACHE BOOL "Disable litehtml tests")
 add_subdirectory(libs/litehtml)
+target_include_directories(litehtml PRIVATE ${CMAKE_SOURCE_DIR}/src)
 
 # Threads (all platforms)
 find_package(Threads REQUIRED)

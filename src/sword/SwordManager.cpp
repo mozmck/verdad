@@ -40,6 +40,25 @@ std::string trimCopy(const std::string& s) {
     return s.substr(start, end - start);
 }
 
+size_t countCharOccurrences(const std::string& text, char needle) {
+    return static_cast<size_t>(
+        std::count(text.begin(), text.end(), needle));
+}
+
+size_t countSubstringOccurrences(const std::string& text,
+                                 const char* needle) {
+    if (!needle || !*needle) return 0;
+
+    size_t count = 0;
+    size_t pos = 0;
+    const std::string match(needle);
+    while ((pos = text.find(match, pos)) != std::string::npos) {
+        ++count;
+        pos += match.size();
+    }
+    return count;
+}
+
 std::string safeConfigEntry(const char* value) {
     return value ? std::string(value) : std::string();
 }
@@ -1441,6 +1460,41 @@ std::string stripTags(const std::string& html) {
         if (!inTag) out.push_back(c);
     }
     return decodeHtmlEntities(out);
+}
+
+void logCommentaryHtmlSummary(const std::string& moduleName,
+                              const std::string& key,
+                              const std::string& html) {
+    if (!perf::enabled()) return;
+
+    const std::string plain = stripTags(html);
+    size_t plainWords = 0;
+    bool inWord = false;
+    for (char ch : plain) {
+        if (std::isspace(static_cast<unsigned char>(ch))) {
+            if (inWord) {
+                ++plainWords;
+                inWord = false;
+            }
+            continue;
+        }
+        inWord = true;
+    }
+    if (inWord) ++plainWords;
+
+    perf::logf(
+        "SwordManager::getCommentaryText summary %s %s: html=%zu plain=%zu words=%zu verses=%zu p=%zu br=%zu gaps=%zu wrapped=%zu newlines=%zu",
+        moduleName.c_str(),
+        key.c_str(),
+        html.size(),
+        plain.size(),
+        plainWords,
+        countSubstringOccurrences(html, "class=\"commentary-verse"),
+        countSubstringOccurrences(html, "<p"),
+        countSubstringOccurrences(html, "<br"),
+        countSubstringOccurrences(html, "class=\"commentary-gap"),
+        countSubstringOccurrences(html, "class=\"w\""),
+        countCharOccurrences(html, '\n'));
 }
 
 std::string firstStrongTokenFromText(const std::string& text) {
@@ -3028,12 +3082,17 @@ std::string SwordManager::getCommentaryText(const std::string& moduleName,
         ref = VerseRef{};
     }
 
+    auto finalizeHtml = [&](std::string html) {
+        logCommentaryHtmlSummary(moduleName, key, html);
+        return html;
+    };
+
     if (!hasChapterContext) {
         mod->setKey(key.c_str());
         std::string text = commentaryEntryHtml(mod);
 
         if (text.empty()) {
-            return "<p><i>No commentary available for " + key + "</i></p>";
+            return finalizeHtml("<p><i>No commentary available for " + key + "</i></p>");
         }
 
         std::ostringstream html;
@@ -3041,7 +3100,7 @@ std::string SwordManager::getCommentaryText(const std::string& moduleName,
         html << "<h3>" << key << "</h3>\n";
         html << text;
         html << "</div>\n";
-        return html.str();
+        return finalizeHtml(html.str());
     }
 
     sword::VerseKey* vk = dynamic_cast<sword::VerseKey*>(mod->getKey());
@@ -3054,7 +3113,7 @@ std::string SwordManager::getCommentaryText(const std::string& moduleName,
         mod->setKey(key.c_str());
         std::string text = commentaryEntryHtml(mod);
         if (text.empty()) {
-            return "<p><i>No commentary available for " + key + "</i></p>";
+            return finalizeHtml("<p><i>No commentary available for " + key + "</i></p>");
         }
         std::ostringstream html;
         html << "<div class=\"commentary-heading\"><h3>"
@@ -3062,13 +3121,13 @@ std::string SwordManager::getCommentaryText(const std::string& moduleName,
         html << "<div class=\"commentary\">\n";
         html << text;
         html << "</div>\n";
-        return html.str();
+        return finalizeHtml(html.str());
     }
 
     std::string startRef = ref.book + " " + std::to_string(ref.chapter) + ":1";
     vk->setText(startRef.c_str());
     if (mod->popError()) {
-        return "<p><i>No commentary available for " + key + "</i></p>";
+        return finalizeHtml("<p><i>No commentary available for " + key + "</i></p>");
     }
 
     const char testament = vk->getTestament();
@@ -3111,7 +3170,7 @@ std::string SwordManager::getCommentaryText(const std::string& moduleName,
     }
 
     html << "</div>\n";
-    return html.str();
+    return finalizeHtml(html.str());
 }
 
 bool SwordManager::moduleIsWritable(const std::string& moduleName) const {
