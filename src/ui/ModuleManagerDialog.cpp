@@ -160,6 +160,19 @@ std::string userHomeDir() {
     return home ? std::string(home) : std::string();
 }
 
+std::string userSwordRootDir() {
+    const std::string home = userHomeDir();
+    return home.empty() ? std::string() : home + "/.sword";
+}
+
+bool ensureUserSwordDataDirs() {
+    const std::string root = userSwordRootDir();
+    return !root.empty() &&
+           ensureDir(root) &&
+           ensureDir(root + "/mods.d") &&
+           ensureDir(root + "/modules");
+}
+
 std::string versionOfModule(sword::SWModule* mod) {
     if (!mod) return "";
     const char* v = mod->getConfigEntry("Version");
@@ -399,10 +412,12 @@ std::string installErrorBrief(int installRc,
     switch (installRc) {
     case 1:
         return "module not found in source";
+    case -1:
+        return "local .sword copy failed";
     case -9:
         return "install aborted";
     default:
-        return installRc < 0 ? "installer error" : "local file copy failed";
+        return installRc < 0 ? "install failed" : "local file copy failed";
     }
 }
 
@@ -455,12 +470,16 @@ std::string describeInstallFailure(const std::string& moduleName,
     case 1:
         message << "The selected module was not found in the source metadata.";
         break;
+    case -1:
+        message << "The download completed, but copying the module into "
+                << userSwordRootDir() << " failed.";
+        break;
     case -9:
         message << "The install was aborted before completion.";
         break;
     default:
         if (installRc < 0) {
-            message << "The installer reported an internal error.";
+            message << "The installer failed after the download step.";
         } else {
             message << "A local file operation failed while installing the module.";
         }
@@ -692,10 +711,7 @@ void ModuleManagerDialog::buildUi() {
 }
 
 void ModuleManagerDialog::initializeInstallMgr() {
-    std::string home = userHomeDir();
-    if (!home.empty()) {
-        ensureDir(home + "/.sword");
-    }
+    ensureUserSwordDataDirs();
     ensureDir(installMgrPath_);
 
     installStatusReporter_ = std::make_unique<DialogInstallStatusReporter>(statusBox_);
@@ -1471,7 +1487,19 @@ void ModuleManagerDialog::installOrUpdateSelectedModule() {
         manager->resetLastTransferState();
     }
 
-    sword::SWMgr destMgr(new sword::MarkupFilterMgr(sword::FMT_XHTML));
+    if (!ensureUserSwordDataDirs()) {
+        fl_alert("The local SWORD folder %s could not be created.",
+                 userSwordRootDir().c_str());
+        statusBox_->copy_label("Install failed: local .sword folder unavailable");
+        return;
+    }
+
+    const std::string localSwordRoot = userSwordRootDir();
+    sword::SWMgr destMgr(localSwordRoot.c_str(),
+                         true,
+                         new sword::MarkupFilterMgr(sword::FMT_XHTML),
+                         false,
+                         false);
     int rc = 0;
     if (row.sourceType == "DIR") {
         rc = installMgr_->installModule(
