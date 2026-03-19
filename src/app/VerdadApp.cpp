@@ -652,9 +652,35 @@ bool VerdadApp::applyPreferencesMap(const PreferenceMap& prefs,
             importedPreview.languageModules[code] = module;
         }
     }
+
+    ModuleManagerSettings importedModuleManager = moduleManagerSettings_;
+    {
+        std::string languageFilter = trimCopy(lookup("module_manager_language"));
+        if (!languageFilter.empty()) {
+            importedModuleManager.languageFilter = normalizeLanguageCode(languageFilter);
+        }
+
+        auto sourceCountIt = prefs.find("module_manager_source_count");
+        importedModuleManager.selectedSources.clear();
+        importedModuleManager.hasSelectedSources =
+            (sourceCountIt != prefs.end());
+        if (sourceCountIt != prefs.end()) {
+            int sourceCount = std::max(0, parseIntOr(sourceCountIt->second, 0));
+            sourceCount = std::min(sourceCount, 512);
+            for (int i = 0; i < sourceCount; ++i) {
+                std::string value = trimCopy(
+                    lookup("module_manager_source_" + std::to_string(i)));
+                if (!value.empty()) {
+                    importedModuleManager.selectedSources.push_back(value);
+                }
+            }
+        }
+    }
+
     setPreviewDictionarySettings(importedPreview);
     setOptionDisplaySettings(importedOptions);
     setAppearanceSettings(importedAppearance);
+    setModuleManagerSettings(importedModuleManager);
 
     // New session format: restore full window/tabs/splitter state.
     if (prefs.find("study_tab_count") != prefs.end()) {
@@ -724,6 +750,18 @@ void VerdadApp::savePreferences() {
         for (const auto& code : languageCodes) {
             file << "default_dict_lang_" << code << "="
                  << previewDictionarySettings_.languageModules.at(code) << "\n";
+        }
+        if (!trimCopy(moduleManagerSettings_.languageFilter).empty()) {
+            file << "module_manager_language="
+                 << moduleManagerSettings_.languageFilter << "\n";
+        }
+        if (moduleManagerSettings_.hasSelectedSources) {
+            file << "module_manager_source_count="
+                 << moduleManagerSettings_.selectedSources.size() << "\n";
+            for (size_t i = 0; i < moduleManagerSettings_.selectedSources.size(); ++i) {
+                file << "module_manager_source_" << i << "="
+                     << moduleManagerSettings_.selectedSources[i] << "\n";
+            }
         }
 
         MainWindow::SessionState state = mainWindow_->captureSessionState();
@@ -842,6 +880,26 @@ void VerdadApp::setOptionDisplaySettings(
             appearanceSettings_.appFontSize,
             textStyleOverrideCss());
     }
+}
+
+void VerdadApp::setModuleManagerSettings(
+    const ModuleManagerSettings& settings) {
+    ModuleManagerSettings normalized = settings;
+    normalized.languageFilter = normalizeLanguageCode(normalized.languageFilter);
+
+    std::vector<std::string> cleanedSources;
+    cleanedSources.reserve(normalized.selectedSources.size());
+    for (const auto& source : normalized.selectedSources) {
+        std::string trimmed = trimCopy(source);
+        if (trimmed.empty()) continue;
+        if (std::find(cleanedSources.begin(), cleanedSources.end(), trimmed) ==
+            cleanedSources.end()) {
+            cleanedSources.push_back(trimmed);
+        }
+    }
+    normalized.selectedSources = std::move(cleanedSources);
+
+    moduleManagerSettings_ = std::move(normalized);
 }
 
 std::string VerdadApp::preferredPreviewDictionary(char strongPrefix) const {

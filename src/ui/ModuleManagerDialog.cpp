@@ -3,16 +3,20 @@
 #include "app/VerdadApp.h"
 #include "search/SearchIndexer.h"
 #include "sword/SwordManager.h"
+#include "ui/FilterableChoiceWidget.h"
 #include "ui/MainWindow.h"
 #include "ui/UiFontUtils.h"
 
 #include <FL/Fl.H>
 #include <FL/Fl_Box.H>
 #include <FL/Fl_Button.H>
+#include <FL/Fl_Check_Browser.H>
 #include <FL/Fl_Choice.H>
 #include <FL/Fl_File_Chooser.H>
 #include <FL/Fl_Hold_Browser.H>
 #include <FL/Fl_Input.H>
+#include <FL/Fl_Tooltip.H>
+#include <FL/Fl_Tree.H>
 #include <FL/fl_ask.H>
 
 #include <installmgr.h>
@@ -27,9 +31,12 @@
 #include <cctype>
 #include <cstdlib>
 #include <filesystem>
+#include <fstream>
+#include <functional>
 #include <map>
 #include <sstream>
 #include <set>
+#include <unordered_map>
 
 namespace verdad {
 namespace {
@@ -43,6 +50,10 @@ constexpr int kStatusBoxHeight = 26;
 constexpr int kInstallButtonWidth = 120;
 constexpr int kCloseButtonWidth = 80;
 constexpr long kDefaultInstallTimeoutMillis = 40000;
+constexpr int kFilterLabelWidth = 82;
+constexpr int kFilterFieldGap = 6;
+constexpr int kFilterGroupGap = 14;
+constexpr int kCompactLabelWidth = 54;
 
 std::string trimCopy(const std::string& s) {
     size_t start = 0;
@@ -64,6 +75,39 @@ std::string upperCopy(std::string s) {
                        return static_cast<char>(std::toupper(c));
                    });
     return s;
+}
+
+std::string lowerCopy(std::string s) {
+    std::transform(s.begin(), s.end(), s.begin(),
+                   [](unsigned char c) {
+                       return static_cast<char>(std::tolower(c));
+                   });
+    return s;
+}
+
+std::string escapeChoiceLabel(const std::string& label) {
+    std::string escaped;
+    escaped.reserve(label.size() + 8);
+    for (char c : label) {
+        if (c == '\\' || c == '/') escaped.push_back('\\');
+        escaped.push_back(c);
+    }
+    return escaped;
+}
+
+std::string unescapeChoiceLabel(const char* label) {
+    if (!label) return "";
+
+    std::string unescaped;
+    for (size_t i = 0; label[i] != '\0'; ++i) {
+        if (label[i] == '\\' && label[i + 1] != '\0') {
+            unescaped.push_back(label[i + 1]);
+            ++i;
+            continue;
+        }
+        unescaped.push_back(label[i]);
+    }
+    return unescaped;
 }
 
 std::string safeText(const char* s) {
@@ -179,17 +223,318 @@ std::string versionOfModule(sword::SWModule* mod) {
     return v ? v : "";
 }
 
+struct LanguageCatalog {
+    std::unordered_map<std::string, std::string> displayNames;
+    std::unordered_map<std::string, std::string> aliases;
+};
+
+void addLanguageDisplay(LanguageCatalog& catalog,
+                        const std::string& code,
+                        const std::string& name,
+                        bool overwrite = true) {
+    const std::string normalizedCode = lowerCopy(trimCopy(code));
+    const std::string trimmedName = trimCopy(name);
+    if (normalizedCode.empty() || trimmedName.empty()) return;
+
+    auto it = catalog.displayNames.find(normalizedCode);
+    if (it == catalog.displayNames.end() || overwrite) {
+        catalog.displayNames[normalizedCode] = trimmedName;
+    }
+}
+
+void addLanguageAlias(LanguageCatalog& catalog,
+                      const std::string& from,
+                      const std::string& to,
+                      bool overwrite = true) {
+    const std::string normalizedFrom = lowerCopy(trimCopy(from));
+    const std::string normalizedTo = lowerCopy(trimCopy(to));
+    if (normalizedFrom.empty() || normalizedTo.empty() ||
+        normalizedFrom == normalizedTo) {
+        return;
+    }
+
+    auto it = catalog.aliases.find(normalizedFrom);
+    if (it == catalog.aliases.end() || overwrite) {
+        catalog.aliases[normalizedFrom] = normalizedTo;
+    }
+}
+
+std::string parseJsonStringField(const std::string& line,
+                                 const char* key) {
+    if (!key || !*key) return "";
+
+    const std::string quotedKey = std::string("\"") + key + "\"";
+    size_t keyPos = line.find(quotedKey);
+    if (keyPos == std::string::npos) return "";
+
+    size_t colon = line.find(':', keyPos + quotedKey.size());
+    if (colon == std::string::npos) return "";
+
+    size_t firstQuote = line.find('"', colon + 1);
+    if (firstQuote == std::string::npos) return "";
+
+    std::string value;
+    value.reserve(line.size() - firstQuote);
+    bool escaped = false;
+    for (size_t i = firstQuote + 1; i < line.size(); ++i) {
+        const char c = line[i];
+        if (escaped) {
+            switch (c) {
+            case '"':
+            case '\\':
+            case '/':
+                value.push_back(c);
+                break;
+            case 'b':
+                value.push_back('\b');
+                break;
+            case 'f':
+                value.push_back('\f');
+                break;
+            case 'n':
+                value.push_back('\n');
+                break;
+            case 'r':
+                value.push_back('\r');
+                break;
+            case 't':
+                value.push_back('\t');
+                break;
+            default:
+                value.push_back(c);
+                break;
+            }
+            escaped = false;
+            continue;
+        }
+
+        if (c == '\\') {
+            escaped = true;
+            continue;
+        }
+        if (c == '"') {
+            return value;
+        }
+        value.push_back(c);
+    }
+
+    return "";
+}
+
+void loadIsoLanguageCatalogFile(LanguageCatalog& catalog,
+                                const std::string& path,
+                                bool captureAliases) {
+    std::ifstream in(path);
+    if (!in) return;
+
+    std::string line;
+    std::string alpha2;
+    std::string alpha3;
+    std::string name;
+    bool insideEntry = false;
+    while (std::getline(in, line)) {
+        const std::string trimmed = trimCopy(line);
+        if (trimmed == "{") {
+            insideEntry = true;
+            alpha2.clear();
+            alpha3.clear();
+            name.clear();
+            continue;
+        }
+        if (!insideEntry) continue;
+        if (trimmed == "}," || trimmed == "}") {
+            addLanguageDisplay(catalog, alpha2, name, false);
+            addLanguageDisplay(catalog, alpha3, name, false);
+            if (captureAliases && !alpha2.empty() && !alpha3.empty()) {
+                addLanguageAlias(catalog, alpha3, alpha2);
+            }
+            insideEntry = false;
+            continue;
+        }
+
+        std::string value = parseJsonStringField(trimmed, "alpha_2");
+        if (!value.empty()) {
+            alpha2 = value;
+            continue;
+        }
+
+        value = parseJsonStringField(trimmed, "alpha_3");
+        if (!value.empty()) {
+            alpha3 = value;
+            continue;
+        }
+
+        value = parseJsonStringField(trimmed, "name");
+        if (!value.empty()) {
+            name = value;
+        }
+    }
+}
+
+void loadXiphosLanguageCatalog(LanguageCatalog& catalog,
+                               const std::string& path) {
+    std::ifstream in(path);
+    if (!in) return;
+
+    std::string line;
+    while (std::getline(in, line)) {
+        if (line.empty() || line[0] == '#') continue;
+        const size_t tab = line.find('\t');
+        if (tab == std::string::npos) continue;
+        addLanguageDisplay(catalog,
+                           line.substr(0, tab),
+                           line.substr(tab + 1));
+    }
+}
+
+const LanguageCatalog& languageCatalog() {
+    static const LanguageCatalog catalog = []() {
+        LanguageCatalog built;
+
+        loadIsoLanguageCatalogFile(
+            built, "/usr/share/iso-codes/json/iso_639-2.json", true);
+        loadIsoLanguageCatalogFile(
+            built, "/usr/share/iso-codes/json/iso_639-3.json", false);
+        loadXiphosLanguageCatalog(built, "/usr/share/xiphos/languages");
+
+        addLanguageDisplay(built, "en", "English", false);
+        addLanguageDisplay(built, "es", "Spanish", false);
+        addLanguageDisplay(built, "fr", "French", false);
+        addLanguageDisplay(built, "de", "German", false);
+        addLanguageDisplay(built, "pt", "Portuguese", false);
+        addLanguageDisplay(built, "it", "Italian", false);
+        addLanguageDisplay(built, "ru", "Russian", false);
+        addLanguageDisplay(built, "nl", "Dutch", false);
+        addLanguageDisplay(built, "el", "Greek", false);
+        addLanguageDisplay(built, "grc", "Greek", false);
+        addLanguageDisplay(built, "he", "Hebrew", false);
+        addLanguageDisplay(built, "la", "Latin", false);
+        addLanguageDisplay(built, "ar", "Arabic", false);
+        addLanguageDisplay(built, "zh", "Chinese", false);
+        addLanguageAlias(built, "eng", "en", false);
+        addLanguageAlias(built, "spa", "es", false);
+        addLanguageAlias(built, "fra", "fr", false);
+        addLanguageAlias(built, "fre", "fr", false);
+        addLanguageAlias(built, "deu", "de", false);
+        addLanguageAlias(built, "ger", "de", false);
+        addLanguageAlias(built, "por", "pt", false);
+        addLanguageAlias(built, "ita", "it", false);
+        addLanguageAlias(built, "rus", "ru", false);
+        addLanguageAlias(built, "nld", "nl", false);
+        addLanguageAlias(built, "dut", "nl", false);
+        addLanguageAlias(built, "ell", "el", false);
+        addLanguageAlias(built, "gre", "el", false);
+        addLanguageAlias(built, "heb", "he", false);
+        addLanguageAlias(built, "hbo", "he", false);
+        addLanguageAlias(built, "ara", "ar", false);
+        addLanguageAlias(built, "zho", "zh", false);
+        addLanguageAlias(built, "chi", "zh", false);
+        addLanguageAlias(built, "lat", "la", false);
+
+        return built;
+    }();
+
+    return catalog;
+}
+
+std::string normalizeLanguageCode(const std::string& languageCode) {
+    std::string code = lowerCopy(trimCopy(languageCode));
+    if (code.empty()) return "";
+
+    size_t sep = code.find_first_of("-_");
+    if (sep != std::string::npos) code = code.substr(0, sep);
+
+    const auto& aliases = languageCatalog().aliases;
+    auto it = aliases.find(code);
+    if (it != aliases.end()) {
+        return it->second;
+    }
+    return code;
+}
+
+std::string languageDisplayName(const std::string& languageCode) {
+    const std::string trimmed = lowerCopy(trimCopy(languageCode));
+    const std::string normalized = normalizeLanguageCode(trimmed);
+    const auto& displayNames = languageCatalog().displayNames;
+
+    const auto exactIt = displayNames.find(trimmed);
+    if (exactIt != displayNames.end()) return exactIt->second;
+
+    size_t sep = trimmed.find_first_of("-_");
+    if (sep != std::string::npos) {
+        const std::string base = trimmed.substr(0, sep);
+        const auto baseIt = displayNames.find(base);
+        if (baseIt != displayNames.end()) return baseIt->second;
+    }
+
+    const auto normIt = displayNames.find(normalized);
+    if (normIt != displayNames.end()) return normIt->second;
+
+    if (normalized.empty()) return "";
+
+    std::string label = normalized;
+    std::transform(label.begin(), label.end(), label.begin(),
+                   [](unsigned char c) {
+                       return static_cast<char>(std::toupper(c));
+                   });
+    return label;
+}
+
 std::string descriptionOfModule(sword::SWModule* mod) {
     if (!mod) return "";
-
-    std::string shortPromo = collapseWhitespaceCopy(
-        safeText(mod->getConfigEntry("ShortPromo")));
-    if (!shortPromo.empty()) return shortPromo;
 
     std::string description = collapseWhitespaceCopy(safeText(mod->getDescription()));
     if (!description.empty()) return description;
 
-    return collapseWhitespaceCopy(safeText(mod->getConfigEntry("Description")));
+    description = collapseWhitespaceCopy(safeText(mod->getConfigEntry("Description")));
+    if (!description.empty()) return description;
+
+    return collapseWhitespaceCopy(safeText(mod->getConfigEntry("ShortPromo")));
+}
+
+std::string aboutTextOfModule(sword::SWModule* mod) {
+    if (!mod) return "";
+
+    std::string about = safeText(mod->getConfigEntry("About"));
+    if (about.empty()) return "";
+    std::replace(about.begin(), about.end(), '&', '+');
+
+    std::string text;
+    text.reserve(about.size());
+    for (size_t i = 0; i < about.size(); ++i) {
+        if (about[i] == '\\') {
+            if (i + 4 < about.size() &&
+                about.compare(i + 1, 4, "pard") == 0) {
+                i += 4;
+                continue;
+            }
+            if (i + 3 < about.size() &&
+                about.compare(i + 1, 3, "par") == 0) {
+                text.push_back('\n');
+                i += 3;
+                continue;
+            }
+            if (i + 2 < about.size() &&
+                about.compare(i + 1, 2, "qc") == 0) {
+                i += 2;
+                continue;
+            }
+            if (i + 1 < about.size() &&
+                (about[i + 1] == ' ' || about[i + 1] == '\n')) {
+                ++i;
+                continue;
+            }
+        }
+        if (about[i] == '<') {
+            while (i < about.size() && about[i] != '>') {
+                ++i;
+            }
+            continue;
+        }
+        text.push_back(about[i]);
+    }
+
+    return trimCopy(text);
 }
 
 bool isBibleType(const std::string& type) {
@@ -199,7 +544,8 @@ bool isBibleType(const std::string& type) {
 std::string selectedChoiceLabel(const Fl_Choice* choice) {
     if (!choice) return "";
     const Fl_Menu_Item* item = choice->mvalue();
-    return (item && item->label()) ? std::string(item->label()) : std::string();
+    return (item && item->label()) ? unescapeChoiceLabel(item->label())
+                                   : std::string();
 }
 
 enum class VersionRelation {
@@ -223,6 +569,240 @@ VersionRelation compareVersions(const std::string& sourceVersion,
     if (source < installed) return VersionRelation::Older;
     return VersionRelation::Same;
 }
+
+class ModuleListBrowser : public Fl_Hold_Browser {
+public:
+    using ToggleCallback = std::function<void(int)>;
+    using TooltipProvider = std::function<std::string(int)>;
+
+    ModuleListBrowser(int X, int Y, int W, int H, const char* label = nullptr)
+        : Fl_Hold_Browser(X, Y, W, H, label) {}
+
+    void setCheckboxColumnWidth(int width) {
+        checkboxColumnWidth_ = width;
+    }
+
+    void setToggleCallback(ToggleCallback cb) {
+        toggleCallback_ = std::move(cb);
+    }
+
+    void setTooltipProvider(TooltipProvider provider) {
+        tooltipProvider_ = std::move(provider);
+    }
+
+    void clearHoverTooltip() {
+        hoveredLine_ = 0;
+        tooltip(nullptr);
+        Fl_Tooltip::current(nullptr);
+    }
+
+    int handle(int event) override {
+        switch (event) {
+        case FL_KEYDOWN:
+            if (Fl::event_key() == ' ' || Fl::event_key() == FL_Enter) {
+                const int line = value();
+                if (line > 1 && toggleCallback_) {
+                    toggleCallback_(line);
+                    return 1;
+                }
+            }
+            break;
+        case FL_ENTER:
+        case FL_MOVE:
+            updateHoverTooltip();
+            return 1;
+        case FL_LEAVE:
+            clearHoverTooltip();
+            return 1;
+        default:
+            break;
+        }
+
+        const int result = Fl_Hold_Browser::handle(event);
+        if (event == FL_RELEASE && Fl::event_button() == FL_LEFT_MOUSE) {
+            const int localX = Fl::event_x() - x();
+            const int line = value();
+            if (line > 1 && localX >= 0 && localX < checkboxColumnWidth_) {
+                if (toggleCallback_) toggleCallback_(line);
+                return 1;
+            }
+        }
+
+        return result;
+    }
+
+private:
+    int lineAtEvent() const {
+        // Fl_Browser_::find_item expects the window-relative event y-coordinate.
+        void* item = const_cast<ModuleListBrowser*>(this)->find_item(Fl::event_y());
+        return item ? lineno(item) : 0;
+    }
+
+    void updateHoverTooltip() {
+        if (!tooltipProvider_) return;
+
+        const int line = lineAtEvent();
+        if (line == hoveredLine_) return;
+        hoveredLine_ = line;
+
+        const std::string tip = tooltipProvider_(line);
+        if (tip.empty()) {
+            tooltip(nullptr);
+            Fl_Tooltip::current(nullptr);
+            return;
+        }
+
+        copy_tooltip(tip.c_str());
+        Fl_Tooltip::enter_area(this,
+                               std::clamp(Fl::event_x() - x(), 0, std::max(0, w() - 1)),
+                               std::clamp(Fl::event_y() - y(), 0, std::max(0, h() - 1)),
+                               1,
+                               1,
+                               tooltip());
+    }
+
+    int checkboxColumnWidth_ = 36;
+    int hoveredLine_ = 0;
+    ToggleCallback toggleCallback_;
+    TooltipProvider tooltipProvider_;
+};
+
+class SourceSelectionDialog : public Fl_Double_Window {
+public:
+    struct Row {
+        std::string caption;
+        bool checked = false;
+    };
+
+    SourceSelectionDialog(int W = 420, int H = 460)
+        : Fl_Double_Window(W, H, "Visible Sources") {
+        begin();
+
+        filterInput_ = new Fl_Input(80, 12, W - 92, 26, "Filter:");
+        filterInput_->when(FL_WHEN_CHANGED | FL_WHEN_ENTER_KEY_ALWAYS);
+        filterInput_->callback(onFilterChanged, this);
+
+        browser_ = new Fl_Check_Browser(12, 48, W - 24, H - 102);
+        browser_->callback(onBrowserChanged, this);
+        browser_->when(FL_WHEN_CHANGED);
+
+        selectAllButton_ = new Fl_Button(12, H - 42, 70, 30, "All");
+        selectAllButton_->callback(onSelectAll, this);
+
+        selectNoneButton_ = new Fl_Button(88, H - 42, 70, 30, "None");
+        selectNoneButton_->callback(onSelectNone, this);
+
+        cancelButton_ = new Fl_Button(W - 168, H - 42, 70, 30, "Cancel");
+        cancelButton_->callback(onCancel, this);
+
+        okButton_ = new Fl_Button(W - 88, H - 42, 70, 30, "OK");
+        okButton_->callback(onOk, this);
+
+        end();
+        size_range(340, 280);
+        resizable(browser_);
+    }
+
+    void setRows(const std::vector<Row>& rows) {
+        rows_ = rows;
+        filterInput_->value("");
+        refreshBrowser();
+    }
+
+    bool openModal() {
+        accepted_ = false;
+        set_modal();
+        show();
+        while (shown()) Fl::wait();
+        return accepted_;
+    }
+
+    std::vector<std::string> selectedCaptions() const {
+        std::vector<std::string> captions;
+        for (const auto& row : rows_) {
+            if (row.checked) captions.push_back(row.caption);
+        }
+        return captions;
+    }
+
+private:
+    std::vector<Row> rows_;
+    std::vector<int> visibleRows_;
+    Fl_Input* filterInput_ = nullptr;
+    Fl_Check_Browser* browser_ = nullptr;
+    Fl_Button* selectAllButton_ = nullptr;
+    Fl_Button* selectNoneButton_ = nullptr;
+    Fl_Button* cancelButton_ = nullptr;
+    Fl_Button* okButton_ = nullptr;
+    bool accepted_ = false;
+
+    void syncChecksFromBrowser() {
+        if (!browser_) return;
+        for (size_t i = 0; i < visibleRows_.size(); ++i) {
+            const int line = static_cast<int>(i) + 1;
+            const int rowIndex = visibleRows_[i];
+            if (rowIndex < 0 || rowIndex >= static_cast<int>(rows_.size())) continue;
+            rows_[static_cast<size_t>(rowIndex)].checked = browser_->checked(line) != 0;
+        }
+    }
+
+    void refreshBrowser() {
+        syncChecksFromBrowser();
+
+        const std::string filter = trimCopy(
+            filterInput_ && filterInput_->value() ? filterInput_->value() : "");
+
+        visibleRows_.clear();
+        browser_->clear();
+        for (size_t i = 0; i < rows_.size(); ++i) {
+            const auto& row = rows_[i];
+            if (!filter.empty() && !containsNoCase(row.caption, filter)) continue;
+            visibleRows_.push_back(static_cast<int>(i));
+            browser_->add(row.caption.c_str(), row.checked ? 1 : 0);
+        }
+    }
+
+    static void onFilterChanged(Fl_Widget*, void* data) {
+        auto* self = static_cast<SourceSelectionDialog*>(data);
+        if (!self) return;
+        self->refreshBrowser();
+    }
+
+    static void onBrowserChanged(Fl_Widget*, void* data) {
+        auto* self = static_cast<SourceSelectionDialog*>(data);
+        if (!self) return;
+        self->syncChecksFromBrowser();
+    }
+
+    static void onSelectAll(Fl_Widget*, void* data) {
+        auto* self = static_cast<SourceSelectionDialog*>(data);
+        if (!self) return;
+        for (auto& row : self->rows_) row.checked = true;
+        self->refreshBrowser();
+    }
+
+    static void onSelectNone(Fl_Widget*, void* data) {
+        auto* self = static_cast<SourceSelectionDialog*>(data);
+        if (!self) return;
+        for (auto& row : self->rows_) row.checked = false;
+        self->refreshBrowser();
+    }
+
+    static void onCancel(Fl_Widget*, void* data) {
+        auto* self = static_cast<SourceSelectionDialog*>(data);
+        if (!self) return;
+        self->accepted_ = false;
+        self->hide();
+    }
+
+    static void onOk(Fl_Widget*, void* data) {
+        auto* self = static_cast<SourceSelectionDialog*>(data);
+        if (!self) return;
+        self->syncChecksFromBrowser();
+        self->accepted_ = true;
+        self->hide();
+    }
+};
 
 class DialogInstallStatusReporter : public sword::StatusReporter {
 public:
@@ -566,9 +1146,14 @@ void ModuleManagerDialog::resize(int X, int Y, int W, int H) {
     Fl_Double_Window::resize(X, Y, W, H);
 
     const int row1Y = kMargin + kWarningHeight + kRowSpacing;
-    const int row2Y = row1Y + kControlHeight + kRowSpacing;
+    const int contentY = row1Y + kControlHeight + kRowSpacing;
+    const int treeW = std::clamp((W - (2 * kMargin)) / 4, 210, 280);
+    const int rightX = kMargin + treeW + kRowSpacing;
+    const int rightW = std::max(320, W - rightX - kMargin);
+    const int row2Y = contentY;
     const int row3Y = row2Y + kControlHeight + kRowSpacing;
     const int browserY = row3Y + kControlHeight + kRowSpacing;
+    const int contentH = std::max(120, H - contentY - 74);
 
     const int right = W - kMargin;
     const int refreshAllX = right - 110;
@@ -588,21 +1173,64 @@ void ModuleManagerDialog::resize(int X, int Y, int W, int H) {
     if (refreshSourceButton_) refreshSourceButton_->resize(refreshX, row1Y, 95, kControlHeight);
     if (refreshAllButton_) refreshAllButton_->resize(refreshAllX, row1Y, 110, kControlHeight);
 
-    if (sortChoice_) sortChoice_->resize(60, row2Y, 160, kControlHeight);
-    if (languageChoice_) languageChoice_->resize(320, row2Y, 150, kControlHeight);
-    if (typeChoice_) typeChoice_->resize(540, row2Y, 180, kControlHeight);
+    if (filterTree_) {
+        filterTree_->resize(kMargin, contentY, treeW, contentH);
+    }
 
-    const int clearX = W - kMargin - 85;
-    const int descriptionW = std::max(180, clearX - 5 - 395);
-    if (moduleFilterInput_) moduleFilterInput_->resize(85, row3Y, 220, kControlHeight);
+    const int sortX = rightX + rightW - 160;
+    const int sortLabelX = sortX - kCompactLabelWidth - kFilterFieldGap;
+    const int sourceButtonX = rightX + 28;
+    const int sourceButtonW = 150;
+    const int languageLabelX = sourceButtonX + sourceButtonW + 18;
+    const int languageX = languageLabelX + kFilterLabelWidth + kFilterFieldGap;
+    const int languageW = std::max(120, sortLabelX - kFilterGroupGap - languageX);
+    if (sourceFilterButton_) {
+        sourceFilterButton_->resize(sourceButtonX, row2Y, sourceButtonW, kControlHeight);
+    }
+    if (languageChoiceLabel_) {
+        languageChoiceLabel_->resize(languageLabelX,
+                                     row2Y,
+                                     kFilterLabelWidth,
+                                     kControlHeight);
+    }
+    if (languageChoice_) {
+        languageChoice_->resize(languageX, row2Y, languageW, kControlHeight);
+    }
+    if (sortChoiceLabel_) {
+        sortChoiceLabel_->resize(sortLabelX, row2Y, kCompactLabelWidth, kControlHeight);
+    }
+    if (sortChoice_) sortChoice_->resize(sortX, row2Y, 160, kControlHeight);
+
+    const int clearX = rightX + rightW - 85;
+    const int moduleLabelX = rightX;
+    const int moduleInputX = moduleLabelX + kFilterLabelWidth + kFilterFieldGap;
+    const int moduleInputW = 100;
+    const int descriptionLabelX = moduleInputX + moduleInputW + kFilterGroupGap;
+    const int descriptionInputX =
+        descriptionLabelX + kFilterLabelWidth + kFilterFieldGap;
+    const int descriptionW = std::max(150, clearX - 5 - descriptionInputX);
+    if (moduleFilterLabel_) {
+        moduleFilterLabel_->resize(moduleLabelX, row3Y, kFilterLabelWidth, kControlHeight);
+    }
+    if (moduleFilterInput_) {
+        moduleFilterInput_->resize(moduleInputX, row3Y, moduleInputW, kControlHeight);
+    }
+    if (descriptionFilterLabel_) {
+        descriptionFilterLabel_->resize(descriptionLabelX,
+                                        row3Y,
+                                        kFilterLabelWidth,
+                                        kControlHeight);
+    }
     if (descriptionFilterInput_) {
-        descriptionFilterInput_->resize(395, row3Y, descriptionW, kControlHeight);
+        descriptionFilterInput_->resize(descriptionInputX,
+                                        row3Y,
+                                        descriptionW,
+                                        kControlHeight);
     }
     if (clearFiltersButton_) clearFiltersButton_->resize(clearX, row3Y, 85, kControlHeight);
 
     if (moduleBrowser_) {
-        moduleBrowser_->resize(kMargin, browserY, W - (2 * kMargin),
-                               H - browserY - 74);
+        moduleBrowser_->resize(rightX, browserY, rightW, H - browserY - 74);
         updateModuleBrowserColumns();
     }
 
@@ -654,8 +1282,30 @@ void ModuleManagerDialog::buildUi() {
     refreshAllButton_ = new Fl_Button(770, row1Y, 110, kControlHeight, "Refresh All");
     refreshAllButton_->callback(onRefreshAll, this);
 
-    const int row2Y = row1Y + kControlHeight + kRowSpacing;
-    sortChoice_ = new Fl_Choice(60, row2Y, 160, kControlHeight, "Sort:");
+    const int contentY = row1Y + kControlHeight + kRowSpacing;
+    filterTree_ = new Fl_Tree(kMargin, contentY, 230, h() - contentY - 74);
+    filterTree_->showroot(0);
+    filterTree_->selectmode(FL_TREE_SELECT_SINGLE);
+    filterTree_->item_reselect_mode(FL_TREE_SELECTABLE_ALWAYS);
+    filterTree_->callback(onTreeSelectionChanged, this);
+    filterTree_->when(FL_WHEN_CHANGED | FL_WHEN_RELEASE);
+
+    const int rightX = kMargin + 230 + kRowSpacing;
+    const int row2Y = contentY;
+    sourceFilterButton_ = new Fl_Button(rightX + 28, row2Y, 150, kControlHeight, "All Sources");
+    sourceFilterButton_->callback(onChooseSources, this);
+
+    languageChoiceLabel_ = new Fl_Box(rightX + 194, row2Y, kFilterLabelWidth, kControlHeight,
+                                      "Language:");
+    languageChoiceLabel_->box(FL_NO_BOX);
+    languageChoiceLabel_->align(FL_ALIGN_RIGHT | FL_ALIGN_INSIDE);
+
+    sortChoiceLabel_ = new Fl_Box(rightX + 518, row2Y, kCompactLabelWidth, kControlHeight,
+                                  "Sort:");
+    sortChoiceLabel_->box(FL_NO_BOX);
+    sortChoiceLabel_->align(FL_ALIGN_RIGHT | FL_ALIGN_INSIDE);
+
+    sortChoice_ = new Fl_Choice(rightX + 578, row2Y, 160, kControlHeight);
     sortChoice_->add("Module ID");
     sortChoice_->add("Description");
     sortChoice_->add("Language");
@@ -665,29 +1315,67 @@ void ModuleManagerDialog::buildUi() {
     sortChoice_->value(0);
     sortChoice_->callback(onFilterChanged, this);
 
-    languageChoice_ = new Fl_Choice(320, row2Y, 150, kControlHeight, "Language:");
+    languageChoice_ = new FilterableChoiceWidget(rightX + 282, row2Y, 150, kControlHeight);
+    languageChoice_->setShowAllWhenFilterEmpty(true);
+    languageChoice_->setNoMatchesLabel("No language matches");
     languageChoice_->callback(onFilterChanged, this);
 
-    typeChoice_ = new Fl_Choice(540, row2Y, 180, kControlHeight, "Type:");
-    typeChoice_->callback(onFilterChanged, this);
-
     const int row3Y = row2Y + kControlHeight + kRowSpacing;
-    moduleFilterInput_ = new Fl_Input(85, row3Y, 220, kControlHeight, "Module ID:");
+    moduleFilterLabel_ = new Fl_Box(rightX, row3Y, kFilterLabelWidth, kControlHeight,
+                                    "Module ID:");
+    moduleFilterLabel_->box(FL_NO_BOX);
+    moduleFilterLabel_->align(FL_ALIGN_RIGHT | FL_ALIGN_INSIDE);
+
+    moduleFilterInput_ = new Fl_Input(rightX + kFilterLabelWidth + kFilterFieldGap,
+                                      row3Y,
+                                      100,
+                                      kControlHeight);
     moduleFilterInput_->when(FL_WHEN_CHANGED | FL_WHEN_ENTER_KEY_ALWAYS);
     moduleFilterInput_->callback(onFilterChanged, this);
 
-    descriptionFilterInput_ = new Fl_Input(395, row3Y, 490, kControlHeight, "Description:");
+    const int descriptionLabelX =
+        rightX + kFilterLabelWidth + kFilterFieldGap + 100 + kFilterGroupGap;
+    descriptionFilterLabel_ = new Fl_Box(descriptionLabelX,
+                                         row3Y,
+                                         kFilterLabelWidth,
+                                         kControlHeight,
+                                         "Description:");
+    descriptionFilterLabel_->box(FL_NO_BOX);
+    descriptionFilterLabel_->align(FL_ALIGN_RIGHT | FL_ALIGN_INSIDE);
+
+    descriptionFilterInput_ = new Fl_Input(
+        descriptionLabelX + kFilterLabelWidth + kFilterFieldGap,
+        row3Y,
+        250,
+        kControlHeight);
     descriptionFilterInput_->when(FL_WHEN_CHANGED | FL_WHEN_ENTER_KEY_ALWAYS);
     descriptionFilterInput_->callback(onFilterChanged, this);
 
-    clearFiltersButton_ = new Fl_Button(w() - 95, row3Y, 85, kControlHeight, "Clear");
+    clearFiltersButton_ = new Fl_Button(rightX + 595, row3Y, 85, kControlHeight, "Clear");
     clearFiltersButton_->callback(onClearFilters, this);
 
     const int browserY = row3Y + kControlHeight + kRowSpacing;
-    moduleBrowser_ = new Fl_Hold_Browser(10, browserY, w() - 20, h() - browserY - 74);
+    auto* moduleBrowser = new ModuleListBrowser(
+        rightX, browserY, w() - rightX - kMargin, h() - browserY - 74);
+    moduleBrowser_ = moduleBrowser;
     moduleBrowser_->callback(onModuleSelectionChanged, this);
+    moduleBrowser->setCheckboxColumnWidth(moduleBrowserColWidths_[0]);
+    moduleBrowser->setToggleCallback(
+        [this](int line) {
+            toggleVisibleModuleChecked(line);
+        });
+    moduleBrowser->setTooltipProvider(
+        [this](int line) -> std::string {
+            if (line <= 1) return "";
+            const int index = line - 2;
+            if (index < 0 ||
+                index >= static_cast<int>(visibleModuleRows_.size())) {
+                return "";
+            }
+            return moduleTooltipText(visibleModuleRows_[static_cast<size_t>(index)]);
+        });
     updateModuleBrowserColumns();
-    moduleBrowser_->add("Module ID\tDescription\tLanguage\tType\tSource\tInstalled\tAvailable\tStatus");
+    moduleBrowser_->add("@bSel\t@bModule ID\t@bDescription\t@bLanguage\t@bType\t@bSource\t@bInstalled\t@bAvailable\t@bStatus");
 
     statusBox_ = new Fl_Box(10, h() - 38, w() - 250, 26, "");
     statusBox_->align(FL_ALIGN_LEFT | FL_ALIGN_INSIDE);
@@ -705,7 +1393,8 @@ void ModuleManagerDialog::buildUi() {
     end();
 
     size_range(900, 520);
-    resizable(moduleBrowser_);
+    resizable(this);
+    updateSourceFilterButton();
     updateInstallButton();
     updateStatusBox();
 }
@@ -772,7 +1461,33 @@ void ModuleManagerDialog::refreshSources(bool refreshRemoteContent) {
                   return compareNoCase(a.caption, b.caption) < 0;
               });
 
+    if (app_) {
+        const auto& settings = app_->moduleManagerSettings();
+        if (activeSourceCaptions_.empty()) {
+            activeSourceCaptions_ = settings.selectedSources;
+            hasExplicitSourceFilter_ = settings.hasSelectedSources;
+        }
+    }
+
+    if (!hasExplicitSourceFilter_) {
+        activeSourceCaptions_.clear();
+        for (const auto& source : sources_) {
+            activeSourceCaptions_.push_back(source.caption);
+        }
+    } else {
+        std::vector<std::string> validSelections;
+        for (const auto& caption : activeSourceCaptions_) {
+            auto it = std::find_if(sources_.begin(), sources_.end(),
+                                   [&](const SourceRow& row) {
+                                       return row.caption == caption;
+                                   });
+            if (it != sources_.end()) validSelections.push_back(caption);
+        }
+        activeSourceCaptions_ = std::move(validSelections);
+    }
+
     repopulateSourceChoice();
+    updateSourceFilterButton();
 
     if (refreshRemoteContent) {
         std::vector<std::string> refreshFailures;
@@ -861,9 +1576,12 @@ void ModuleManagerDialog::refreshModules() {
                 row.sourceType = src.type;
                 row.sourcePath = localPath;
                 row.moduleName = safeText(it->first);
-                row.description = descriptionOfModule(mod);
+                row.shortDescription = descriptionOfModule(mod);
+                row.aboutText = aboutTextOfModule(mod);
                 row.moduleType = safeText(mod->getType());
                 row.language = safeText(mod->getLanguage());
+                row.normalizedLanguage = normalizeLanguageCode(row.language);
+                row.displayLanguage = languageDisplayName(row.language);
                 row.remoteSource = nullptr;
                 row.isBible = isBibleType(row.moduleType);
 
@@ -912,9 +1630,12 @@ void ModuleManagerDialog::refreshModules() {
             row.sourceCaption = src.caption;
             row.sourceType = src.type;
             row.moduleName = safeText(it->first);
-            row.description = descriptionOfModule(mod);
+            row.shortDescription = descriptionOfModule(mod);
+            row.aboutText = aboutTextOfModule(mod);
             row.moduleType = safeText(mod->getType());
             row.language = safeText(mod->getLanguage());
+            row.normalizedLanguage = normalizeLanguageCode(row.language);
+            row.displayLanguage = languageDisplayName(row.language);
             row.remoteSource = src.remoteSource;
             row.isBible = isBibleType(row.moduleType);
 
@@ -963,7 +1684,8 @@ void ModuleManagerDialog::refreshModules() {
         }
     }
 
-    repopulateFilterChoices();
+    repopulateLanguageChoice();
+    repopulateFilterTree();
     repopulateModuleBrowser();
 }
 
@@ -977,7 +1699,7 @@ void ModuleManagerDialog::repopulateSourceChoice() {
     int selectedIndex = 0;
     int index = 1;
     for (const auto& src : sources_) {
-        sourceChoice_->add(src.caption.c_str());
+        sourceChoice_->add(escapeChoiceLabel(src.caption).c_str());
         if (!selected.empty() && src.caption == selected) {
             selectedIndex = index;
         }
@@ -988,67 +1710,179 @@ void ModuleManagerDialog::repopulateSourceChoice() {
     sourceChoice_->redraw();
 }
 
-void ModuleManagerDialog::repopulateFilterChoices() {
-    const std::string selectedLanguage = selectedChoiceLabel(languageChoice_);
-    const std::string selectedType = selectedChoiceLabel(typeChoice_);
+void ModuleManagerDialog::updateSourceFilterButton() {
+    if (!sourceFilterButton_) return;
 
-    std::set<std::string, NoCaseLess> languages;
-    std::set<std::string, NoCaseLess> types;
+    if (sources_.empty()) {
+        sourceFilterButton_->copy_label("No Sources");
+        sourceFilterButton_->tooltip("No sources are available.");
+        return;
+    }
 
+    std::vector<std::string> selected;
+    for (const auto& source : sources_) {
+        if (sourceCaptionSelected(source.caption)) {
+            selected.push_back(source.caption);
+        }
+    }
+
+    std::string label;
+    if (selected.empty()) {
+        label = "No Sources";
+    } else if (selected.size() == sources_.size()) {
+        label = "All Sources";
+    } else if (selected.size() == 1) {
+        label = selected.front();
+    } else {
+        label = std::to_string(selected.size()) + " Sources";
+    }
+    sourceFilterButton_->copy_label(label.c_str());
+
+    std::ostringstream tooltip;
+    if (selected.empty()) {
+        tooltip << "No sources selected for the module list.";
+    } else {
+        tooltip << "Visible sources:\n";
+        for (size_t i = 0; i < selected.size(); ++i) {
+            if (i) tooltip << '\n';
+            tooltip << selected[i];
+        }
+    }
+    sourceFilterButton_->copy_tooltip(tooltip.str().c_str());
+}
+
+void ModuleManagerDialog::repopulateLanguageChoice() {
+    if (!languageChoice_) return;
+
+    const std::string currentLabel = trimCopy(languageChoice_->selectedValue());
+    std::string desiredCode;
+    if (currentLabel.empty()) {
+        if (app_) desiredCode = trimCopy(app_->moduleManagerSettings().languageFilter);
+        if (desiredCode.empty()) desiredCode = "en";
+    } else if (currentLabel != "All Languages") {
+        desiredCode = selectedLanguageCode();
+    }
+
+    std::map<std::string, std::string, NoCaseLess> labelsToCodes;
     for (const auto& row : modules_) {
-        if (!row.language.empty()) languages.insert(row.language);
-        if (!row.moduleType.empty()) types.insert(row.moduleType);
+        if (!sourceCaptionSelected(row.sourceCaption)) continue;
+        if (row.normalizedLanguage.empty() || row.displayLanguage.empty()) continue;
+        labelsToCodes.emplace(row.displayLanguage, row.normalizedLanguage);
     }
 
-    if (languageChoice_) {
-        languageChoice_->clear();
-        languageChoice_->add("All Languages");
-        int selectedIndex = 0;
-        int index = 1;
-        for (const auto& language : languages) {
-            languageChoice_->add(language.c_str());
-            if (!selectedLanguage.empty() && language == selectedLanguage) {
-                selectedIndex = index;
-            }
-            ++index;
+    languageChoiceLabels_.clear();
+    languageChoiceCodesByLabel_.clear();
+    languageChoiceLabels_.push_back("All Languages");
+    languageChoiceCodesByLabel_["All Languages"] = "";
+
+    std::string selectedLabel = "All Languages";
+    for (const auto& entry : labelsToCodes) {
+        languageChoiceLabels_.push_back(entry.first);
+        languageChoiceCodesByLabel_[entry.first] = entry.second;
+        if (!desiredCode.empty() && entry.second == desiredCode) {
+            selectedLabel = entry.first;
         }
-        languageChoice_->value(selectedIndex);
     }
 
-    if (typeChoice_) {
-        typeChoice_->clear();
-        typeChoice_->add("All Types");
-        int selectedIndex = 0;
-        int index = 1;
-        for (const auto& type : types) {
-            typeChoice_->add(type.c_str());
-            if (!selectedType.empty() && type == selectedType) {
-                selectedIndex = index;
-            }
-            ++index;
+    languageChoice_->setItems(languageChoiceLabels_);
+    languageChoice_->setSelectedValue(selectedLabel);
+}
+
+void ModuleManagerDialog::repopulateFilterTree() {
+    if (!filterTree_) return;
+
+    const TreeFilter desiredFilter = treeFilter_;
+    const std::string languageFilter = selectedLanguageCode();
+
+    std::map<std::string,
+             std::map<std::string, std::string, NoCaseLess>,
+             NoCaseLess> typeLanguages;
+    for (const auto& row : modules_) {
+        if (!sourceCaptionSelected(row.sourceCaption)) continue;
+        if (!languageFilter.empty() && row.normalizedLanguage != languageFilter) continue;
+        if (row.moduleType.empty()) continue;
+
+        if (!row.displayLanguage.empty() && !row.normalizedLanguage.empty()) {
+            typeLanguages[row.moduleType].emplace(row.displayLanguage,
+                                                  row.normalizedLanguage);
+        } else {
+            typeLanguages.try_emplace(row.moduleType);
         }
-        typeChoice_->value(selectedIndex);
     }
+
+    filterTree_->clear();
+    treeFilters_.clear();
+
+    Fl_Tree_Item* allItem = filterTree_->add("All");
+    if (!allItem) return;
+    allItem->open();
+    treeFilters_[allItem] = TreeFilter{};
+
+    for (const auto& entry : typeLanguages) {
+        Fl_Tree_Item* typeItem = filterTree_->add(allItem, entry.first.c_str());
+        if (!typeItem) continue;
+        treeFilters_[typeItem] = TreeFilter{TreeFilter::Scope::Type,
+                                            entry.first,
+                                            ""};
+
+        for (const auto& language : entry.second) {
+            Fl_Tree_Item* languageItem = filterTree_->add(typeItem,
+                                                          language.first.c_str());
+            if (!languageItem) continue;
+            treeFilters_[languageItem] = TreeFilter{
+                TreeFilter::Scope::TypeLanguage,
+                entry.first,
+                language.second};
+        }
+    }
+
+    auto filtersEqual = [](const TreeFilter& left, const TreeFilter& right) {
+        return left.scope == right.scope &&
+               left.moduleType == right.moduleType &&
+               left.language == right.language;
+    };
+
+    Fl_Tree_Item* selectedItem = allItem;
+    for (const auto& entry : treeFilters_) {
+        if (filtersEqual(entry.second, desiredFilter)) {
+            selectedItem = const_cast<Fl_Tree_Item*>(entry.first);
+            break;
+        }
+    }
+
+    filterTree_->select_only(selectedItem, 0);
+    auto selectedFilter = treeFilters_.find(selectedItem);
+    treeFilter_ = (selectedFilter != treeFilters_.end())
+        ? selectedFilter->second
+        : TreeFilter{};
+    for (Fl_Tree_Item* item = selectedItem; item; item = item->parent()) {
+        item->open();
+    }
+    filterTree_->redraw();
 }
 
 void ModuleManagerDialog::updateModuleBrowserColumns() {
     if (!moduleBrowser_) return;
 
     const int tableWidth = std::max(0, moduleBrowser_->w());
-    const int fixedWidth = 130 + 90 + 120 + 150 + 90 + 90 + 55;
-    const int descriptionWidth = std::max(220, tableWidth - fixedWidth - 35);
+    const int fixedWidth = 36 + 130 + 120 + 130 + 150 + 90 + 90 + 55;
+    const int descriptionWidth = std::max(180, tableWidth - fixedWidth - 30);
 
-    moduleBrowserColWidths_[0] = 130;
-    moduleBrowserColWidths_[1] = descriptionWidth;
-    moduleBrowserColWidths_[2] = 90;
+    moduleBrowserColWidths_[0] = 36;
+    moduleBrowserColWidths_[1] = 130;
+    moduleBrowserColWidths_[2] = descriptionWidth;
     moduleBrowserColWidths_[3] = 120;
-    moduleBrowserColWidths_[4] = 150;
-    moduleBrowserColWidths_[5] = 90;
+    moduleBrowserColWidths_[4] = 130;
+    moduleBrowserColWidths_[5] = 150;
     moduleBrowserColWidths_[6] = 90;
-    moduleBrowserColWidths_[7] = 55;
-    moduleBrowserColWidths_[8] = 0;
+    moduleBrowserColWidths_[7] = 90;
+    moduleBrowserColWidths_[8] = 55;
+    moduleBrowserColWidths_[9] = 0;
 
     moduleBrowser_->column_widths(moduleBrowserColWidths_);
+    if (auto* browser = dynamic_cast<ModuleListBrowser*>(moduleBrowser_)) {
+        browser->setCheckboxColumnWidth(moduleBrowserColWidths_[0]);
+    }
 }
 
 void ModuleManagerDialog::repopulateModuleBrowser() {
@@ -1066,13 +1900,11 @@ void ModuleManagerDialog::repopulateModuleBrowser() {
     moduleBrowser_->clear();
     visibleModuleRows_.clear();
     moduleBrowser_->add(
-        "Module ID\tDescription\tLanguage\tType\tSource\tInstalled\tAvailable\tStatus");
+        "@bSel\t@bModule ID\t@bDescription\t@bLanguage\t@bType\t@bSource\t@bInstalled\t@bAvailable\t@bStatus");
 
     updateModuleBrowserColumns();
 
-    const std::string sourceFilter = selectedChoiceLabel(sourceChoice_);
-    const std::string languageFilter = selectedChoiceLabel(languageChoice_);
-    const std::string typeFilter = selectedChoiceLabel(typeChoice_);
+    const std::string languageFilter = selectedLanguageCode();
     const std::string sortField = selectedChoiceLabel(sortChoice_);
     const std::string moduleFilter = trimCopy(
         moduleFilterInput_ && moduleFilterInput_->value()
@@ -1083,21 +1915,25 @@ void ModuleManagerDialog::repopulateModuleBrowser() {
             ? descriptionFilterInput_->value()
             : "");
 
-    const bool allSources = sourceFilter.empty() || sourceFilter == "All Sources";
-    const bool allLanguages = languageFilter.empty() || languageFilter == "All Languages";
-    const bool allTypes = typeFilter.empty() || typeFilter == "All Types";
-
     std::vector<int> filteredRows;
     filteredRows.reserve(modules_.size());
 
     for (size_t i = 0; i < modules_.size(); ++i) {
         const ModuleRow& row = modules_[i];
-        if (!allSources && row.sourceCaption != sourceFilter) continue;
-        if (!allLanguages && row.language != languageFilter) continue;
-        if (!allTypes && row.moduleType != typeFilter) continue;
+        if (!sourceCaptionSelected(row.sourceCaption)) continue;
+        if (!languageFilter.empty() && row.normalizedLanguage != languageFilter) continue;
+        if (treeFilter_.scope == TreeFilter::Scope::Type &&
+            row.moduleType != treeFilter_.moduleType) {
+            continue;
+        }
+        if (treeFilter_.scope == TreeFilter::Scope::TypeLanguage &&
+            (row.moduleType != treeFilter_.moduleType ||
+             row.normalizedLanguage != treeFilter_.language)) {
+            continue;
+        }
         if (!moduleFilter.empty() && !containsNoCase(row.moduleName, moduleFilter)) continue;
         if (!descriptionFilter.empty() &&
-            !containsNoCase(row.description, descriptionFilter)) {
+            !containsNoCase(row.shortDescription, descriptionFilter)) {
             continue;
         }
 
@@ -1116,19 +1952,19 @@ void ModuleManagerDialog::repopulateModuleBrowser() {
 
                          int cmp = 0;
                          if (sortField == "Description") {
-                             cmp = compareField(a.description, b.description);
+                             cmp = compareField(a.shortDescription, b.shortDescription);
                              if (cmp != 0) return cmp < 0;
                              cmp = compareField(a.moduleName, b.moduleName);
                              if (cmp != 0) return cmp < 0;
                          } else if (sortField == "Language") {
-                             cmp = compareField(a.language, b.language);
+                             cmp = compareField(a.displayLanguage, b.displayLanguage);
                              if (cmp != 0) return cmp < 0;
                              cmp = compareField(a.moduleName, b.moduleName);
                              if (cmp != 0) return cmp < 0;
                          } else if (sortField == "Module Type") {
                              cmp = compareField(a.moduleType, b.moduleType);
                              if (cmp != 0) return cmp < 0;
-                             cmp = compareField(a.language, b.language);
+                             cmp = compareField(a.displayLanguage, b.displayLanguage);
                              if (cmp != 0) return cmp < 0;
                              cmp = compareField(a.moduleName, b.moduleName);
                              if (cmp != 0) return cmp < 0;
@@ -1158,12 +1994,14 @@ void ModuleManagerDialog::repopulateModuleBrowser() {
         const int moduleIndex = filteredRows[i];
         const ModuleRow& row = modules_[moduleIndex];
 
-        const std::string description = row.description.empty()
+        const std::string description = row.shortDescription.empty()
             ? std::string("-")
-            : truncateWithEllipsis(row.description, 96);
-        const std::string line = row.moduleName + "\t" +
+            : truncateWithEllipsis(row.shortDescription, 96);
+        const std::string line =
+                                 std::string(row.checked ? "[x]" : "[ ]") + "\t" +
+                                 row.moduleName + "\t" +
                                  description + "\t" +
-                                 (row.language.empty() ? "-" : row.language) + "\t" +
+                                 (row.displayLanguage.empty() ? "-" : row.displayLanguage) + "\t" +
                                  (row.moduleType.empty() ? "-" : row.moduleType) + "\t" +
                                  (row.sourceCaption.empty() ? "-" : row.sourceCaption) + "\t" +
                                  (row.installedVersion.empty() ? "-" : row.installedVersion) + "\t" +
@@ -1180,6 +2018,9 @@ void ModuleManagerDialog::repopulateModuleBrowser() {
     }
 
     moduleBrowser_->value(selectedLine);
+    if (auto* browser = dynamic_cast<ModuleListBrowser*>(moduleBrowser_)) {
+        browser->clearHoverTooltip();
+    }
     updateStatusBox();
     updateInstallButton();
     moduleBrowser_->redraw();
@@ -1188,13 +2029,26 @@ void ModuleManagerDialog::repopulateModuleBrowser() {
 void ModuleManagerDialog::updateStatusBox() {
     if (!statusBox_) return;
 
+    const auto checkedRows = checkedModuleRows();
+    if (!checkedRows.empty()) {
+        std::string label = std::to_string(checkedRows.size()) + " module";
+        if (checkedRows.size() != 1) label += "s";
+        label += " checked";
+        if (!visibleModuleRows_.empty()) {
+            label += " | " + std::to_string(visibleModuleRows_.size()) + " visible";
+        }
+        label += " | Continue to install/update or adjust the checked list.";
+        statusBox_->copy_label(label.c_str());
+        return;
+    }
+
     const int moduleIndex = selectedVisibleRow();
     if (moduleIndex >= 0 &&
         moduleIndex < static_cast<int>(modules_.size())) {
         const ModuleRow& row = modules_[moduleIndex];
 
         std::string label = row.moduleName + " | " + row.statusText;
-        if (!row.language.empty()) label += " | " + row.language;
+        if (!row.displayLanguage.empty()) label += " | " + row.displayLanguage;
         if (!row.moduleType.empty()) label += " | " + row.moduleType;
         if (!row.installedVersion.empty() || !row.availableVersion.empty()) {
             label += " | local ";
@@ -1214,6 +2068,14 @@ void ModuleManagerDialog::updateStatusBox() {
 
 void ModuleManagerDialog::updateInstallButton() {
     if (!installButton_) return;
+
+    const auto checkedRows = checkedModuleRows();
+    if (!checkedRows.empty()) {
+        std::string label = "Install/Update " + std::to_string(checkedRows.size());
+        installButton_->copy_label(label.c_str());
+        installButton_->activate();
+        return;
+    }
 
     const int moduleIndex = selectedVisibleRow();
     if (moduleIndex < 0 ||
@@ -1245,12 +2107,199 @@ int ModuleManagerDialog::selectedVisibleRow() const {
     return visibleModuleRows_[idx];
 }
 
+std::vector<int> ModuleManagerDialog::checkedModuleRows() const {
+    std::vector<int> rows;
+    for (size_t i = 0; i < modules_.size(); ++i) {
+        if (modules_[i].checked) {
+            rows.push_back(static_cast<int>(i));
+        }
+    }
+    return rows;
+}
+
+std::vector<int> ModuleManagerDialog::selectedOrCheckedModuleRows() const {
+    std::vector<int> rows = checkedModuleRows();
+    if (!rows.empty()) return rows;
+
+    const int selected = selectedVisibleRow();
+    if (selected >= 0) rows.push_back(selected);
+    return rows;
+}
+
+std::string ModuleManagerDialog::selectedLanguageCode() const {
+    if (!languageChoice_) return "";
+    const std::string label = trimCopy(languageChoice_->selectedValue());
+    if (label.empty() || label == "All Languages") return "";
+
+    auto it = languageChoiceCodesByLabel_.find(label);
+    return (it != languageChoiceCodesByLabel_.end()) ? it->second
+                                                     : std::string();
+}
+
+bool ModuleManagerDialog::sourceCaptionSelected(const std::string& caption) const {
+    if (caption.empty()) return false;
+    if (!hasExplicitSourceFilter_) return true;
+
+    return std::find(activeSourceCaptions_.begin(),
+                     activeSourceCaptions_.end(),
+                     caption) != activeSourceCaptions_.end();
+}
+
+std::string ModuleManagerDialog::moduleTooltipText(int moduleIndex) const {
+    if (moduleIndex < 0 ||
+        moduleIndex >= static_cast<int>(modules_.size())) {
+        return "";
+    }
+
+    const ModuleRow& row = modules_[static_cast<size_t>(moduleIndex)];
+    std::ostringstream out;
+    out << (row.shortDescription.empty()
+                ? row.moduleName
+                : row.shortDescription);
+    if (!row.availableVersion.empty()) {
+        out << "\nSword module version " << row.availableVersion;
+    }
+    out << "\n\n";
+    out << (row.aboutText.empty()
+                ? "The module has no About information."
+                : row.aboutText);
+
+    std::string text = trimCopy(out.str());
+    if (text.size() > 1200) {
+        text = text.substr(0, 1196) + " ...";
+    }
+    return text;
+}
+
+void ModuleManagerDialog::toggleVisibleModuleChecked(int browserLine) {
+    if (browserLine <= 1) return;
+
+    const int visibleIndex = browserLine - 2;
+    if (visibleIndex < 0 ||
+        visibleIndex >= static_cast<int>(visibleModuleRows_.size())) {
+        return;
+    }
+
+    moduleBrowser_->value(browserLine);
+    const int moduleIndex = visibleModuleRows_[static_cast<size_t>(visibleIndex)];
+    modules_[static_cast<size_t>(moduleIndex)].checked =
+        !modules_[static_cast<size_t>(moduleIndex)].checked;
+    repopulateModuleBrowser();
+}
+
+bool ModuleManagerDialog::confirmInstallPlan(
+    const std::vector<int>& moduleIndices) const {
+    if (moduleIndices.empty()) return false;
+
+    std::ostringstream message;
+    message << "Install/update " << moduleIndices.size() << " module";
+    if (moduleIndices.size() != 1) message << "s";
+    message << "?\n\n";
+
+    size_t downgradeCount = 0;
+    const size_t limit = 14;
+    for (size_t i = 0; i < moduleIndices.size(); ++i) {
+        if (i == limit) {
+            message << "... and " << (moduleIndices.size() - limit)
+                    << " more.\n";
+            break;
+        }
+
+        const int moduleIndex = moduleIndices[i];
+        if (moduleIndex < 0 ||
+            moduleIndex >= static_cast<int>(modules_.size())) {
+            continue;
+        }
+
+        const ModuleRow& row = modules_[static_cast<size_t>(moduleIndex)];
+        if (row.wouldDowngrade) ++downgradeCount;
+
+        message << row.moduleName;
+        if (!row.shortDescription.empty()) {
+            message << " - " << row.shortDescription;
+        }
+        if (!row.sourceCaption.empty()) {
+            message << " [" << row.sourceCaption << "]";
+        }
+        message << "\n";
+    }
+
+    if (downgradeCount > 0) {
+        message << "\nWarning: " << downgradeCount << " selected module";
+        if (downgradeCount != 1) message << "s";
+        message << " will replace a newer local version with an older source version.\n";
+    }
+
+    message << "\nContinue?";
+
+    return fl_choice("%s", "Cancel", "Continue", nullptr,
+                     message.str().c_str()) == 1;
+}
+
 void ModuleManagerDialog::clearFilters() {
-    if (languageChoice_) languageChoice_->value(0);
-    if (typeChoice_) typeChoice_->value(0);
+    if (languageChoice_) {
+        if (languageChoiceCodesByLabel_.find("English") !=
+            languageChoiceCodesByLabel_.end()) {
+            languageChoice_->setSelectedValue("English");
+        } else {
+            languageChoice_->setSelectedValue("All Languages");
+        }
+    }
     if (moduleFilterInput_) moduleFilterInput_->value("");
     if (descriptionFilterInput_) descriptionFilterInput_->value("");
+    treeFilter_ = TreeFilter{};
+    repopulateFilterTree();
     repopulateModuleBrowser();
+    persistModuleManagerSettings();
+}
+
+void ModuleManagerDialog::chooseVisibleSources() {
+    SourceSelectionDialog dialog;
+    std::vector<SourceSelectionDialog::Row> rows;
+    rows.reserve(sources_.size());
+    for (const auto& source : sources_) {
+        rows.push_back({source.caption, sourceCaptionSelected(source.caption)});
+    }
+
+    dialog.setRows(rows);
+    if (!dialog.openModal()) return;
+
+    activeSourceCaptions_ = dialog.selectedCaptions();
+    hasExplicitSourceFilter_ =
+        (activeSourceCaptions_.size() != sources_.size());
+    if (!hasExplicitSourceFilter_) {
+        activeSourceCaptions_.clear();
+        for (const auto& source : sources_) {
+            activeSourceCaptions_.push_back(source.caption);
+        }
+    }
+
+    updateSourceFilterButton();
+    repopulateLanguageChoice();
+    repopulateFilterTree();
+    repopulateModuleBrowser();
+    persistModuleManagerSettings();
+}
+
+void ModuleManagerDialog::persistModuleManagerSettings() {
+    if (!app_) return;
+
+    VerdadApp::ModuleManagerSettings settings = app_->moduleManagerSettings();
+    VerdadApp::ModuleManagerSettings updated = settings;
+    updated.languageFilter = selectedLanguageCode();
+    updated.hasSelectedSources = hasExplicitSourceFilter_;
+    updated.selectedSources = hasExplicitSourceFilter_
+        ? activeSourceCaptions_
+        : std::vector<std::string>();
+
+    if (updated.languageFilter == settings.languageFilter &&
+        updated.hasSelectedSources == settings.hasSelectedSources &&
+        updated.selectedSources == settings.selectedSources) {
+        return;
+    }
+
+    app_->setModuleManagerSettings(updated);
+    app_->savePreferences();
 }
 
 bool ModuleManagerDialog::confirmRemoteNetworkUse() {
@@ -1444,48 +2493,43 @@ void ModuleManagerDialog::refreshSelectedSource() {
     refreshModules();
 }
 
-void ModuleManagerDialog::installOrUpdateSelectedModule() {
+void ModuleManagerDialog::installOrUpdateSelectedModules() {
     if (!installMgr_) initializeInstallMgr();
     if (!installMgr_) return;
 
-    const int moduleIndex = selectedVisibleRow();
-    if (moduleIndex < 0 || moduleIndex >= static_cast<int>(modules_.size())) {
-        fl_alert("Select a module first.");
+    const std::vector<int> moduleIndices = selectedOrCheckedModuleRows();
+    if (moduleIndices.empty()) {
+        fl_alert("Select at least one module first.");
         return;
     }
 
-    const ModuleRow& row = modules_[moduleIndex];
-    if (row.wouldDowngrade) {
-        std::string message = "Installing " + row.moduleName +
-            " from " + row.sourceCaption + " will replace local version " +
-            (row.installedVersion.empty() ? std::string("(unknown)") : row.installedVersion) +
-            " with older version " +
-            (row.availableVersion.empty() ? std::string("(unknown)") : row.availableVersion) +
-            ".\n\nContinue?";
-        if (fl_choice("%s", "Cancel", "Install older", nullptr, message.c_str()) != 1) {
-            return;
+    bool requiresRemoteAccess = false;
+    for (int moduleIndex : moduleIndices) {
+        if (moduleIndex < 0 ||
+            moduleIndex >= static_cast<int>(modules_.size())) {
+            continue;
         }
-    }
 
-    if (row.sourceType == "DIR") {
-        if (row.sourcePath.empty()) {
-            fl_alert("Local source path is missing.");
-            return;
+        const ModuleRow& row = modules_[static_cast<size_t>(moduleIndex)];
+        if (row.sourceType == "DIR") {
+            if (row.sourcePath.empty()) {
+                fl_alert("Local source path is missing for %s.",
+                         row.moduleName.c_str());
+                return;
+            }
+            continue;
         }
-    } else {
+
         if (!row.remoteSource) {
-            fl_alert("Remote source is not available. Refresh the source first.");
+            fl_alert("Remote source is not available for %s. Refresh the source first.",
+                     row.moduleName.c_str());
             return;
         }
-        if (!confirmRemoteNetworkUse()) return;
+        requiresRemoteAccess = true;
     }
 
-    statusBox_->copy_label(("Installing " + row.moduleName + "...").c_str());
-    Fl::check();
-
-    if (auto* manager = verdadInstallMgr(installMgr_.get())) {
-        manager->resetLastTransferState();
-    }
+    if (!confirmInstallPlan(moduleIndices)) return;
+    if (requiresRemoteAccess && !confirmRemoteNetworkUse()) return;
 
     if (!ensureUserSwordDataDirs()) {
         fl_alert("The local SWORD folder %s could not be created.",
@@ -1500,68 +2544,143 @@ void ModuleManagerDialog::installOrUpdateSelectedModule() {
                          new sword::MarkupFilterMgr(sword::FMT_XHTML),
                          false,
                          false);
-    int rc = 0;
-    if (row.sourceType == "DIR") {
-        rc = installMgr_->installModule(
-            &destMgr,
-            row.sourcePath.c_str(),
-            row.moduleName.c_str(),
-            nullptr);
-    } else {
-        rc = installMgr_->installModule(
-            &destMgr,
-            nullptr,
-            row.moduleName.c_str(),
-            row.remoteSource);
-    }
 
-    if (rc != 0) {
-        const std::string message =
-            describeInstallFailure(
-                row.moduleName,
-                row.sourceCaption,
-                rc,
-                verdadInstallMgr(installMgr_.get()));
-        fl_alert("%s", message.c_str());
+    std::vector<int> successfulRows;
+    std::vector<std::string> failureMessages;
+    for (size_t i = 0; i < moduleIndices.size(); ++i) {
+        const int moduleIndex = moduleIndices[i];
+        if (moduleIndex < 0 ||
+            moduleIndex >= static_cast<int>(modules_.size())) {
+            continue;
+        }
+
+        const ModuleRow& row = modules_[static_cast<size_t>(moduleIndex)];
         statusBox_->copy_label(
-            ("Install failed: " +
-             installErrorBrief(rc, verdadInstallMgr(installMgr_.get()))).c_str());
-        return;
+            ("Installing " + std::to_string(i + 1) + "/" +
+             std::to_string(moduleIndices.size()) + ": " +
+             row.moduleName + "...")
+                .c_str());
+        Fl::check();
+
+        if (auto* manager = verdadInstallMgr(installMgr_.get())) {
+            manager->resetLastTransferState();
+        }
+
+        int rc = 0;
+        if (row.sourceType == "DIR") {
+            rc = installMgr_->installModule(
+                &destMgr,
+                row.sourcePath.c_str(),
+                row.moduleName.c_str(),
+                nullptr);
+        } else {
+            rc = installMgr_->installModule(
+                &destMgr,
+                nullptr,
+                row.moduleName.c_str(),
+                row.remoteSource);
+        }
+
+        if (rc != 0) {
+            failureMessages.push_back(
+                describeInstallFailure(
+                    row.moduleName,
+                    row.sourceCaption,
+                    rc,
+                    verdadInstallMgr(installMgr_.get())));
+            continue;
+        }
+
+        successfulRows.push_back(moduleIndex);
     }
 
-    // Reload installed module registry and UI panes.
-    app_->swordManager().initialize();
-    if (app_->mainWindow()) {
-        app_->mainWindow()->refresh();
-    }
+    if (!successfulRows.empty()) {
+        app_->swordManager().initialize();
+        if (app_->mainWindow()) {
+            app_->mainWindow()->refresh();
+        }
 
-    if (app_) {
-        app_->refreshSearchIndexCatalog(false);
-    }
+        if (app_) {
+            app_->refreshSearchIndexCatalog(false);
+        }
 
-    // Rebuild indexed searchable module content when needed.
-    if (app_->searchIndexer() &&
-        isSearchableResourceTypeToken(
-            searchResourceTypeTokenForModuleType(row.moduleType))) {
-        app_->searchIndexer()->queueModuleIndex(row.moduleName, true);
+        if (app_->searchIndexer()) {
+            for (int moduleIndex : successfulRows) {
+                if (moduleIndex < 0 ||
+                    moduleIndex >= static_cast<int>(modules_.size())) {
+                    continue;
+                }
+
+                const ModuleRow& row = modules_[static_cast<size_t>(moduleIndex)];
+                if (isSearchableResourceTypeToken(
+                        searchResourceTypeTokenForModuleType(row.moduleType))) {
+                    app_->searchIndexer()->queueModuleIndex(row.moduleName, true);
+                }
+            }
+        }
     }
 
     refreshSources(false);
     refreshModules();
 
-    const std::string done = "Installed/updated " + row.moduleName;
-    statusBox_->copy_label(done.c_str());
+    if (failureMessages.empty()) {
+        std::string done = "Installed/updated " + std::to_string(successfulRows.size()) +
+                           " module";
+        if (successfulRows.size() != 1) done += "s";
+        statusBox_->copy_label(done.c_str());
+        return;
+    }
+
+    std::ostringstream summary;
+    if (!successfulRows.empty()) {
+        summary << "Installed/updated " << successfulRows.size() << " module";
+        if (successfulRows.size() != 1) summary << "s";
+        summary << ".\n\n";
+    }
+    summary << joinMessageBlocks(failureMessages);
+    fl_alert("%s", summary.str().c_str());
+    statusBox_->copy_label(
+        successfulRows.empty()
+            ? "Install failed."
+            : "Install completed with errors.");
 }
 
 void ModuleManagerDialog::onSourceChanged(Fl_Widget* /*widget*/, void* data) {
     auto* self = static_cast<ModuleManagerDialog*>(data);
     if (!self) return;
+}
+
+void ModuleManagerDialog::onChooseSources(Fl_Widget* /*widget*/, void* data) {
+    auto* self = static_cast<ModuleManagerDialog*>(data);
+    if (!self) return;
+    self->chooseVisibleSources();
+}
+
+void ModuleManagerDialog::onTreeSelectionChanged(Fl_Widget* /*widget*/, void* data) {
+    auto* self = static_cast<ModuleManagerDialog*>(data);
+    if (!self || !self->filterTree_) return;
+
+    Fl_Tree_Reason reason = self->filterTree_->callback_reason();
+    if (reason != FL_TREE_REASON_SELECTED &&
+        reason != FL_TREE_REASON_RESELECTED) {
+        return;
+    }
+
+    Fl_Tree_Item* item = self->filterTree_->callback_item();
+    auto it = self->treeFilters_.find(item);
+    self->treeFilter_ = (it != self->treeFilters_.end())
+        ? it->second
+        : TreeFilter{};
     self->repopulateModuleBrowser();
 }
 
-void ModuleManagerDialog::onFilterChanged(Fl_Widget* /*widget*/, void* data) {
+void ModuleManagerDialog::onFilterChanged(Fl_Widget* widget, void* data) {
     auto* self = static_cast<ModuleManagerDialog*>(data);
     if (!self) return;
+    if (widget == self->languageChoice_) {
+        self->repopulateFilterTree();
+        self->persistModuleManagerSettings();
+    }
     self->repopulateModuleBrowser();
 }
 
@@ -1635,7 +2754,7 @@ void ModuleManagerDialog::onRemoveSource(Fl_Widget* /*widget*/, void* data) {
 void ModuleManagerDialog::onInstallUpdate(Fl_Widget* /*widget*/, void* data) {
     auto* self = static_cast<ModuleManagerDialog*>(data);
     if (!self) return;
-    self->installOrUpdateSelectedModule();
+    self->installOrUpdateSelectedModules();
 }
 
 } // namespace verdad

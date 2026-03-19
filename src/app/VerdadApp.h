@@ -42,6 +42,12 @@ public:
         bool showCrossReferenceMarkers = true;
     };
 
+    struct ModuleManagerSettings {
+        std::string languageFilter = "en";
+        bool hasSelectedSources = false;
+        std::vector<std::string> selectedSources;
+    };
+
     VerdadApp();
     ~VerdadApp();
 
@@ -120,6 +126,14 @@ public:
     /// Build runtime CSS overrides for HTML-rendered text panes.
     std::string textStyleOverrideCss() const;
 
+    /// Current Module Manager filter preferences.
+    const ModuleManagerSettings& moduleManagerSettings() const {
+        return moduleManagerSettings_;
+    }
+
+    /// Update Module Manager filter preferences.
+    void setModuleManagerSettings(const ModuleManagerSettings& settings);
+
     /// Load preferences from a specific file. When preserveLayout is true,
     /// imported window geometry, splitter sizes, and pane scroll positions
     /// are ignored in favor of the current session layout.
@@ -148,6 +162,7 @@ private:
     AppearanceSettings appearanceSettings_;
     PreviewDictionarySettings previewDictionarySettings_;
     OptionDisplaySettings optionDisplaySettings_;
+    ModuleManagerSettings moduleManagerSettings_;
     std::vector<std::string> systemFontFamilies_;
     /// Map from family name (lowercase) to FLTK font index
     std::unordered_map<std::string, Fl_Font> fontFamilyMap_;

@@ -57,7 +57,7 @@ std::string escapeChoiceLabel(const std::string& label) {
     std::string escaped;
     escaped.reserve(label.size());
     for (char c : label) {
-        if (c == '/') escaped.push_back('\\');
+        if (c == '\\' || c == '/') escaped.push_back('\\');
         escaped.push_back(c);
     }
     return escaped;
@@ -68,8 +68,8 @@ std::string unescapeChoiceLabel(const char* label) {
 
     std::string unescaped;
     for (size_t i = 0; label[i] != '\0'; ++i) {
-        if (label[i] == '\\' && label[i + 1] == '/') {
-            unescaped.push_back('/');
+        if (label[i] == '\\' && label[i + 1] != '\0') {
+            unescaped.push_back(label[i + 1]);
             ++i;
             continue;
         }
