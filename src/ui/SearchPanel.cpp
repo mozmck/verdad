@@ -7,6 +7,7 @@
 #include "ui/VerseReferenceSort.h"
 #include "ui/VerseListCopyMenu.h"
 #include "search/SearchIndexer.h"
+#include "search/SmartSearch.h"
 #include "sword/SwordManager.h"
 
 #include <FL/Fl.H>
@@ -809,6 +810,7 @@ SearchPanel::SearchPanel(VerdadApp* app, int X, int Y, int W, int H)
     searchType_->add("Multi-word");
     searchType_->add("Exact phrase");
     searchType_->add("Regex");
+    searchType_->add("Smart");
     searchType_->value(0);
     searchType_->tooltip("Search type");
 
@@ -1150,6 +1152,7 @@ void SearchPanel::search(const std::string& query,
     // Get search type
     const bool exactPhrase = (searchType_->value() == 1);
     const bool regexSearch = (searchType_->value() == 2);
+    const bool smartSearch = (searchType_->value() == 3);
     std::string strongsQuery = normalizeStrongsQuery(trimmedQuery);
     bool isStrongs = !strongsQuery.empty() && requestCanUseStrongs(resourceTypes);
     if (isStrongs) trimmedQuery = strongsQuery;
@@ -1173,6 +1176,37 @@ void SearchPanel::search(const std::string& query,
         highlightStrongs_ = extractStrongsTokens(strongsQuery);
     } else if (regexSearch) {
         highlightMode_ = HighlightMode::Regex;
+    } else if (smartSearch) {
+        // Smart search highlights terms + their synonyms; the indexer
+        // builds highlighted snippets, so we just track terms for preview.
+        highlightMode_ = HighlightMode::Terms;
+        highlightTerms_ = tokenizeWords(trimmedQuery);
+        // Also add synonyms to the highlight terms for preview highlighting.
+        std::string smartLang = "en";
+        if (!moduleName.empty()) {
+            for (const auto& mod : searchableModules_) {
+                if (mod.name == moduleName && !mod.language.empty()) {
+                    smartLang = mod.language;
+                    break;
+                }
+            }
+        }
+        std::vector<std::string> expandedTerms;
+        std::unordered_set<std::string> seen;
+        for (const auto& term : highlightTerms_) {
+            auto syns = smart_search::expandSynonyms(term, smartLang);
+            for (const auto& syn : syns) {
+                std::string lower = syn;
+                std::transform(lower.begin(), lower.end(), lower.begin(),
+                               [](unsigned char c) {
+                                   return static_cast<char>(std::tolower(c));
+                               });
+                if (seen.insert(lower).second) {
+                    expandedTerms.push_back(syn);
+                }
+            }
+        }
+        highlightTerms_ = std::move(expandedTerms);
     } else if (exactPhrase) {
         highlightMode_ = HighlightMode::Phrase;
         highlightPhrase_ = trimmedQuery;
@@ -1223,6 +1257,18 @@ void SearchPanel::search(const std::string& query,
             results_ = indexer->searchStrongs(request, strongsQuery);
         } else if (regexSearch) {
             fallbackDeferred = true;
+        } else if (smartSearch) {
+            // Determine language from the target module for synonym expansion.
+            std::string smartLang = "en";
+            if (!moduleName.empty()) {
+                for (const auto& mod : searchableModules_) {
+                    if (mod.name == moduleName && !mod.language.empty()) {
+                        smartLang = mod.language;
+                        break;
+                    }
+                }
+            }
+            results_ = indexer->searchSmart(request, trimmedQuery, smartLang);
         } else {
             results_ = indexer->searchWord(request, trimmedQuery, exactPhrase);
         }

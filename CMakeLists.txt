@@ -102,6 +102,7 @@ set(SOURCES
     src/sword/SwordManager.cpp
     src/sword/SwordPaths.cpp
     src/search/SearchIndexer.cpp
+    src/search/SmartSearch.cpp
     src/tags/TagManager.cpp
     src/ui/MainWindow.cpp
     src/ui/FilterableChoiceWidget.cpp
@@ -125,6 +126,7 @@ set(HEADERS
     src/sword/SwordManager.h
     src/sword/SwordPaths.h
     src/search/SearchIndexer.h
+    src/search/SmartSearch.h
     src/tags/TagManager.h
     src/ui/MainWindow.h
     src/ui/FilterableChoiceWidget.h

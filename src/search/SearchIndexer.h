@@ -12,6 +12,7 @@
 #include <unordered_set>
 #include <vector>
 
+#include "search/SmartSearch.h"
 #include "sword/SwordManager.h"
 
 struct sqlite3;
@@ -97,6 +98,14 @@ public:
                                           bool caseSensitive = false,
                                           int maxResults = 0,
                                           RegexProgressCallback progressCallback = {}) const;
+
+    /// Smart/fuzzy search: expands query with synonyms, phonetic variants,
+    /// and edit-distance matching.  Results are ranked by combined relevance.
+    /// `language` is an ISO 639-1 code (e.g. "en") for synonym expansion.
+    std::vector<SearchResult> searchSmart(const SearchRequest& request,
+                                          const std::string& query,
+                                          const std::string& language = "en",
+                                          int maxResults = 0) const;
 
 private:
     struct IndexTask {

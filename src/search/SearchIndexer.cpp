@@ -1,4 +1,5 @@
 #include "search/SearchIndexer.h"
+#include "search/SmartSearch.h"
 #include "sword/SwordPaths.h"
 
 #include <markupfiltmgr.h>
@@ -1515,6 +1516,288 @@ std::vector<SearchResult> SearchIndexer::searchRegex(
         reportProgress(scanned, matches);
     }
     sqlite3_close(readDb);
+    return results;
+}
+
+std::vector<SearchResult> SearchIndexer::searchSmart(
+    const SearchRequest& request,
+    const std::string& query,
+    const std::string& language,
+    int maxResults) const {
+
+    std::vector<SearchResult> results;
+    if (!db_ || query.empty()) return results;
+
+    // Build the expanded FTS query (synonyms + prefix matching)
+    std::string smartFtsContent = smart_search::buildSmartFtsQuery(query, language);
+    if (smartFtsContent.empty()) return results;
+
+    std::string filterQuery = buildFilterFtsQuery(request);
+    std::string ftsQuery = filterQuery.empty()
+        ? smartFtsContent
+        : filterQuery + " AND " + smartFtsContent;
+
+    // Phase 1: Run the expanded FTS query to get candidate results.
+    // Fetch all matches so fuzzy re-ranking can evaluate the full set.
+    const int limit = (maxResults > 0) ? maxResults : request.maxResults;
+
+    std::lock_guard<std::mutex> lock(dbMutex_);
+
+    std::string sql =
+        "SELECT resource_type, module_name, key_text, title, content "
+        "FROM library_index "
+        "WHERE library_index MATCH ? "
+        "ORDER BY bm25(library_index)";
+
+    sqlite3_stmt* stmt = nullptr;
+    if (sqlite3_prepare_v2(db_, sql.c_str(), -1, &stmt, nullptr) != SQLITE_OK) {
+        return results;
+    }
+
+    bindText(stmt, 1, ftsQuery);
+
+    struct CandidateRow {
+        SearchResult result;
+        std::string plainText;
+        int ftsRank = 0;
+    };
+    std::vector<CandidateRow> candidates;
+
+    int rank = 0;
+    while (sqlite3_step(stmt) == SQLITE_ROW) {
+        CandidateRow row;
+        const char* type = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 0));
+        const char* module = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 1));
+        const char* key = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 2));
+        const char* title = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 3));
+        const char* plain = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 4));
+
+        row.result.resourceType = type ? type : "";
+        row.result.module = module ? module : request.moduleName;
+        row.result.key = key ? key : "";
+        row.result.title = title ? title : row.result.key;
+        row.plainText = plain ? plain : "";
+        row.ftsRank = rank++;
+
+        // Pre-populate text with a truncated snippet; will be replaced
+        // with highlighted version below.
+        if (row.plainText.size() > 160) {
+            row.result.text = row.plainText.substr(0, 160) + "...";
+        } else {
+            row.result.text = row.plainText;
+        }
+
+        candidates.push_back(std::move(row));
+    }
+    sqlite3_finalize(stmt);
+
+    if (candidates.empty()) return results;
+
+    // Phase 2: Score and re-rank using fuzzy/synonym/phonetic matching.
+    std::vector<std::string> queryTerms;
+    {
+        std::istringstream ss(query);
+        std::string word;
+        while (ss >> word) {
+            // Strip punctuation
+            size_t s = 0, e = word.size();
+            while (s < e && !std::isalnum(static_cast<unsigned char>(word[s])) &&
+                   static_cast<unsigned char>(word[s]) < 0x80) ++s;
+            while (e > s && !std::isalnum(static_cast<unsigned char>(word[e - 1])) &&
+                   static_cast<unsigned char>(word[e - 1]) < 0x80) --e;
+            if (s < e) queryTerms.push_back(word.substr(s, e - s));
+        }
+    }
+
+    std::vector<std::string> candidateTexts;
+    candidateTexts.reserve(candidates.size());
+    for (const auto& c : candidates) {
+        std::string searchable = c.result.title.empty()
+            ? c.plainText
+            : (c.result.title + " " + c.plainText);
+        candidateTexts.push_back(std::move(searchable));
+    }
+
+    auto scored = smart_search::scoreSmartResults(queryTerms, candidateTexts, language);
+
+    // Phase 3: Build final results in scored order with highlighted snippets.
+    // Combine the FTS rank and fuzzy score for final ordering.
+    // FTS BM25 rank is already good for exact/synonym hits; the fuzzy score
+    // helps promote phonetic and near-miss matches.
+    for (auto& s : scored) {
+        // Blend: 60% fuzzy quality, 40% FTS rank order (normalized).
+        double ftsNorm = 1.0 - (static_cast<double>(candidates[s.rowIndex].ftsRank) /
+                                std::max(1.0, static_cast<double>(candidates.size())));
+        s.combinedScore = 0.6 * s.combinedScore + 0.4 * ftsNorm;
+    }
+    std::sort(scored.begin(), scored.end(),
+              [](const smart_search::ScoredMatch& a,
+                 const smart_search::ScoredMatch& b) {
+                  return a.combinedScore > b.combinedScore;
+              });
+
+    int count = 0;
+    for (const auto& s : scored) {
+        if (limit > 0 && count >= limit) break;
+
+        auto& candidate = candidates[s.rowIndex];
+
+        // Build a highlighted snippet showing where matches occur.
+        // Highlight query terms, their synonyms, and fuzzy matches.
+        std::string plain = candidate.plainText;
+        std::string titleText = candidate.result.title;
+        std::string searchable = titleText.empty()
+            ? plain : (titleText + " " + plain);
+
+        // Build a highlight mask over the plain text content.
+        // We build two versions of the plain text for matching:
+        // 1. ASCII-lowered (for basic case-insensitive matching)
+        // 2. Accent-stripped + lowered (for accent-insensitive matching)
+        // Both are used to find highlight positions.
+        std::vector<bool> mask(plain.size(), false);
+        std::string lowerPlain;
+        lowerPlain.resize(plain.size());
+        std::transform(plain.begin(), plain.end(), lowerPlain.begin(),
+                       [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+
+        // Build a position map from stripped→original so we can highlight
+        // the right bytes even when accented chars are multi-byte UTF-8.
+        std::string strippedPlain = smart_search::stripDiacritics(plain);
+        std::string lowerStrippedPlain;
+        lowerStrippedPlain.resize(strippedPlain.size());
+        std::transform(strippedPlain.begin(), strippedPlain.end(),
+                       lowerStrippedPlain.begin(),
+                       [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+
+        // Map from stripped-string byte index → original-string byte index.
+        // When a multi-byte accented char maps to a single ASCII char, all
+        // original bytes in that sequence should be highlighted.
+        std::vector<size_t> strippedToOrig;
+        strippedToOrig.reserve(strippedPlain.size());
+        {
+            size_t origIdx = 0;
+            size_t stripIdx = 0;
+            while (origIdx < plain.size() && stripIdx < strippedPlain.size()) {
+                unsigned char ob = static_cast<unsigned char>(plain[origIdx]);
+                if (ob < 0x80) {
+                    strippedToOrig.push_back(origIdx);
+                    ++origIdx;
+                    ++stripIdx;
+                } else {
+                    // Multi-byte UTF-8 in original, possibly 1 byte in stripped
+                    size_t seqLen = 1;
+                    if ((ob & 0xE0) == 0xC0) seqLen = 2;
+                    else if ((ob & 0xF0) == 0xE0) seqLen = 3;
+                    else if ((ob & 0xF8) == 0xF0) seqLen = 4;
+
+                    unsigned char sb = static_cast<unsigned char>(strippedPlain[stripIdx]);
+                    if (sb < 0x80) {
+                        // Was mapped to ASCII — 1 stripped byte covers seqLen orig bytes
+                        strippedToOrig.push_back(origIdx);
+                        origIdx += seqLen;
+                        ++stripIdx;
+                    } else {
+                        // Was kept as-is — copy same number of bytes
+                        for (size_t k = 0; k < seqLen && stripIdx < strippedPlain.size(); ++k) {
+                            strippedToOrig.push_back(origIdx + k);
+                            ++stripIdx;
+                        }
+                        origIdx += seqLen;
+                    }
+                }
+            }
+        }
+
+        auto markInLower = [&](const std::string& haystack, const std::string& needle,
+                               bool useStrippedMap) {
+            if (needle.empty()) return;
+            size_t pos = 0;
+            while ((pos = haystack.find(needle, pos)) != std::string::npos) {
+                size_t end = pos + needle.size();
+                if (useStrippedMap) {
+                    // Map stripped positions back to original positions
+                    size_t origStart = (pos < strippedToOrig.size())
+                        ? strippedToOrig[pos] : pos;
+                    size_t origEnd = (end > 0 && end - 1 < strippedToOrig.size())
+                        ? strippedToOrig[end - 1] + 1 : end;
+                    // Extend origEnd to cover the full UTF-8 sequence of the last char
+                    if (origEnd < plain.size()) {
+                        unsigned char b = static_cast<unsigned char>(plain[origEnd - 1]);
+                        if (b >= 0x80) {
+                            // Walk forward to end of UTF-8 sequence
+                            while (origEnd < plain.size() &&
+                                   (static_cast<unsigned char>(plain[origEnd]) & 0xC0) == 0x80) {
+                                ++origEnd;
+                            }
+                        }
+                    }
+                    for (size_t i = origStart; i < origEnd && i < mask.size(); ++i) {
+                        mask[i] = true;
+                    }
+                } else {
+                    for (size_t i = pos; i < end && i < mask.size(); ++i) {
+                        mask[i] = true;
+                    }
+                }
+                pos += needle.size();
+            }
+        };
+
+        for (const auto& term : queryTerms) {
+            std::string lowerTerm;
+            lowerTerm.resize(term.size());
+            std::transform(term.begin(), term.end(), lowerTerm.begin(),
+                           [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+            std::string strippedTerm = smart_search::stripDiacritics(lowerTerm);
+            std::string lowerStrippedTerm;
+            lowerStrippedTerm.resize(strippedTerm.size());
+            std::transform(strippedTerm.begin(), strippedTerm.end(),
+                           lowerStrippedTerm.begin(),
+                           [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+
+            // Mark exact term matches (case-insensitive)
+            markInLower(lowerPlain, lowerTerm, false);
+            // Also try accent-stripped matching
+            if (lowerStrippedTerm != lowerTerm) {
+                markInLower(lowerStrippedPlain, lowerStrippedTerm, true);
+            }
+            // And match stripped term against unstripped text (covers user typing
+            // unaccented query against accented content)
+            markInLower(lowerStrippedPlain, lowerTerm, true);
+
+            // Mark synonym matches
+            auto syns = smart_search::expandSynonyms(lowerTerm, language);
+            for (const auto& syn : syns) {
+                if (syn == lowerTerm) continue;
+                std::string lowerSyn;
+                lowerSyn.resize(syn.size());
+                std::transform(syn.begin(), syn.end(), lowerSyn.begin(),
+                               [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+                markInLower(lowerPlain, lowerSyn, false);
+                // Also match stripped synonym against stripped text
+                std::string strippedSyn = smart_search::stripDiacritics(lowerSyn);
+                std::string lowerStrippedSyn;
+                lowerStrippedSyn.resize(strippedSyn.size());
+                std::transform(strippedSyn.begin(), strippedSyn.end(),
+                               lowerStrippedSyn.begin(),
+                               [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+                if (lowerStrippedSyn != lowerSyn) {
+                    markInLower(lowerStrippedPlain, lowerStrippedSyn, true);
+                }
+            }
+        }
+
+        candidate.result.text = buildSnippetMarkup(plain, mask);
+
+        if (candidate.result.text.empty()) {
+            candidate.result.text = candidate.result.title.empty()
+                ? candidate.result.key : candidate.result.title;
+        }
+
+        results.push_back(std::move(candidate.result));
+        ++count;
+    }
+
     return results;
 }
 
