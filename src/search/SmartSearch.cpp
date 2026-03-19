@@ -4,6 +4,7 @@
 #include <cctype>
 #include <cmath>
 #include <sstream>
+#include <string_view>
 #include <unordered_map>
 #include <unordered_set>
 
@@ -866,6 +867,28 @@ std::string quoteFtsToken(const std::string& token) {
     return "\"" + escaped + "\"";
 }
 
+bool isSearchWordByte(unsigned char c) {
+    return std::isalnum(c) || c >= 0x80;
+}
+
+bool containsWholePhrase(std::string_view haystack, std::string_view needle) {
+    if (needle.empty()) return false;
+
+    size_t pos = 0;
+    while ((pos = haystack.find(needle, pos)) != std::string_view::npos) {
+        const size_t end = pos + needle.size();
+        const bool leftBoundary =
+            (pos == 0) || !isSearchWordByte(static_cast<unsigned char>(haystack[pos - 1]));
+        const bool rightBoundary =
+            (end >= haystack.size()) ||
+            !isSearchWordByte(static_cast<unsigned char>(haystack[end]));
+        if (leftBoundary && rightBoundary) return true;
+        ++pos;
+    }
+
+    return false;
+}
+
 } // namespace
 
 // ─── Public API ──────────────────────────────────────────────────────
@@ -1217,6 +1240,8 @@ std::vector<ScoredMatch> scoreSmartResults(
     std::vector<std::string> lowerTerms;
     std::vector<std::string> strippedTerms;
     std::vector<std::unordered_set<std::string>> termSynSets;
+    std::vector<std::vector<std::string>> termPhraseSynonyms;
+    std::vector<std::vector<std::string>> termStrippedPhraseSynonyms;
     for (const auto& term : queryTerms) {
         std::string lt = toLower(term);
         lowerTerms.push_back(lt);
@@ -1225,13 +1250,26 @@ std::vector<ScoredMatch> scoreSmartResults(
 
         auto syns = expandSynonyms(lt, language);
         std::unordered_set<std::string> synSet;
+        std::vector<std::string> phraseSynonyms;
+        std::vector<std::string> strippedPhraseSynonyms;
         for (const auto& s : syns) {
-            synSet.insert(toLower(s));
+            std::string lowerSyn = toLower(s);
+            synSet.insert(lowerSyn);
+            if (lowerSyn.find(' ') != std::string::npos) {
+                phraseSynonyms.push_back(lowerSyn);
+            }
             // Also add accent-stripped form of each synonym
             std::string ss = toLower(doStripDiacritics(s));
-            if (ss != s) synSet.insert(ss);
+            if (ss != lowerSyn) {
+                synSet.insert(ss);
+                if (ss.find(' ') != std::string::npos) {
+                    strippedPhraseSynonyms.push_back(ss);
+                }
+            }
         }
         termSynSets.push_back(std::move(synSet));
+        termPhraseSynonyms.push_back(std::move(phraseSynonyms));
+        termStrippedPhraseSynonyms.push_back(std::move(strippedPhraseSynonyms));
     }
 
     // Pre-compute metaphone keys for query terms (use stripped forms)
@@ -1265,6 +1303,23 @@ std::vector<ScoredMatch> scoreSmartResults(
             double bestScore = 0.0;
             bool isExact = false;
             bool isSynonym = false;
+
+            for (const auto& phrase : termPhraseSynonyms[t]) {
+                if (containsWholePhrase(lowerText, phrase)) {
+                    bestScore = 0.85;
+                    isSynonym = true;
+                    break;
+                }
+            }
+            if (!isSynonym) {
+                for (const auto& phrase : termStrippedPhraseSynonyms[t]) {
+                    if (containsWholePhrase(strippedText, phrase)) {
+                        bestScore = 0.85;
+                        isSynonym = true;
+                        break;
+                    }
+                }
+            }
 
             for (const auto& tw : allTextWords) {
                 // Exact match (also matches accent-stripped forms)

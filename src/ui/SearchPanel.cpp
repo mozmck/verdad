@@ -180,6 +180,52 @@ std::vector<std::string> tokenizeWords(const std::string& text) {
     return tokens;
 }
 
+std::string normalizeSmartSearchLanguage(std::string language) {
+    std::transform(language.begin(), language.end(), language.begin(),
+                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    size_t sep = language.find_first_of("-_");
+    if (sep != std::string::npos) {
+        language = language.substr(0, sep);
+    }
+    return language;
+}
+
+std::string detectSmartSearchLanguage(
+    const std::string& moduleName,
+    const std::vector<std::string>& resourceTypes,
+    const std::vector<ModuleInfo>& searchableModules) {
+    if (!moduleName.empty()) {
+        for (const auto& mod : searchableModules) {
+            std::string language = normalizeSmartSearchLanguage(mod.language);
+            if (mod.name == moduleName &&
+                !language.empty() &&
+                smart_search::hasSynonymDatabase(language)) {
+                return language;
+            }
+        }
+        return "";
+    }
+
+    std::unordered_set<std::string> languages;
+    for (const auto& mod : searchableModules) {
+        std::string resourceType =
+            searchResourceTypeTokenForModuleType(mod.type);
+        if (!resourceTypes.empty() &&
+            std::find(resourceTypes.begin(), resourceTypes.end(), resourceType) ==
+                resourceTypes.end()) {
+            continue;
+        }
+        std::string language = normalizeSmartSearchLanguage(mod.language);
+        if (language.empty() || !smart_search::hasSynonymDatabase(language)) {
+            continue;
+        }
+        languages.insert(language);
+        if (languages.size() > 1) return "";
+    }
+
+    return languages.empty() ? "" : *languages.begin();
+}
+
 std::vector<std::string> extractStrongsTokens(const std::string& text) {
     std::vector<std::string> terms;
     std::unordered_set<std::string> seen;
@@ -1182,15 +1228,8 @@ void SearchPanel::search(const std::string& query,
         highlightMode_ = HighlightMode::Terms;
         highlightTerms_ = tokenizeWords(trimmedQuery);
         // Also add synonyms to the highlight terms for preview highlighting.
-        std::string smartLang = "en";
-        if (!moduleName.empty()) {
-            for (const auto& mod : searchableModules_) {
-                if (mod.name == moduleName && !mod.language.empty()) {
-                    smartLang = mod.language;
-                    break;
-                }
-            }
-        }
+        std::string smartLang = detectSmartSearchLanguage(
+            moduleName, resourceTypes, searchableModules_);
         std::vector<std::string> expandedTerms;
         std::unordered_set<std::string> seen;
         for (const auto& term : highlightTerms_) {
@@ -1258,16 +1297,8 @@ void SearchPanel::search(const std::string& query,
         } else if (regexSearch) {
             fallbackDeferred = true;
         } else if (smartSearch) {
-            // Determine language from the target module for synonym expansion.
-            std::string smartLang = "en";
-            if (!moduleName.empty()) {
-                for (const auto& mod : searchableModules_) {
-                    if (mod.name == moduleName && !mod.language.empty()) {
-                        smartLang = mod.language;
-                        break;
-                    }
-                }
-            }
+            std::string smartLang = detectSmartSearchLanguage(
+                moduleName, resourceTypes, searchableModules_);
             results_ = indexer->searchSmart(request, trimmedQuery, smartLang);
         } else {
             results_ = indexer->searchWord(request, trimmedQuery, exactPhrase);

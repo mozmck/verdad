@@ -22,6 +22,9 @@
 namespace verdad {
 namespace {
 
+constexpr int kSmartSearchMinCandidateLimit = 200;
+constexpr int kSmartSearchMaxCandidateLimit = 2000;
+
 std::string trimCopy(const std::string& text) {
     size_t start = 0;
     while (start < text.size() &&
@@ -1538,58 +1541,64 @@ std::vector<SearchResult> SearchIndexer::searchSmart(
         : filterQuery + " AND " + smartFtsContent;
 
     // Phase 1: Run the expanded FTS query to get candidate results.
-    // Fetch all matches so fuzzy re-ranking can evaluate the full set.
     const int limit = (maxResults > 0) ? maxResults : request.maxResults;
 
-    std::lock_guard<std::mutex> lock(dbMutex_);
-
-    std::string sql =
-        "SELECT resource_type, module_name, key_text, title, content "
-        "FROM library_index "
-        "WHERE library_index MATCH ? "
-        "ORDER BY bm25(library_index)";
-
     sqlite3_stmt* stmt = nullptr;
-    if (sqlite3_prepare_v2(db_, sql.c_str(), -1, &stmt, nullptr) != SQLITE_OK) {
-        return results;
-    }
-
-    bindText(stmt, 1, ftsQuery);
-
     struct CandidateRow {
         SearchResult result;
         std::string plainText;
         int ftsRank = 0;
     };
     std::vector<CandidateRow> candidates;
+    {
+        std::lock_guard<std::mutex> lock(dbMutex_);
 
-    int rank = 0;
-    while (sqlite3_step(stmt) == SQLITE_ROW) {
-        CandidateRow row;
-        const char* type = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 0));
-        const char* module = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 1));
-        const char* key = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 2));
-        const char* title = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 3));
-        const char* plain = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 4));
-
-        row.result.resourceType = type ? type : "";
-        row.result.module = module ? module : request.moduleName;
-        row.result.key = key ? key : "";
-        row.result.title = title ? title : row.result.key;
-        row.plainText = plain ? plain : "";
-        row.ftsRank = rank++;
-
-        // Pre-populate text with a truncated snippet; will be replaced
-        // with highlighted version below.
-        if (row.plainText.size() > 160) {
-            row.result.text = row.plainText.substr(0, 160) + "...";
-        } else {
-            row.result.text = row.plainText;
+        std::string sql =
+            "SELECT resource_type, module_name, key_text, title, content "
+            "FROM library_index "
+            "WHERE library_index MATCH ? "
+            "ORDER BY bm25(library_index) "
+            "LIMIT ?";
+        if (sqlite3_prepare_v2(db_, sql.c_str(), -1, &stmt, nullptr) != SQLITE_OK) {
+            return results;
         }
 
-        candidates.push_back(std::move(row));
+        int candidateLimit = (limit > 0)
+            ? std::max(limit * 8, kSmartSearchMinCandidateLimit)
+            : kSmartSearchMaxCandidateLimit;
+        candidateLimit = std::min(candidateLimit, kSmartSearchMaxCandidateLimit);
+
+        bindText(stmt, 1, ftsQuery);
+        sqlite3_bind_int(stmt, 2, candidateLimit);
+
+        int rank = 0;
+        while (sqlite3_step(stmt) == SQLITE_ROW) {
+            CandidateRow row;
+            const char* type = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 0));
+            const char* module = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 1));
+            const char* key = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 2));
+            const char* title = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 3));
+            const char* plain = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 4));
+
+            row.result.resourceType = type ? type : "";
+            row.result.module = module ? module : request.moduleName;
+            row.result.key = key ? key : "";
+            row.result.title = title ? title : row.result.key;
+            row.plainText = plain ? plain : "";
+            row.ftsRank = rank++;
+
+            // Pre-populate text with a truncated snippet; will be replaced
+            // with highlighted version below.
+            if (row.plainText.size() > 160) {
+                row.result.text = row.plainText.substr(0, 160) + "...";
+            } else {
+                row.result.text = row.plainText;
+            }
+
+            candidates.push_back(std::move(row));
+        }
+        sqlite3_finalize(stmt);
     }
-    sqlite3_finalize(stmt);
 
     if (candidates.empty()) return results;
 
