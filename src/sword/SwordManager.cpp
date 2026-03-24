@@ -2811,6 +2811,10 @@ bool SwordManager::initialize() {
             return false;
         }
 
+        for (const auto& path : supplementalUserSwordDataPaths()) {
+            mgr_->augmentModules(path.c_str());
+        }
+
         // Enable global options for Strong's numbers and morphology
         mgr_->setGlobalOption("Strong's Numbers", "On");
         mgr_->setGlobalOption("Morphological Tags", "On");

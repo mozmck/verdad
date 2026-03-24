@@ -1933,6 +1933,11 @@ void SearchIndexer::indexModuleNow(const std::string& moduleName) {
             nullptr, nullptr, true,
             new sword::MarkupFilterMgr(sword::FMT_XHTML, sword::ENC_UTF8)));
     }
+    if (mgr) {
+        for (const auto& path : supplementalUserSwordDataPaths()) {
+            mgr->augmentModules(path.c_str());
+        }
+    }
     sword::SWModule* mod = mgr ? mgr->getModule(moduleName.c_str()) : nullptr;
     if (!mod) {
         writeError("Module not found while rebuilding index.");

@@ -3,6 +3,7 @@
 #include "app/VerdadApp.h"
 #include "search/SearchIndexer.h"
 #include "sword/SwordManager.h"
+#include "sword/SwordPaths.h"
 #include "ui/FilterableChoiceWidget.h"
 #include "ui/MainWindow.h"
 #include "ui/UiFontUtils.h"
@@ -205,8 +206,7 @@ std::string userHomeDir() {
 }
 
 std::string userSwordRootDir() {
-    const std::string home = userHomeDir();
-    return home.empty() ? std::string() : home + "/.sword";
+    return defaultUserSwordDataPath();
 }
 
 bool ensureUserSwordDataDirs() {
@@ -1137,9 +1137,9 @@ void applyInstallMgrDefaults(VerdadInstallMgr* installMgr) {
 ModuleManagerDialog::ModuleManagerDialog(VerdadApp* app, int W, int H)
     : Fl_Double_Window(W, H, "Module Manager")
     , app_(app) {
-    std::string home = userHomeDir();
-    installMgrPath_ = home.empty() ? std::string("./InstallMgr")
-                                   : home + "/.sword/InstallMgr";
+    const std::string swordRoot = userSwordRootDir();
+    installMgrPath_ = swordRoot.empty() ? std::string("./InstallMgr")
+                                        : swordRoot + "/InstallMgr";
 
     buildUi();
     initializeInstallMgr();
@@ -1571,6 +1571,9 @@ void ModuleManagerDialog::refreshModules() {
     };
 
     sword::SWMgr localMgr(new sword::MarkupFilterMgr(sword::FMT_XHTML));
+    for (const auto& path : supplementalUserSwordDataPaths()) {
+        localMgr.augmentModules(path.c_str());
+    }
     std::map<std::string, sword::SWModule*> installed;
     for (auto it = localMgr.Modules.begin(); it != localMgr.Modules.end(); ++it) {
         if (!it->second) continue;
