@@ -152,6 +152,18 @@ bool sameBookChapter(const sword::VerseKey* vk,
            vk->getChapter() == chapter;
 }
 
+sword::VerseKey* verseKeyForModule(sword::SWModule* mod) {
+    if (!mod) return nullptr;
+
+    sword::VerseKey* vk = dynamic_cast<sword::VerseKey*>(mod->getKey());
+    if (!vk) {
+        sword::VerseKey tempKey;
+        mod->setKey(tempKey);
+        vk = dynamic_cast<sword::VerseKey*>(mod->getKey());
+    }
+    return vk;
+}
+
 class ScopedGlobalOptionOverride {
 public:
     ScopedGlobalOptionOverride(sword::SWMgr* mgr,
@@ -4293,12 +4305,7 @@ std::vector<std::string> SwordManager::getBookNames(const std::string& moduleNam
     sword::SWModule* mod = getModule(moduleName);
     if (!mod) return books;
 
-    sword::VerseKey* vk = dynamic_cast<sword::VerseKey*>(mod->getKey());
-    if (!vk) {
-        sword::VerseKey tempKey;
-        mod->setKey(tempKey);
-        vk = dynamic_cast<sword::VerseKey*>(mod->getKey());
-    }
+    sword::VerseKey* vk = verseKeyForModule(mod);
     if (!vk) return books;
 
     for (int t = 0; t < 2; t++) {  // Old and New Testament
@@ -4312,6 +4319,29 @@ std::vector<std::string> SwordManager::getBookNames(const std::string& moduleNam
     return books;
 }
 
+std::vector<std::string> SwordManager::getBookNamesForTestament(
+    const std::string& moduleName,
+    int testament) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    std::vector<std::string> books;
+
+    if (testament != 1 && testament != 2) return books;
+
+    sword::SWModule* mod = getModule(moduleName);
+    if (!mod) return books;
+
+    sword::VerseKey* vk = verseKeyForModule(mod);
+    if (!vk) return books;
+
+    vk->setTestament(testament);
+    for (int b = 1; b <= vk->getBookMax(); ++b) {
+        vk->setBook(b);
+        books.push_back(vk->getBookName());
+    }
+
+    return books;
+}
+
 int SwordManager::getChapterCount(const std::string& moduleName,
                                    const std::string& book) {
     std::lock_guard<std::mutex> lock(mutex_);
@@ -4319,12 +4349,7 @@ int SwordManager::getChapterCount(const std::string& moduleName,
     sword::SWModule* mod = getModule(moduleName);
     if (!mod) return 0;
 
-    sword::VerseKey* vk = dynamic_cast<sword::VerseKey*>(mod->getKey());
-    if (!vk) {
-        sword::VerseKey tempKey;
-        mod->setKey(tempKey);
-        vk = dynamic_cast<sword::VerseKey*>(mod->getKey());
-    }
+    sword::VerseKey* vk = verseKeyForModule(mod);
     if (!vk) return 0;
 
     std::string ref = book + " 1:1";

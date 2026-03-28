@@ -1,5 +1,6 @@
 #include "ui/BiblePane.h"
 #include "app/VerdadApp.h"
+#include "ui/BibleBookChoice.h"
 #include "ui/HtmlWidget.h"
 #include "ui/MainWindow.h"
 #include "ui/LeftPane.h"
@@ -527,6 +528,12 @@ void BiblePane::setHtmlStyleOverride(const std::string& css) {
     }
 }
 
+void BiblePane::setBrowserLineSpacing(int pixels) {
+    if (bookChoice_) {
+        bookChoice_->setBrowserLineSpacing(pixels);
+    }
+}
+
 void BiblePane::syncOptionButtons() {
     if (!app_) return;
     const auto& options = app_->optionDisplaySettings();
@@ -771,9 +778,10 @@ void BiblePane::buildNavBar() {
     prevButton_->tooltip("Previous chapter");
     cx += 32;
 
-    bookChoice_ = new Fl_Choice(cx, cy, 120, nh);
+    bookChoice_ = new BibleBookChoice(cx, cy, 120, nh);
     bookChoice_->callback(onBookChange, this);
     bookChoice_->tooltip("Select book");
+    bookChoice_->setBrowserLineSpacing(app_ ? app_->appearanceSettings().browserLineSpacing : 0);
     cx += 122;
 
     chapterChoice_ = new Fl_Choice(cx, cy, 50, nh);
@@ -1234,10 +1242,14 @@ void BiblePane::populateBooks(bool force) {
 
     if (needRebuild) {
         bookChoice_->clear();
-        auto books = app_->swordManager().getBookNames(moduleName_);
+        auto oldTestamentBooks = app_->swordManager().getBookNamesForTestament(moduleName_, 1);
+        auto newTestamentBooks = app_->swordManager().getBookNamesForTestament(moduleName_, 2);
+        std::vector<std::string> books = oldTestamentBooks;
+        books.insert(books.end(), newTestamentBooks.begin(), newTestamentBooks.end());
         for (const auto& book : books) {
             bookChoice_->add(book.c_str());
         }
+        bookChoice_->setBookColumns(oldTestamentBooks, newTestamentBooks);
         populatedBookModule_ = moduleName_;
 
         if (books.empty()) {

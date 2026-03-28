@@ -1708,6 +1708,9 @@ void MainWindow::applyAppearanceSettings(Fl_Font appFont,
     if (leftPane_ && app_) {
         leftPane_->setBrowserLineSpacing(app_->appearanceSettings().browserLineSpacing);
     }
+    if (biblePane_ && app_) {
+        biblePane_->setBrowserLineSpacing(app_->appearanceSettings().browserLineSpacing);
+    }
     if (rightPane_ && app_) {
         rightPane_->setEditorIndentWidth(app_->appearanceSettings().editorIndentWidth);
         rightPane_->setEditorLineHeight(app_->appearanceSettings().editorLineHeight);

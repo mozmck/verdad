@@ -103,6 +103,7 @@ set(SOURCES
     src/search/SmartSearch.cpp
     src/tags/TagManager.cpp
     src/ui/MainWindow.cpp
+    src/ui/BibleBookChoice.cpp
     src/ui/FilterableChoiceWidget.cpp
     src/ui/StyledTabs.cpp
     src/ui/ModuleManagerDialog.cpp
@@ -127,6 +128,7 @@ set(HEADERS
     src/search/SmartSearch.h
     src/tags/TagManager.h
     src/ui/MainWindow.h
+    src/ui/BibleBookChoice.h
     src/ui/FilterableChoiceWidget.h
     src/ui/StyledTabs.h
     src/ui/ModuleManagerDialog.h

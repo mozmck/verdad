@@ -14,6 +14,7 @@ namespace verdad {
 
 class VerdadApp;
 class HtmlWidget;
+class BibleBookChoice;
 
 /// Center pane for Bible text display.
 /// Single-view (no internal tabs). Context tabs are managed by MainWindow.
@@ -90,6 +91,9 @@ public:
     /// Apply runtime HTML style overrides to the Bible view.
     void setHtmlStyleOverride(const std::string& css);
 
+    /// Apply configured list spacing to browser-style controls in the Bible pane.
+    void setBrowserLineSpacing(int pixels);
+
     /// Select a verse in the current chapter
     void selectVerse(int verse);
 
@@ -134,7 +138,7 @@ private:
 
     // Navigation bar
     Fl_Group* navBar_;
-    Fl_Choice* bookChoice_;
+    BibleBookChoice* bookChoice_;
     Fl_Choice* chapterChoice_;
     Fl_Choice* moduleChoice_;
     Fl_Button* prevButton_;

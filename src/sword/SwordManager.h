@@ -273,6 +273,11 @@ public:
     /// Get list of book names for a module
     std::vector<std::string> getBookNames(const std::string& moduleName);
 
+    /// Get list of book names for a single testament in a Bible module.
+    /// Testament values are 1 = Old Testament, 2 = New Testament.
+    std::vector<std::string> getBookNamesForTestament(const std::string& moduleName,
+                                                      int testament);
+
     /// Get the number of chapters in a book
     int getChapterCount(const std::string& moduleName, const std::string& book);
 
