@@ -331,6 +331,9 @@ private:
     mutable std::unordered_map<std::string, VerseHtmlCacheEntry> verseHtmlCache_;
     mutable std::list<std::string> verseHtmlLru_;
     static constexpr size_t kVerseHtmlCacheLimit = 2048;
+    mutable std::unordered_map<std::string, VerseHtmlCacheEntry> commentaryVerseHtmlCache_;
+    mutable std::list<std::string> commentaryVerseHtmlLru_;
+    static constexpr size_t kCommentaryVerseHtmlCacheLimit = 4096;
     mutable std::unordered_map<
         std::string,
         std::shared_ptr<const std::vector<std::string>>> dictionaryKeyCache_;

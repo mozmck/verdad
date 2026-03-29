@@ -197,7 +197,7 @@ private:
     std::unordered_map<std::string, std::string> commentaryChapterCache_;
     std::deque<std::string> commentaryChapterCacheOrder_;
     size_t commentaryChapterCacheBytes_ = 0;
-    static constexpr size_t kCommentaryChapterCacheLimit = 8;
+    static constexpr size_t kCommentaryChapterCacheLimit = 32;
     static constexpr size_t kCommentaryChapterCacheByteLimit = 16 * 1024 * 1024;
     int highlightedCommentaryVerse_ = 0;
     std::string htmlStyleOverrideCss_;

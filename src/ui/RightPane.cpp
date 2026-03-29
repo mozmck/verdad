@@ -1324,6 +1324,7 @@ void RightPane::showDictionaryEntry(const std::string& moduleName,
 
 void RightPane::showDictionaryEntryInternal(const std::string& moduleName,
                                             const std::string& key) {
+    perf::ScopeTimer timer("RightPane::showDictionaryEntryInternal");
     bool moduleChanged = (moduleName != currentDictionary_);
     currentDictionary_ = moduleName;
     currentDictKey_ = trimCopy(key);
@@ -1331,9 +1332,13 @@ void RightPane::showDictionaryEntryInternal(const std::string& moduleName,
         setDictionaryModule(moduleName);
     }
 
+    perf::StepTimer step;
     std::string resolvedKey;
     std::string html = app_->swordManager().getDictionaryEntry(
         moduleName, currentDictKey_, &resolvedKey);
+    perf::logf("RightPane::showDictionaryEntryInternal getDictionaryEntry %s %s: %.3f ms",
+               moduleName.c_str(), currentDictKey_.c_str(), step.elapsedMs());
+    step.reset();
     if (!resolvedKey.empty()) {
         currentDictKey_ = resolvedKey;
     }
@@ -1342,6 +1347,8 @@ void RightPane::showDictionaryEntryInternal(const std::string& moduleName,
     }
     if (dictionaryHtml_) {
         dictionaryHtml_->setHtml(html);
+        perf::logf("RightPane::showDictionaryEntryInternal dictionaryHtml_->setHtml: %.3f ms",
+                   step.elapsedMs());
     }
     updateDictionaryNavigationChrome();
 }

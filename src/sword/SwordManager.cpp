@@ -20,6 +20,7 @@
 #include <cstring>
 #include <cctype>
 #include <cstdlib>
+#include <string_view>
 
 namespace verdad {
 namespace {
@@ -38,6 +39,15 @@ std::string trimCopy(const std::string& s) {
         --end;
     }
     return s.substr(start, end - start);
+}
+
+bool containsNonWhitespace(std::string_view text) {
+    for (char ch : text) {
+        if (!std::isspace(static_cast<unsigned char>(ch))) {
+            return true;
+        }
+    }
+    return false;
 }
 
 size_t countCharOccurrences(const std::string& text, char needle) {
@@ -1548,39 +1558,42 @@ std::string stripTags(const std::string& html) {
     return decodeHtmlEntities(out);
 }
 
-void logCommentaryHtmlSummary(const std::string& moduleName,
-                              const std::string& key,
-                              const std::string& html) {
+struct CommentaryBuildPerf {
+    size_t verses = 0;
+    size_t emptyEntries = 0;
+    size_t cacheHits = 0;
+    size_t cacheMisses = 0;
+    size_t entryBytes = 0;
+    double entryBuildMs = 0.0;
+    double renderTextMs = 0.0;
+    double normalizeMs = 0.0;
+    double closeTagsMs = 0.0;
+    double plainTextMs = 0.0;
+};
+
+void logCommentaryBuildPerf(const std::string& moduleName,
+                            const std::string& key,
+                            size_t htmlBytes,
+                            double assembleMs,
+                            const CommentaryBuildPerf& perfStats) {
     if (!perf::enabled()) return;
 
-    const std::string plain = stripTags(html);
-    size_t plainWords = 0;
-    bool inWord = false;
-    for (char ch : plain) {
-        if (std::isspace(static_cast<unsigned char>(ch))) {
-            if (inWord) {
-                ++plainWords;
-                inWord = false;
-            }
-            continue;
-        }
-        inWord = true;
-    }
-    if (inWord) ++plainWords;
-
     perf::logf(
-        "SwordManager::getCommentaryText summary %s %s: html=%zu plain=%zu words=%zu verses=%zu p=%zu br=%zu gaps=%zu wrapped=%zu newlines=%zu",
+        "SwordManager::getCommentaryText build %s %s: html=%zu verses=%zu empty=%zu cacheHits=%zu cacheMisses=%zu entryBytes=%zu entryBuild=%.3f ms renderText=%.3f ms normalize=%.3f ms closeTags=%.3f ms plainText=%.3f ms assemble=%.3f ms",
         moduleName.c_str(),
         key.c_str(),
-        html.size(),
-        plain.size(),
-        plainWords,
-        countSubstringOccurrences(html, "class=\"commentary-verse"),
-        countSubstringOccurrences(html, "<p"),
-        countSubstringOccurrences(html, "<br"),
-        countSubstringOccurrences(html, "class=\"commentary-gap"),
-        countSubstringOccurrences(html, "class=\"w\""),
-        countCharOccurrences(html, '\n'));
+        htmlBytes,
+        perfStats.verses,
+        perfStats.emptyEntries,
+        perfStats.cacheHits,
+        perfStats.cacheMisses,
+        perfStats.entryBytes,
+        perfStats.entryBuildMs,
+        perfStats.renderTextMs,
+        perfStats.normalizeMs,
+        perfStats.closeTagsMs,
+        perfStats.plainTextMs,
+        assembleMs);
 }
 
 std::string firstStrongTokenFromText(const std::string& text) {
@@ -2139,7 +2152,7 @@ bool isInlineStrongMarkerTag(const std::string& rawTag, const std::string& tagNa
     return i == tagName.size() && digits >= 1 && digits <= 6;
 }
 
-bool tryConsumeEscapedStrongMarker(const std::string& text, size_t& pos) {
+bool tryConsumeEscapedStrongMarker(std::string_view text, size_t& pos) {
     if (pos + 4 > text.size()) return false;
     if (!(text[pos] == '&' && equalsNoCase(text[pos + 1], 'l') &&
           equalsNoCase(text[pos + 2], 't') && text[pos + 3] == ';')) {
@@ -2171,7 +2184,7 @@ bool tryConsumeEscapedStrongMarker(const std::string& text, size_t& pos) {
     return false;
 }
 
-bool tryConsumeGbfMorphMarker(const std::string& text, size_t& pos) {
+bool tryConsumeGbfMorphMarker(std::string_view text, size_t& pos) {
     if (pos >= text.size() || text[pos] != '(') return false;
     size_t i = pos + 1;
     size_t digits = 0;
@@ -2194,7 +2207,7 @@ bool tryConsumeGbfMorphMarker(const std::string& text, size_t& pos) {
     return false;
 }
 
-void trackLastWordInPlainText(const std::string& text,
+void trackLastWordInPlainText(std::string_view text,
                               size_t outStart,
                               OutputTarget& target) {
     size_t i = 0;
@@ -2215,7 +2228,7 @@ void trackLastWordInPlainText(const std::string& text,
     }
 }
 
-void trackLastWordInHtmlFragment(const std::string& html,
+void trackLastWordInHtmlFragment(std::string_view html,
                                  size_t outStart,
                                  OutputTarget& target) {
     bool inTag = false;
@@ -2261,7 +2274,7 @@ void trackLastWordInHtmlFragment(const std::string& html,
 }
 
 void appendSanitizedText(std::string& out,
-                         const std::string& text,
+                         std::string_view text,
                          OutputTarget& target) {
     std::string cleaned;
     cleaned.reserve(text.size());
@@ -2616,117 +2629,146 @@ size_t findTagCI(const std::string& s, const std::string& tagLower, size_t pos =
     return std::string::npos;
 }
 
+size_t skipWhitespace(const std::string& input, size_t pos) {
+    while (pos < input.size() &&
+           std::isspace(static_cast<unsigned char>(input[pos]))) {
+        ++pos;
+    }
+    return pos;
+}
+
 // Replace self-closing <p /> and empty <p></p> tags with gap div
-std::string replaceSelfClosingAndEmptyParagraphs(std::string input) {
+std::string replaceSelfClosingAndEmptyParagraphs(const std::string& input) {
     static const std::string gap = "<div class=\"commentary-gap\">&nbsp;</div>";
+    if (input.empty()) return input;
+
     std::string result;
     result.reserve(input.size());
     size_t i = 0;
     while (i < input.size()) {
-        if (input[i] == '<' &&
-            (i + 1 < input.size()) &&
-            (std::tolower(static_cast<unsigned char>(input[i + 1])) == 'p')) {
-            // Check for <p ... /> (self-closing)
-            size_t close = input.find('>', i);
-            if (close != std::string::npos && close > i + 1) {
-                if (input[close - 1] == '/' ||
-                    (close >= 2 && input[close - 1] == ' ' && input[close - 2] == '/')) {
-                    result += gap;
-                    i = close + 1;
-                    continue;
-                }
-                // Check for <p...> followed by only whitespace then </p>
-                size_t afterOpen = close + 1;
-                size_t endTag = findTagCI(input, "</p>", afterOpen);
-                if (endTag != std::string::npos) {
-                    bool onlyWhitespace = true;
-                    for (size_t k = afterOpen; k < endTag && onlyWhitespace; ++k) {
-                        if (!std::isspace(static_cast<unsigned char>(input[k])))
-                            onlyWhitespace = false;
-                    }
-                    if (onlyWhitespace) {
-                        result += gap;
-                        i = endTag + 4; // skip </p>
-                        continue;
-                    }
-                }
+        if (input[i] != '<') {
+            result.push_back(input[i]);
+            ++i;
+            continue;
+        }
+
+        size_t tagEnd = std::string::npos;
+        std::string tagName;
+        bool isClosing = false;
+        bool isSelfClosing = false;
+        if (!parseTag(input, i, tagEnd, tagName, isClosing, isSelfClosing) ||
+            isClosing || tagName != "p") {
+            result.push_back(input[i]);
+            ++i;
+            continue;
+        }
+
+        if (isSelfClosing) {
+            result += gap;
+            i = tagEnd + 1;
+            continue;
+        }
+
+        size_t next = skipWhitespace(input, tagEnd + 1);
+        if (next < input.size() && input[next] == '<') {
+            size_t closeEnd = std::string::npos;
+            std::string closeName;
+            bool closeIsClosing = false;
+            bool closeIsSelfClosing = false;
+            if (parseTag(input, next, closeEnd, closeName, closeIsClosing, closeIsSelfClosing) &&
+                closeIsClosing && closeName == "p") {
+                result += gap;
+                i = closeEnd + 1;
+                continue;
             }
         }
-        result.push_back(input[i]);
-        ++i;
+
+        result.append(input, i, tagEnd + 1 - i);
+        i = tagEnd + 1;
     }
     return result;
 }
 
 // Collapse runs of 2+ <br> tags into a single gap div
-std::string collapseMultipleBreaks(std::string input) {
+std::string collapseMultipleBreaks(const std::string& input) {
     static const std::string gap = "<div class=\"commentary-gap\">&nbsp;</div>";
+    if (input.empty()) return input;
+
     std::string result;
     result.reserve(input.size());
     size_t i = 0;
     while (i < input.size()) {
-        // Try to match <br .../> or <br>
-        size_t brStart = findTagCI(input, "<br", i);
-        if (brStart != i || brStart == std::string::npos) {
+        if (input[i] != '<') {
             result.push_back(input[i]);
             ++i;
             continue;
         }
-        // Count consecutive <br> tags
+
+        size_t tagEnd = std::string::npos;
+        std::string tagName;
+        bool isClosing = false;
+        bool isSelfClosing = false;
+        if (!parseTag(input, i, tagEnd, tagName, isClosing, isSelfClosing) ||
+            isClosing || tagName != "br") {
+            result.push_back(input[i]);
+            ++i;
+            continue;
+        }
+
         int brCount = 0;
         size_t pos = i;
+        size_t sequenceEnd = i;
         while (pos < input.size()) {
-            size_t nextBr = findTagCI(input, "<br", pos);
-            if (nextBr != pos) {
-                // Check if only whitespace between
-                bool onlySpace = true;
-                for (size_t k = pos; k < input.size() && k < nextBr && onlySpace; ++k) {
-                    if (!std::isspace(static_cast<unsigned char>(input[k])))
-                        onlySpace = false;
-                }
-                if (!onlySpace || nextBr == std::string::npos) break;
-                pos = nextBr;
+            if (input[pos] != '<') {
+                size_t next = skipWhitespace(input, pos);
+                if (next == pos) break;
+                pos = next;
+                sequenceEnd = pos;
+                continue;
             }
-            size_t close = input.find('>', pos);
-            if (close == std::string::npos) break;
+
+            size_t close = std::string::npos;
+            std::string closeName;
+            bool closeIsClosing = false;
+            bool closeIsSelfClosing = false;
+            if (!parseTag(input, pos, close, closeName, closeIsClosing, closeIsSelfClosing) ||
+                closeIsClosing || closeName != "br") {
+                break;
+            }
             ++brCount;
             pos = close + 1;
+            sequenceEnd = pos;
         }
+
         if (brCount >= 2) {
             result += gap;
         } else {
-            // Just one <br>, keep it
-            size_t close = input.find('>', i);
-            if (close != std::string::npos) {
-                result.append(input, i, close + 1 - i);
-            }
+            result.append(input, i, tagEnd + 1 - i);
         }
-        i = pos;
+        i = sequenceEnd;
     }
     return result;
 }
 
 // Collapse repeated gap divs into one
-std::string collapseRepeatedGaps(std::string input) {
+std::string collapseRepeatedGaps(const std::string& input) {
     static const std::string gapTag = "<div class=\"commentary-gap\">&nbsp;</div>";
+    if (input.empty()) return input;
+
     std::string result;
     result.reserve(input.size());
     size_t i = 0;
     while (i < input.size()) {
-        size_t gapPos = input.find(gapTag, i);
-        if (gapPos != i) {
+        if (input.compare(i, gapTag.size(), gapTag) != 0) {
             result.push_back(input[i]);
             ++i;
             continue;
         }
-        // Found a gap tag; skip consecutive ones
+
         result += gapTag;
-        i = gapPos + gapTag.size();
+        i += gapTag.size();
         while (true) {
-            // Skip whitespace
-            size_t next = i;
-            while (next < input.size() && std::isspace(static_cast<unsigned char>(input[next])))
-                ++next;
+            size_t next = skipWhitespace(input, i);
             if (input.compare(next, gapTag.size(), gapTag) == 0) {
                 i = next + gapTag.size();
             } else {
@@ -2740,31 +2782,63 @@ std::string collapseRepeatedGaps(std::string input) {
 } // anonymous namespace
 
 std::string normalizeCommentaryMarkup(std::string text) {
-    if (trimCopy(text).empty()) return text;
+    if (!containsNonWhitespace(text)) return text;
+    if (findTagCI(text, "<p") == std::string::npos &&
+        findTagCI(text, "<br") == std::string::npos) {
+        return text;
+    }
 
-    text = replaceSelfClosingAndEmptyParagraphs(std::move(text));
-    text = collapseMultipleBreaks(std::move(text));
-    text = collapseRepeatedGaps(std::move(text));
+    text = replaceSelfClosingAndEmptyParagraphs(text);
+    text = collapseMultipleBreaks(text);
+    text = collapseRepeatedGaps(text);
     return text;
 }
 
-std::string commentaryEntryHtml(sword::SWModule* mod) {
-    if (!mod) return "";
+std::string commentaryEntryHtml(sword::SWModule* mod,
+                                CommentaryBuildPerf* perfStats = nullptr) {
+    if (!mod) {
+        return "";
+    }
 
     std::string raw;
     if (mod->isWritable()) {
         const char* rawEntry = mod->getRawEntry();
         raw = rawEntry ? rawEntry : "";
         if (looksLikeHtmlMarkup(raw)) {
-            return closeDanglingInlineTags(normalizeCommentaryMarkup(raw));
+            perf::StepTimer step;
+            raw = normalizeCommentaryMarkup(std::move(raw));
+            if (perfStats) perfStats->normalizeMs += step.elapsedMs();
+            step.reset();
+            raw = closeDanglingInlineTags(std::move(raw));
+            if (perfStats) {
+                perfStats->closeTagsMs += step.elapsedMs();
+            }
+            return raw;
         }
     }
 
+    perf::StepTimer step;
     std::string rendered = std::string(mod->renderText().c_str());
-    if (!trimCopy(rendered).empty()) {
-        return closeDanglingInlineTags(normalizeCommentaryMarkup(rendered));
+    if (perfStats) perfStats->renderTextMs += step.elapsedMs();
+    if (containsNonWhitespace(rendered)) {
+        step.reset();
+        rendered = normalizeCommentaryMarkup(std::move(rendered));
+        if (perfStats) perfStats->normalizeMs += step.elapsedMs();
+        step.reset();
+        rendered = closeDanglingInlineTags(std::move(rendered));
+        if (perfStats) {
+            perfStats->closeTagsMs += step.elapsedMs();
+        }
+        return rendered;
     }
-    if (!trimCopy(raw).empty()) return plainTextToHtml(raw);
+    if (containsNonWhitespace(raw)) {
+        step.reset();
+        std::string plain = plainTextToHtml(raw);
+        if (perfStats) {
+            perfStats->plainTextMs += step.elapsedMs();
+        }
+        return plain;
+    }
     return "";
 }
 
@@ -2782,6 +2856,8 @@ bool SwordManager::initialize() {
         postProcessLru_.clear();
         verseHtmlCache_.clear();
         verseHtmlLru_.clear();
+        commentaryVerseHtmlCache_.clear();
+        commentaryVerseHtmlLru_.clear();
         dictionaryKeyCache_.clear();
 
         // Create SWORD manager with XHTML markup filter
@@ -3346,25 +3422,36 @@ std::string SwordManager::getCommentaryText(const std::string& moduleName,
         ref = VerseRef{};
     }
 
-    auto finalizeHtml = [&](std::string html) {
-        logCommentaryHtmlSummary(moduleName, key, html);
+    CommentaryBuildPerf perfStats;
+    auto finalizeHtml = [&](std::string html, double assembleMs) {
+        logCommentaryBuildPerf(moduleName, key, html.size(), assembleMs, perfStats);
         return html;
     };
 
     if (!hasChapterContext) {
         mod->setKey(key.c_str());
-        std::string text = commentaryEntryHtml(mod);
+        perf::StepTimer entryTimer;
+        std::string text = commentaryEntryHtml(mod, &perfStats);
+        perfStats.entryBuildMs += entryTimer.elapsedMs();
+        perfStats.cacheMisses = 1;
+        perfStats.verses = 1;
 
         if (text.empty()) {
-            return finalizeHtml("<p><i>No commentary available for " + key + "</i></p>");
+            perfStats.emptyEntries = 1;
+            return finalizeHtml("<p><i>No commentary available for " + key + "</i></p>", 0.0);
         }
+        perfStats.entryBytes += text.size();
 
-        std::ostringstream html;
-        html << "<div class=\"commentary\">\n";
-        html << "<h3>" << key << "</h3>\n";
-        html << text;
-        html << "</div>\n";
-        return finalizeHtml(html.str());
+        perf::StepTimer assembleTimer;
+        std::string html;
+        html.reserve(text.size() + key.size() + 64);
+        html += "<div class=\"commentary\">\n";
+        html += "<h3>";
+        html += key;
+        html += "</h3>\n";
+        html += text;
+        html += "</div>\n";
+        return finalizeHtml(std::move(html), assembleTimer.elapsedMs());
     }
 
     sword::VerseKey* vk = dynamic_cast<sword::VerseKey*>(mod->getKey());
@@ -3375,67 +3462,142 @@ std::string SwordManager::getCommentaryText(const std::string& moduleName,
     }
     if (!vk) {
         mod->setKey(key.c_str());
-        std::string text = commentaryEntryHtml(mod);
+        perf::StepTimer entryTimer;
+        std::string text = commentaryEntryHtml(mod, &perfStats);
+        perfStats.entryBuildMs += entryTimer.elapsedMs();
+        perfStats.cacheMisses = 1;
+        perfStats.verses = 1;
         if (text.empty()) {
-            return finalizeHtml("<p><i>No commentary available for " + key + "</i></p>");
+            perfStats.emptyEntries = 1;
+            return finalizeHtml("<p><i>No commentary available for " + key + "</i></p>", 0.0);
         }
-        std::ostringstream html;
-        html << "<div class=\"commentary-heading\"><h3>"
-             << htmlEscapeAttr(key) << "</h3></div>\n";
-        html << "<div class=\"commentary\">\n";
-        html << text;
-        html << "</div>\n";
-        return finalizeHtml(html.str());
+        perfStats.entryBytes += text.size();
+        perf::StepTimer assembleTimer;
+        std::string html;
+        std::string escapedKey = htmlEscapeAttr(key);
+        html.reserve(text.size() + escapedKey.size() + 96);
+        html += "<div class=\"commentary-heading\"><h3>";
+        html += escapedKey;
+        html += "</h3></div>\n";
+        html += "<div class=\"commentary\">\n";
+        html += text;
+        html += "</div>\n";
+        return finalizeHtml(std::move(html), assembleTimer.elapsedMs());
     }
 
     std::string startRef = ref.book + " " + std::to_string(ref.chapter) + ":1";
     vk->setText(startRef.c_str());
     if (mod->popError()) {
-        return finalizeHtml("<p><i>No commentary available for " + key + "</i></p>");
+        return finalizeHtml("<p><i>No commentary available for " + key + "</i></p>", 0.0);
     }
 
+    auto tryGetCommentaryVerseHtmlCache =
+        [this](const std::string& cacheKey, std::string& valueOut) -> bool {
+        auto it = commentaryVerseHtmlCache_.find(cacheKey);
+        if (it == commentaryVerseHtmlCache_.end()) return false;
+
+        commentaryVerseHtmlLru_.splice(commentaryVerseHtmlLru_.begin(),
+                                       commentaryVerseHtmlLru_,
+                                       it->second.lruIt);
+        valueOut = it->second.value;
+        return true;
+    };
+
+    auto storeCommentaryVerseHtmlCache =
+        [this](const std::string& cacheKey, const std::string& value) {
+        auto it = commentaryVerseHtmlCache_.find(cacheKey);
+        if (it != commentaryVerseHtmlCache_.end()) {
+            it->second.value = value;
+            commentaryVerseHtmlLru_.splice(commentaryVerseHtmlLru_.begin(),
+                                           commentaryVerseHtmlLru_,
+                                           it->second.lruIt);
+            return;
+        }
+
+        commentaryVerseHtmlLru_.push_front(cacheKey);
+        commentaryVerseHtmlCache_.emplace(cacheKey, VerseHtmlCacheEntry{
+            value, commentaryVerseHtmlLru_.begin()
+        });
+
+        if (commentaryVerseHtmlCache_.size() > kCommentaryVerseHtmlCacheLimit) {
+            const std::string& evictKey = commentaryVerseHtmlLru_.back();
+            commentaryVerseHtmlCache_.erase(evictKey);
+            commentaryVerseHtmlLru_.pop_back();
+        }
+    };
+
+    perf::StepTimer assembleTimer;
     const char testament = vk->getTestament();
     const char book = vk->getBook();
     const int chapter = vk->getChapter();
-    std::ostringstream html;
-    html << "<div class=\"commentary-heading\"><h3>"
-         << htmlEscapeAttr(ref.book) << " " << ref.chapter
-         << "</h3></div>\n";
-    html << "<div class=\"commentary\">\n";
+    std::string html;
+    std::string escapedBook = htmlEscapeAttr(ref.book);
+    html.reserve(4096);
+    html += "<div class=\"commentary-heading\"><h3>";
+    html += escapedBook;
+    html += " ";
+    html += std::to_string(ref.chapter);
+    html += "</h3></div>\n";
+    html += "<div class=\"commentary\">\n";
 
     while (!mod->popError() && sameBookChapter(vk, testament, book, chapter)) {
         int verse = vk->getVerse();
-        std::string verseText = commentaryEntryHtml(mod);
-        bool separated = verse > 1;
-        html << "<div class=\"commentary-verse";
-        if (separated) {
-            html << " commentary-separated";
-        }
-        html << "\" id=\"v" << verse << "\">";
-        html << "<div class=\"commentary-gutter\">"
-             << "<a class=\"versenum-link\" href=\"bible-verse:" << verse << "\">"
-             << "<span class=\"commentary-versenum\" id=\"cv" << verse
-             << "\">" << verse << "</span></a>"
-             << "</div>";
-        html << "<div class=\"commentary-text\">";
-        html << "<div class=\"commentary-scroll-anchor\" id=\"vpos" << verse
-             << "\"></div>";
-        if (separated) {
-            html << "<div class=\"commentary-separator\"></div>";
-        }
-        html << "<div class=\"commentary-entry\">";
-        if (!trimCopy(verseText).empty()) {
-            html << verseText;
+        std::string verseRef =
+            ref.book + " " + std::to_string(ref.chapter) + ":" + std::to_string(verse);
+        std::string cacheKey = moduleName + "|" + verseRef;
+        std::string verseText;
+        if (tryGetCommentaryVerseHtmlCache(cacheKey, verseText)) {
+            ++perfStats.cacheHits;
         } else {
-            html << "<span class=\"commentary-empty\"></span>";
+            perf::StepTimer entryTimer;
+            verseText = commentaryEntryHtml(mod, &perfStats);
+            perfStats.entryBuildMs += entryTimer.elapsedMs();
+            ++perfStats.cacheMisses;
+            storeCommentaryVerseHtmlCache(cacheKey, verseText);
         }
-        html << "</div></div>";
-        html << "</div>\n";
+
+        ++perfStats.verses;
+        perfStats.entryBytes += verseText.size();
+        bool hasVerseText = containsNonWhitespace(verseText);
+        if (!hasVerseText) {
+            ++perfStats.emptyEntries;
+        }
+
+        bool separated = verse > 1;
+        html += "<div class=\"commentary-verse";
+        if (separated) {
+            html += " commentary-separated";
+        }
+        html += "\" id=\"v";
+        html += std::to_string(verse);
+        html += "\">";
+        html += "<div class=\"commentary-gutter\"><a class=\"versenum-link\" href=\"bible-verse:";
+        html += std::to_string(verse);
+        html += "\"><span class=\"commentary-versenum\" id=\"cv";
+        html += std::to_string(verse);
+        html += "\">";
+        html += std::to_string(verse);
+        html += "</span></a></div>";
+        html += "<div class=\"commentary-text\">";
+        html += "<div class=\"commentary-scroll-anchor\" id=\"vpos";
+        html += std::to_string(verse);
+        html += "\"></div>";
+        if (separated) {
+            html += "<div class=\"commentary-separator\"></div>";
+        }
+        html += "<div class=\"commentary-entry\">";
+        if (hasVerseText) {
+            html += verseText;
+        } else {
+            html += "<span class=\"commentary-empty\"></span>";
+        }
+        html += "</div></div>";
+        html += "</div>\n";
         (*mod)++;
     }
 
-    html << "</div>\n";
-    return finalizeHtml(html.str());
+    html += "</div>\n";
+    return finalizeHtml(std::move(html), assembleTimer.elapsedMs());
 }
 
 bool SwordManager::moduleIsWritable(const std::string& moduleName) const {
@@ -3473,7 +3635,11 @@ bool SwordManager::setRawEntry(const std::string& moduleName,
         mod->setEntry(text.c_str());
     }
     bool ok = !mod->popError();
-    if (ok) dictionaryKeyCache_.erase(moduleName);
+    if (ok) {
+        dictionaryKeyCache_.erase(moduleName);
+        commentaryVerseHtmlCache_.clear();
+        commentaryVerseHtmlLru_.clear();
+    }
     return ok;
 }
 
@@ -3488,7 +3654,11 @@ bool SwordManager::deleteEntry(const std::string& moduleName,
 
     mod->deleteEntry();
     bool ok = !mod->popError();
-    if (ok) dictionaryKeyCache_.erase(moduleName);
+    if (ok) {
+        dictionaryKeyCache_.erase(moduleName);
+        commentaryVerseHtmlCache_.clear();
+        commentaryVerseHtmlLru_.clear();
+    }
     return ok;
 }
 
@@ -4647,7 +4817,9 @@ std::string SwordManager::postProcessHtml(const std::string& html) const {
         if (html[pos] != '<') {
             size_t nextTag = html.find('<', pos);
             size_t end = (nextTag == std::string::npos) ? html.size() : nextTag;
-            appendSanitizedText(out, html.substr(pos, end - pos), lastTarget);
+            appendSanitizedText(out,
+                                std::string_view(html).substr(pos, end - pos),
+                                lastTarget);
             pos = end;
             continue;
         }
@@ -4657,7 +4829,9 @@ std::string SwordManager::postProcessHtml(const std::string& html) const {
         bool isClosing = false;
         bool isSelfClosing = false;
         if (!parseTag(html, pos, tagEnd, tagName, isClosing, isSelfClosing)) {
-            appendSanitizedText(out, html.substr(pos, 1), lastTarget);
+            appendSanitizedText(out,
+                                std::string_view(html).substr(pos, 1),
+                                lastTarget);
             ++pos;
             continue;
         }

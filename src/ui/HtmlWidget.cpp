@@ -23,6 +23,16 @@ namespace verdad {
 namespace {
 
 constexpr int kScrollbarExtent = 16;
+constexpr size_t kTextWidthCacheLimit = 1024;
+constexpr size_t kTextWidthCacheMaxTokenBytes = 32;
+
+bool isTextWidthCacheable(std::string_view text) {
+    if (text.empty() || text.size() > kTextWidthCacheMaxTokenBytes) return false;
+    for (unsigned char c : text) {
+        if (c & 0x80) return false;
+    }
+    return true;
+}
 
 std::string trimCopy(const std::string& text) {
     size_t start = 0;
@@ -1263,6 +1273,11 @@ void HtmlWidget::setHtml(const std::string& html, const std::string& baseUrl) {
     tooltip(nullptr);
     clearSelection();
     textFragments_.clear();
+    textWidthCache_.clear();
+    textWidthCacheEntries_ = 0;
+    textWidthCacheHits_ = 0;
+    textWidthCacheMisses_ = 0;
+    textWidthCacheStores_ = 0;
 
     // Wrap in basic HTML if not already
     std::string fullHtml = html;
@@ -1297,6 +1312,11 @@ void HtmlWidget::setHtml(const std::string& html, const std::string& baseUrl) {
     step.reset();
     updateScrollbar(true);
     perf::logf("HtmlWidget::setHtml updateScrollbar: %.3f ms", step.elapsedMs());
+    perf::logf("HtmlWidget::setHtml textWidthCache: hits=%zu misses=%zu stores=%zu entries=%zu",
+               textWidthCacheHits_,
+               textWidthCacheMisses_,
+               textWidthCacheStores_,
+               textWidthCacheEntries_);
     redraw();
 }
 
@@ -1573,6 +1593,11 @@ HtmlWidget::Snapshot HtmlWidget::takeSnapshot() {
     tooltip(nullptr);
     clearSelection();
     textFragments_.clear();
+    textWidthCache_.clear();
+    textWidthCacheEntries_ = 0;
+    textWidthCacheHits_ = 0;
+    textWidthCacheMisses_ = 0;
+    textWidthCacheStores_ = 0;
     updateScrollbar();
 
     return snapshot;
@@ -2327,8 +2352,43 @@ litehtml::pixel_t HtmlWidget::text_width(const char* text, litehtml::uint_ptr hF
     auto it = fonts_.find(hFont);
     if (it == fonts_.end()) return 0;
 
-    fl_font(it->second->info.flFont, it->second->info.size);
-    return static_cast<litehtml::pixel_t>(fl_width(text));
+    const char* safeText = text ? text : "";
+    const auto& cachedFont = it->second;
+    std::string_view token(safeText);
+    const bool cacheable = isTextWidthCacheable(token);
+
+    if (cacheable) {
+        auto fontCacheIt = textWidthCache_.find(cachedFont.get());
+        if (fontCacheIt != textWidthCache_.end()) {
+            auto valueIt = fontCacheIt->second.find(token);
+            if (valueIt != fontCacheIt->second.end()) {
+                ++textWidthCacheHits_;
+                return valueIt->second;
+            }
+        }
+        ++textWidthCacheMisses_;
+    }
+
+    fl_font(cachedFont->info.flFont, cachedFont->info.size);
+    litehtml::pixel_t width = static_cast<litehtml::pixel_t>(fl_width(safeText));
+
+    if (cacheable) {
+        if (textWidthCacheEntries_ >= kTextWidthCacheLimit) {
+            textWidthCache_.clear();
+            textWidthCacheEntries_ = 0;
+        }
+
+        auto& fontCache = textWidthCache_[cachedFont.get()];
+        auto [valueIt, inserted] = fontCache.emplace(token, width);
+        if (inserted) {
+            ++textWidthCacheEntries_;
+            ++textWidthCacheStores_;
+        } else {
+            valueIt->second = width;
+        }
+    }
+
+    return width;
 }
 
 void HtmlWidget::draw_text(litehtml::uint_ptr hdc, const char* text,

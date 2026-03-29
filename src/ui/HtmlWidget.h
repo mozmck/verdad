@@ -29,6 +29,7 @@
 #include <functional>
 #include <map>
 #include <memory>
+#include <unordered_map>
 #include <vector>
 
 namespace verdad {
@@ -259,6 +260,12 @@ private:
     };
     std::map<litehtml::uint_ptr, std::shared_ptr<const CachedFont>> fonts_;
     litehtml::uint_ptr nextFontId_ = 1;
+    using TextWidthCacheMap = std::map<std::string, litehtml::pixel_t, std::less<>>;
+    std::unordered_map<const CachedFont*, TextWidthCacheMap> textWidthCache_;
+    size_t textWidthCacheEntries_ = 0;
+    size_t textWidthCacheHits_ = 0;
+    size_t textWidthCacheMisses_ = 0;
+    size_t textWidthCacheStores_ = 0;
 
     // Scrollbar
     Fl_Scrollbar* scrollbar_;
