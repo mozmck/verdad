@@ -289,9 +289,14 @@ private:
         int parallelColumn = -1;
     };
 
-    // Cache for parallel column detection during draw pass
-    mutable int cachedParallelColX_ = -1;
-    mutable int cachedParallelColResult_ = -1;
+    // Precomputed parallel column boundaries for the current draw pass
+    struct ParallelColumnBoundary {
+        int xStart;   // inclusive, document-space
+        int xEnd;     // exclusive, document-space
+        int column;
+    };
+    mutable std::vector<ParallelColumnBoundary> parallelColumnBoundaries_;
+    mutable bool parallelBoundariesComputed_ = false;
 
     struct SelectionPoint {
         int fragmentIndex = -1;
@@ -340,6 +345,7 @@ private:
     int viewportHeight() const;
     void setScrollX(int x);
     bool isParallelDocument() const;
+    void buildParallelColumnBoundaries() const;
     bool hasSelection() const;
     bool isWordCharAt(int fragmentIndex, int charIndex) const;
     SelectionPoint hitTestSelectionPoint(int screenX,

@@ -678,6 +678,54 @@ bool HtmlWidget::isParallelDocument() const {
     return isParallel_;
 }
 
+void HtmlWidget::buildParallelColumnBoundaries() const {
+    parallelColumnBoundaries_.clear();
+    if (!doc_ || !doc_->root_render()) return;
+
+    // Walk the render tree shallowly to find elements with data-parallel-col.
+    // The structure is: html > body > div.parallel > div.parallel-row > div.parallel-col
+    // We only need the first row's columns (all rows have the same column widths).
+    struct StackEntry {
+        std::shared_ptr<litehtml::render_item> ri;
+        int depth;
+    };
+    std::vector<StackEntry> stack;
+    stack.push_back({doc_->root_render(), 0});
+
+    while (!stack.empty()) {
+        auto [ri, depth] = stack.back();
+        stack.pop_back();
+        if (!ri || !ri->src_el() || depth > 6) continue;
+
+        int col = parseParallelColumnValue(ri->src_el()->get_attr("data-parallel-col"));
+        if (col >= 0) {
+            // Check if this column index is already recorded
+            bool found = false;
+            for (const auto& b : parallelColumnBoundaries_) {
+                if (b.column == col) { found = true; break; }
+            }
+            if (!found) {
+                litehtml::position placement = ri->get_placement();
+                parallelColumnBoundaries_.push_back({
+                    static_cast<int>(placement.x),
+                    static_cast<int>(placement.x + placement.width),
+                    col
+                });
+            }
+            continue;  // Don't recurse into column children
+        }
+
+        for (auto& child : ri->children()) {
+            stack.push_back({child, depth + 1});
+        }
+    }
+
+    std::sort(parallelColumnBoundaries_.begin(), parallelColumnBoundaries_.end(),
+              [](const ParallelColumnBoundary& a, const ParallelColumnBoundary& b) {
+                  return a.xStart < b.xStart;
+              });
+}
+
 bool HtmlWidget::selectionPointLess(const SelectionPoint& lhs,
                                     const SelectionPoint& rhs) const {
     if (lhs.fragmentIndex != rhs.fragmentIndex) {
@@ -1199,8 +1247,8 @@ void HtmlWidget::setHtml(const std::string& html, const std::string& baseUrl) {
 
     currentHtml_ = html;
     isParallel_ = html.find("class=\"parallel\"") != std::string::npos;
-    cachedParallelColX_ = -1;
-    cachedParallelColResult_ = -1;
+    parallelBoundariesComputed_ = false;
+    parallelColumnBoundaries_.clear();
     baseUrl_ = baseUrl;
     scrollX_ = 0;
     scrollY_ = 0;
@@ -1229,6 +1277,20 @@ void HtmlWidget::setHtml(const std::string& html, const std::string& baseUrl) {
         fullHtml, this, masterCSS_, styleOverrideCSS_);
     perf::logf("HtmlWidget::setHtml createFromString: %.3f ms", step.elapsedMs());
     step.reset();
+
+    // Predict scrollbar visibility before the first render so that
+    // viewportWidth() returns the correct width on the first pass.
+    // Bible/commentary content (> 500 bytes) virtually always needs a
+    // scrollbar; short content (error messages) never does.  This avoids
+    // the re-render loop inside updateScrollbar that otherwise toggles
+    // the scrollbar and re-renders until stable.
+    if (html.size() > 500) {
+        scrollbar_->show();
+        scrollbar_->resize(x() + w() - kScrollbarExtent, y(),
+                           kScrollbarExtent, h());
+    } else {
+        scrollbar_->hide();
+    }
 
     renderDocument();
     perf::logf("HtmlWidget::setHtml renderDocument: %.3f ms", step.elapsedMs());
@@ -1546,27 +1608,35 @@ void HtmlWidget::restoreSnapshot(const Snapshot& snapshot) {
     if (doc_) {
         const int sbW = kScrollbarExtent;
         const bool snapSbVisible = snapshot.scrollbarVisible;
-        const int expectedRenderWidth = std::max(10, w() - (snapSbVisible ? sbW : 0));
         const bool desiredVisible = (contentHeight_ > h());
+        const int widthWithSnapSb = std::max(10, w() - (snapSbVisible ? sbW : 0));
+        const int widthWithDesiredSb = std::max(10, w() - (desiredVisible ? sbW : 0));
 
-        // Fast path: geometry/scrollbar mode unchanged, so reuse cached layout.
-        if (!allowHorizontalScroll_ &&
-            snapshot.renderWidth > 0 &&
-            snapshot.renderWidth == expectedRenderWidth &&
-            desiredVisible == snapSbVisible) {
+        // Fast path: reuse cached layout when the render width still matches.
+        // Accept a match against either the snapshot's scrollbar state or the
+        // currently desired scrollbar state -- this covers the common case
+        // where widget height changed slightly (toggling scrollbar need) but
+        // widget width stayed the same.
+        if (!allowHorizontalScroll_ && snapshot.renderWidth > 0 &&
+            (snapshot.renderWidth == widthWithDesiredSb ||
+             (snapshot.renderWidth == widthWithSnapSb &&
+              desiredVisible == snapSbVisible))) {
             reusedLayout = true;
-            if (snapSbVisible) {
+            if (desiredVisible) {
                 scrollbar_->show();
-                scrollbar_->resize(x() + w() - sbW, y(), sbW, h());
+                scrollbar_->resize(x() + w() - sbW, y(), sbW, viewportHeight());
                 scrollbar_->linesize(20);
+                scrollbar_->value(scrollY_, viewportHeight(), 0,
+                                  std::max(viewportHeight(), contentHeight_));
             } else {
                 scrollbar_->hide();
             }
         }
-        perf::logf("HtmlWidget::restoreSnapshot(copy) fastPath=%d snapW=%d expectedW=%d snapSB=%d desiredSB=%d",
+        perf::logf("HtmlWidget::restoreSnapshot(copy) fastPath=%d snapW=%d widthSnapSb=%d widthDesiredSb=%d snapSB=%d desiredSB=%d",
                    reusedLayout ? 1 : 0,
                    snapshot.renderWidth,
-                   expectedRenderWidth,
+                   widthWithSnapSb,
+                   widthWithDesiredSb,
                    snapSbVisible ? 1 : 0,
                    desiredVisible ? 1 : 0);
     }
@@ -1619,28 +1689,31 @@ void HtmlWidget::restoreSnapshot(Snapshot&& snapshot) {
     bool reusedLayout = false;
     if (doc_) {
         const int sbW = kScrollbarExtent;
-        const int expectedRenderWidth =
-            std::max(10, w() - (snapSbVisible ? sbW : 0));
         const bool desiredVisible = (contentHeight_ > h());
+        const int widthWithSnapSb = std::max(10, w() - (snapSbVisible ? sbW : 0));
+        const int widthWithDesiredSb = std::max(10, w() - (desiredVisible ? sbW : 0));
 
-        // Fast path: geometry/scrollbar mode unchanged, so reuse cached layout.
-        if (!allowHorizontalScroll_ &&
-            lastRenderWidth_ > 0 &&
-            lastRenderWidth_ == expectedRenderWidth &&
-            desiredVisible == snapSbVisible) {
+        // Fast path: reuse cached layout when the render width still matches.
+        if (!allowHorizontalScroll_ && lastRenderWidth_ > 0 &&
+            (lastRenderWidth_ == widthWithDesiredSb ||
+             (lastRenderWidth_ == widthWithSnapSb &&
+              desiredVisible == snapSbVisible))) {
             reusedLayout = true;
-            if (snapSbVisible) {
+            if (desiredVisible) {
                 scrollbar_->show();
-                scrollbar_->resize(x() + w() - sbW, y(), sbW, h());
+                scrollbar_->resize(x() + w() - sbW, y(), sbW, viewportHeight());
                 scrollbar_->linesize(20);
+                scrollbar_->value(scrollY_, viewportHeight(), 0,
+                                  std::max(viewportHeight(), contentHeight_));
             } else {
                 scrollbar_->hide();
             }
         }
-        perf::logf("HtmlWidget::restoreSnapshot(move) fastPath=%d snapW=%d expectedW=%d snapSB=%d desiredSB=%d",
+        perf::logf("HtmlWidget::restoreSnapshot(move) fastPath=%d snapW=%d widthSnapSb=%d widthDesiredSb=%d snapSB=%d desiredSB=%d",
                    reusedLayout ? 1 : 0,
                    lastRenderWidth_,
-                   expectedRenderWidth,
+                   widthWithSnapSb,
+                   widthWithDesiredSb,
                    snapSbVisible ? 1 : 0,
                    desiredVisible ? 1 : 0);
     }
@@ -1770,6 +1843,8 @@ void HtmlWidget::draw() {
 
     if (doc_) {
         textFragments_.clear();
+        parallelBoundariesComputed_ = false;
+        parallelColumnBoundaries_.clear();
         // Set up clip for content area (exclude scrollbar)
         int viewW = viewportWidth();
         int viewH = viewportHeight();
@@ -2283,25 +2358,18 @@ void HtmlWidget::draw_text(litehtml::uint_ptr hdc, const char* text,
     }
 
     if (isParallelDocument() && doc_ && doc_->root_render()) {
-        // Use cached result when x position matches (fragments in same column)
+        // Lazily compute column boundaries once per draw pass
+        if (!parallelBoundariesComputed_) {
+            parallelBoundariesComputed_ = true;
+            buildParallelColumnBoundaries();
+        }
+        // Simple x-range lookup instead of per-fragment DOM traversal
         int docX = static_cast<int>(pos.x);
-        if (docX == cachedParallelColX_) {
-            fragment.parallelColumn = cachedParallelColResult_;
-        } else {
-            int screenX = static_cast<int>(pos.x) + std::max(0, cursorX / 2);
-            int screenY = static_cast<int>(pos.y + pos.height / 2);
-            int hitX = screenX - x() + scrollX_;
-            int hitY = screenY - y() + scrollY_;
-            auto el = doc_->root_render()->get_element_by_point(
-                hitX, hitY, hitX, hitY,
-                [](const std::shared_ptr<litehtml::render_item>&) { return true; });
-            if (el) {
-                HitElement hit = findDeepestElementAtPoint(el, hitX, hitY);
-                if (hit.element) el = hit.element;
-                fragment.parallelColumn = parallelColumnForElement(el);
+        for (const auto& boundary : parallelColumnBoundaries_) {
+            if (docX >= boundary.xStart && docX < boundary.xEnd) {
+                fragment.parallelColumn = boundary.column;
+                break;
             }
-            cachedParallelColX_ = docX;
-            cachedParallelColResult_ = fragment.parallelColumn;
         }
     }
 

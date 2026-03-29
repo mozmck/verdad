@@ -2514,7 +2514,7 @@ std::string sanitizeParallelVerseHtml(const std::string& html) {
     return collapseSpacesOutsideTags(out);
 }
 
-std::string closeDanglingInlineTags(const std::string& html) {
+std::string closeDanglingInlineTags(std::string html) {
     if (html.empty()) return html;
 
     std::vector<std::string> openTags;
@@ -2547,14 +2547,13 @@ std::string closeDanglingInlineTags(const std::string& html) {
 
     if (openTags.empty()) return html;
 
-    std::string out = html;
     while (!openTags.empty()) {
-        out += "</";
-        out += openTags.back();
-        out += ">";
+        html += "</";
+        html += openTags.back();
+        html += ">";
         openTags.pop_back();
     }
-    return out;
+    return html;
 }
 
 bool looksLikeHtmlMarkup(const std::string& text) {
@@ -2618,7 +2617,7 @@ size_t findTagCI(const std::string& s, const std::string& tagLower, size_t pos =
 }
 
 // Replace self-closing <p /> and empty <p></p> tags with gap div
-std::string replaceSelfClosingAndEmptyParagraphs(const std::string& input) {
+std::string replaceSelfClosingAndEmptyParagraphs(std::string input) {
     static const std::string gap = "<div class=\"commentary-gap\">&nbsp;</div>";
     std::string result;
     result.reserve(input.size());
@@ -2660,7 +2659,7 @@ std::string replaceSelfClosingAndEmptyParagraphs(const std::string& input) {
 }
 
 // Collapse runs of 2+ <br> tags into a single gap div
-std::string collapseMultipleBreaks(const std::string& input) {
+std::string collapseMultipleBreaks(std::string input) {
     static const std::string gap = "<div class=\"commentary-gap\">&nbsp;</div>";
     std::string result;
     result.reserve(input.size());
@@ -2708,7 +2707,7 @@ std::string collapseMultipleBreaks(const std::string& input) {
 }
 
 // Collapse repeated gap divs into one
-std::string collapseRepeatedGaps(const std::string& input) {
+std::string collapseRepeatedGaps(std::string input) {
     static const std::string gapTag = "<div class=\"commentary-gap\">&nbsp;</div>";
     std::string result;
     result.reserve(input.size());
@@ -2740,13 +2739,13 @@ std::string collapseRepeatedGaps(const std::string& input) {
 
 } // anonymous namespace
 
-std::string normalizeCommentaryMarkup(const std::string& text) {
+std::string normalizeCommentaryMarkup(std::string text) {
     if (trimCopy(text).empty()) return text;
 
-    std::string normalized = replaceSelfClosingAndEmptyParagraphs(text);
-    normalized = collapseMultipleBreaks(normalized);
-    normalized = collapseRepeatedGaps(normalized);
-    return normalized;
+    text = replaceSelfClosingAndEmptyParagraphs(std::move(text));
+    text = collapseMultipleBreaks(std::move(text));
+    text = collapseRepeatedGaps(std::move(text));
+    return text;
 }
 
 std::string commentaryEntryHtml(sword::SWModule* mod) {
