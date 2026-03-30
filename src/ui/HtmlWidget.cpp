@@ -24,7 +24,9 @@ namespace {
 
 constexpr int kScrollbarExtent = 16;
 constexpr size_t kTextWidthCacheLimit = 1024;
+constexpr size_t kTextWidthCacheDirectLimit = 896;
 constexpr size_t kTextWidthCacheMaxTokenBytes = 32;
+constexpr size_t kTextWidthProbationLimit = 512;
 
 bool isTextWidthCacheable(std::string_view text) {
     if (text.empty() || text.size() > kTextWidthCacheMaxTokenBytes) return false;
@@ -1273,11 +1275,16 @@ void HtmlWidget::setHtml(const std::string& html, const std::string& baseUrl) {
     tooltip(nullptr);
     clearSelection();
     textFragments_.clear();
+    activeFltkFont_ = nullptr;
     textWidthCache_.clear();
+    textWidthProbation_.clear();
+    textWidthProbationOrder_.clear();
     textWidthCacheEntries_ = 0;
     textWidthCacheHits_ = 0;
     textWidthCacheMisses_ = 0;
     textWidthCacheStores_ = 0;
+    textWidthCacheStoreSkips_ = 0;
+    textWidthCachePromotions_ = 0;
 
     // Wrap in basic HTML if not already
     std::string fullHtml = html;
@@ -1312,11 +1319,14 @@ void HtmlWidget::setHtml(const std::string& html, const std::string& baseUrl) {
     step.reset();
     updateScrollbar(true);
     perf::logf("HtmlWidget::setHtml updateScrollbar: %.3f ms", step.elapsedMs());
-    perf::logf("HtmlWidget::setHtml textWidthCache: hits=%zu misses=%zu stores=%zu entries=%zu",
+    perf::logf("HtmlWidget::setHtml textWidthCache: hits=%zu misses=%zu stores=%zu promotions=%zu skips=%zu entries=%zu probation=%zu",
                textWidthCacheHits_,
                textWidthCacheMisses_,
                textWidthCacheStores_,
-               textWidthCacheEntries_);
+               textWidthCachePromotions_,
+               textWidthCacheStoreSkips_,
+               textWidthCacheEntries_,
+               textWidthProbation_.size());
     redraw();
 }
 
@@ -1593,11 +1603,16 @@ HtmlWidget::Snapshot HtmlWidget::takeSnapshot() {
     tooltip(nullptr);
     clearSelection();
     textFragments_.clear();
+    activeFltkFont_ = nullptr;
     textWidthCache_.clear();
+    textWidthProbation_.clear();
+    textWidthProbationOrder_.clear();
     textWidthCacheEntries_ = 0;
     textWidthCacheHits_ = 0;
     textWidthCacheMisses_ = 0;
     textWidthCacheStores_ = 0;
+    textWidthCacheStoreSkips_ = 0;
+    textWidthCachePromotions_ = 0;
     updateScrollbar();
 
     return snapshot;
@@ -1861,6 +1876,7 @@ void HtmlWidget::notifyScrollChanged(int oldScrollY) {
 }
 
 void HtmlWidget::draw() {
+    activeFltkFont_ = nullptr;
     // Draw background
     fl_push_clip(x(), y(), w(), h());
     fl_color(FL_WHITE);
@@ -2324,7 +2340,7 @@ litehtml::uint_ptr HtmlWidget::create_font(const litehtml::font_description& des
         entry->info.italic = (descr.style == litehtml::font_style_italic);
         entry->info.decorationLine = descr.decoration_line;
 
-        fl_font(entry->info.flFont, entry->info.size);
+        selectFltkFont(*entry);
         entry->metrics.height = static_cast<litehtml::pixel_t>(fl_height());
         entry->metrics.ascent =
             static_cast<litehtml::pixel_t>(fl_height() - fl_descent());
@@ -2348,6 +2364,12 @@ void HtmlWidget::delete_font(litehtml::uint_ptr hFont) {
     fonts_.erase(hFont);
 }
 
+void HtmlWidget::selectFltkFont(const CachedFont& font) {
+    if (activeFltkFont_ == &font) return;
+    fl_font(font.info.flFont, font.info.size);
+    activeFltkFont_ = &font;
+}
+
 litehtml::pixel_t HtmlWidget::text_width(const char* text, litehtml::uint_ptr hFont) {
     auto it = fonts_.find(hFont);
     if (it == fonts_.end()) return 0;
@@ -2369,22 +2391,47 @@ litehtml::pixel_t HtmlWidget::text_width(const char* text, litehtml::uint_ptr hF
         ++textWidthCacheMisses_;
     }
 
-    fl_font(cachedFont->info.flFont, cachedFont->info.size);
+    selectFltkFont(*cachedFont);
     litehtml::pixel_t width = static_cast<litehtml::pixel_t>(fl_width(safeText));
 
     if (cacheable) {
-        if (textWidthCacheEntries_ >= kTextWidthCacheLimit) {
-            textWidthCache_.clear();
-            textWidthCacheEntries_ = 0;
-        }
-
-        auto& fontCache = textWidthCache_[cachedFont.get()];
-        auto [valueIt, inserted] = fontCache.emplace(token, width);
-        if (inserted) {
-            ++textWidthCacheEntries_;
-            ++textWidthCacheStores_;
+        if (textWidthCacheEntries_ < kTextWidthCacheDirectLimit) {
+            auto& fontCache = textWidthCache_[cachedFont.get()];
+            auto [valueIt, inserted] = fontCache.emplace(token, width);
+            if (inserted) {
+                ++textWidthCacheEntries_;
+                ++textWidthCacheStores_;
+            } else {
+                valueIt->second = width;
+            }
+        } else if (textWidthCacheEntries_ < kTextWidthCacheLimit) {
+            const auto probationIt = textWidthProbation_.find(std::string(token));
+            if (probationIt != textWidthProbation_.end()) {
+                textWidthProbation_.erase(probationIt);
+                auto& fontCache = textWidthCache_[cachedFont.get()];
+                auto [valueIt, inserted] = fontCache.emplace(token, width);
+                if (inserted) {
+                    ++textWidthCacheEntries_;
+                    ++textWidthCacheStores_;
+                    ++textWidthCachePromotions_;
+                } else {
+                    valueIt->second = width;
+                }
+            } else {
+                if (textWidthProbation_.size() >= kTextWidthProbationLimit) {
+                    while (!textWidthProbationOrder_.empty()) {
+                        std::string expired = std::move(textWidthProbationOrder_.front());
+                        textWidthProbationOrder_.pop_front();
+                        if (textWidthProbation_.erase(expired) != 0) {
+                            break;
+                        }
+                    }
+                }
+                textWidthProbationOrder_.emplace_back(token);
+                textWidthProbation_.emplace(textWidthProbationOrder_.back());
+            }
         } else {
-            valueIt->second = width;
+            ++textWidthCacheStoreSkips_;
         }
     }
 
@@ -2398,7 +2445,7 @@ void HtmlWidget::draw_text(litehtml::uint_ptr hdc, const char* text,
     auto it = fonts_.find(hFont);
     if (it == fonts_.end()) return;
 
-    fl_font(it->second->info.flFont, it->second->info.size);
+    selectFltkFont(*it->second);
 
     TextFragment fragment;
     fragment.text = text ? text : "";

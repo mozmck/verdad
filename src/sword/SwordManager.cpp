@@ -14,6 +14,7 @@
 #include <swbuf.h>
 
 #include <algorithm>
+#include <charconv>
 #include <chrono>
 #include <regex>
 #include <sstream>
@@ -48,6 +49,16 @@ bool containsNonWhitespace(std::string_view text) {
         }
     }
     return false;
+}
+
+void appendInt(std::string& out, int value) {
+    char buf[24];
+    auto [ptr, ec] = std::to_chars(buf, buf + sizeof(buf), value);
+    if (ec == std::errc()) {
+        out.append(buf, static_cast<size_t>(ptr - buf));
+        return;
+    }
+    out += std::to_string(value);
 }
 
 size_t countCharOccurrences(const std::string& text, char needle) {
@@ -2207,93 +2218,113 @@ bool tryConsumeGbfMorphMarker(std::string_view text, size_t& pos) {
     return false;
 }
 
-void trackLastWordInPlainText(std::string_view text,
-                              size_t outStart,
-                              OutputTarget& target) {
-    size_t i = 0;
-    while (i < text.size()) {
-        while (i < text.size() &&
-               !isWordByte(static_cast<unsigned char>(text[i]))) {
-            ++i;
-        }
-        if (i >= text.size()) break;
-        size_t start = i;
-        while (i < text.size() &&
-               isWordByte(static_cast<unsigned char>(text[i]))) {
-            ++i;
-        }
-        target.start = outStart + start;
-        target.end = outStart + i;
-        target.valid = true;
-    }
-}
-
-void trackLastWordInHtmlFragment(std::string_view html,
-                                 size_t outStart,
-                                 OutputTarget& target) {
+void appendCollapsedHtmlFragment(std::string& out,
+                                 std::string_view html,
+                                 bool& prevPlainSpace,
+                                 OutputTarget* target = nullptr) {
     bool inTag = false;
-    size_t wordStart = 0;
     bool inWord = false;
+    size_t wordStart = 0;
 
-    for (size_t i = 0; i < html.size(); ++i) {
-        char c = html[i];
+    auto finishWord = [&](size_t wordEnd) {
+        if (!target || !inWord) return;
+        target->start = wordStart;
+        target->end = wordEnd;
+        target->valid = true;
+        inWord = false;
+    };
+
+    for (char c : html) {
         if (c == '<') {
-            if (inWord) {
-                target.start = outStart + wordStart;
-                target.end = outStart + i;
-                target.valid = true;
-                inWord = false;
-            }
+            finishWord(out.size());
             inTag = true;
+            prevPlainSpace = false;
+            out.push_back(c);
             continue;
         }
         if (c == '>') {
             inTag = false;
+            prevPlainSpace = false;
+            out.push_back(c);
             continue;
         }
-        if (inTag) continue;
-
-        if (isWordByte(static_cast<unsigned char>(c))) {
-            if (!inWord) {
-                inWord = true;
-                wordStart = i;
-            }
-        } else if (inWord) {
-            target.start = outStart + wordStart;
-            target.end = outStart + i;
-            target.valid = true;
-            inWord = false;
+        if (!inTag && c == ' ') {
+            finishWord(out.size());
+            if (prevPlainSpace) continue;
+            prevPlainSpace = true;
+            out.push_back(c);
+            continue;
         }
+
+        if (!inTag) {
+            prevPlainSpace = false;
+            if (isWordByte(static_cast<unsigned char>(c))) {
+                if (!inWord) {
+                    wordStart = out.size();
+                    inWord = true;
+                }
+            } else {
+                finishWord(out.size());
+            }
+        }
+
+        out.push_back(c);
     }
 
-    if (inWord) {
-        target.start = outStart + wordStart;
-        target.end = outStart + html.size();
-        target.valid = true;
-    }
+    finishWord(out.size());
 }
 
 void appendSanitizedText(std::string& out,
                          std::string_view text,
-                         OutputTarget& target) {
-    std::string cleaned;
-    cleaned.reserve(text.size());
+                         OutputTarget& target,
+                         bool& prevPlainSpace) {
+    bool inWord = false;
+    size_t wordStart = 0;
+
+    auto finishWord = [&](size_t wordEnd) {
+        if (!inWord) return;
+        target.start = wordStart;
+        target.end = wordEnd;
+        target.valid = true;
+        inWord = false;
+    };
 
     for (size_t i = 0; i < text.size();) {
         size_t cursor = i;
         if (tryConsumeEscapedStrongMarker(text, cursor) ||
             tryConsumeGbfMorphMarker(text, cursor)) {
-            cleaned.push_back(' ');
+            finishWord(out.size());
+            if (!prevPlainSpace) {
+                out.push_back(' ');
+                prevPlainSpace = true;
+            }
             i = cursor;
             continue;
         }
-        cleaned.push_back(text[i]);
-        ++i;
+
+        char ch = text[i++];
+        if (ch == ' ') {
+            finishWord(out.size());
+            if (prevPlainSpace) continue;
+            out.push_back(' ');
+            prevPlainSpace = true;
+            continue;
+        }
+
+        prevPlainSpace = false;
+        if (isWordByte(static_cast<unsigned char>(ch))) {
+            if (!inWord) {
+                wordStart = out.size();
+                inWord = true;
+            }
+        } else {
+            finishWord(out.size());
+        }
+
+        out.push_back(ch);
     }
 
-    size_t outStart = out.size();
-    out += cleaned;
-    trackLastWordInPlainText(cleaned, outStart, target);
+    finishWord(out.size());
 }
 
 void mergeMeta(HoverMeta& base, const HoverMeta& update) {
@@ -2348,36 +2379,6 @@ void applyMetaToTarget(std::string& out,
     target.valid = true;
 }
 
-std::string collapseSpacesOutsideTags(const std::string& html) {
-    std::string out;
-    out.reserve(html.size());
-    bool inTag = false;
-    bool prevSpace = false;
-    for (char c : html) {
-        if (c == '<') {
-            inTag = true;
-            prevSpace = false;
-            out.push_back(c);
-            continue;
-        }
-        if (c == '>') {
-            inTag = false;
-            prevSpace = false;
-            out.push_back(c);
-            continue;
-        }
-        if (!inTag && c == ' ') {
-            if (prevSpace) continue;
-            prevSpace = true;
-            out.push_back(c);
-            continue;
-        }
-        prevSpace = false;
-        out.push_back(c);
-    }
-    return out;
-}
-
 bool mayContainMorphOrStrongsMarkup(const std::string& html) {
     return
         html.find("<small") != std::string::npos ||
@@ -2421,34 +2422,155 @@ bool isParallelInlineTag(const std::string& tagName) {
         tagName == "mark";
 }
 
-bool isParallelSpacerTag(const std::string& tagName) {
-    return
-        tagName == "div" ||
-        tagName == "p" ||
-        tagName == "li" ||
-        tagName == "tr" ||
-        tagName == "table" ||
-        tagName == "tbody" ||
-        tagName == "thead" ||
-        tagName == "tfoot" ||
-        tagName == "td" ||
-        tagName == "th" ||
-        tagName == "ul" ||
-        tagName == "ol" ||
-        tagName == "h1" ||
-        tagName == "h2" ||
-        tagName == "h3" ||
-        tagName == "h4" ||
-        tagName == "h5" ||
-        tagName == "h6";
+enum class ParallelInlineTag : unsigned char {
+    unknown = 0,
+    a,
+    span,
+    sup,
+    sub,
+    i,
+    b,
+    em,
+    strong,
+    small,
+    u,
+    font,
+    mark,
+};
+
+bool equalsAsciiNoCase(std::string_view lhs, const char* rhs) {
+    if (!rhs) return lhs.empty();
+
+    size_t i = 0;
+    for (; i < lhs.size() && rhs[i]; ++i) {
+        if (!equalsNoCase(lhs[i], rhs[i])) return false;
+    }
+    return i == lhs.size() && rhs[i] == '\0';
 }
 
-bool hasOpenTag(const std::vector<std::string>& openTags,
-                const std::string& tagName) {
+ParallelInlineTag classifyParallelInlineTag(std::string_view tagName) {
+    if (equalsAsciiNoCase(tagName, "a")) return ParallelInlineTag::a;
+    if (equalsAsciiNoCase(tagName, "span")) return ParallelInlineTag::span;
+    if (equalsAsciiNoCase(tagName, "sup")) return ParallelInlineTag::sup;
+    if (equalsAsciiNoCase(tagName, "sub")) return ParallelInlineTag::sub;
+    if (equalsAsciiNoCase(tagName, "i")) return ParallelInlineTag::i;
+    if (equalsAsciiNoCase(tagName, "b")) return ParallelInlineTag::b;
+    if (equalsAsciiNoCase(tagName, "em")) return ParallelInlineTag::em;
+    if (equalsAsciiNoCase(tagName, "strong")) return ParallelInlineTag::strong;
+    if (equalsAsciiNoCase(tagName, "small")) return ParallelInlineTag::small;
+    if (equalsAsciiNoCase(tagName, "u")) return ParallelInlineTag::u;
+    if (equalsAsciiNoCase(tagName, "font")) return ParallelInlineTag::font;
+    if (equalsAsciiNoCase(tagName, "mark")) return ParallelInlineTag::mark;
+    return ParallelInlineTag::unknown;
+}
+
+bool isParallelSpacerTag(std::string_view tagName) {
+    return
+        equalsAsciiNoCase(tagName, "div") ||
+        equalsAsciiNoCase(tagName, "p") ||
+        equalsAsciiNoCase(tagName, "li") ||
+        equalsAsciiNoCase(tagName, "tr") ||
+        equalsAsciiNoCase(tagName, "table") ||
+        equalsAsciiNoCase(tagName, "tbody") ||
+        equalsAsciiNoCase(tagName, "thead") ||
+        equalsAsciiNoCase(tagName, "tfoot") ||
+        equalsAsciiNoCase(tagName, "td") ||
+        equalsAsciiNoCase(tagName, "th") ||
+        equalsAsciiNoCase(tagName, "ul") ||
+        equalsAsciiNoCase(tagName, "ol") ||
+        equalsAsciiNoCase(tagName, "h1") ||
+        equalsAsciiNoCase(tagName, "h2") ||
+        equalsAsciiNoCase(tagName, "h3") ||
+        equalsAsciiNoCase(tagName, "h4") ||
+        equalsAsciiNoCase(tagName, "h5") ||
+        equalsAsciiNoCase(tagName, "h6");
+}
+
+bool isParallelBrTag(std::string_view tagName) {
+    return equalsAsciiNoCase(tagName, "br");
+}
+
+bool parseTagView(std::string_view html,
+                  size_t tagStart,
+                  size_t& tagEnd,
+                  std::string_view& tagName,
+                  bool& isClosing,
+                  bool& isSelfClosing) {
+    if (tagStart >= html.size() || html[tagStart] != '<') return false;
+
+    bool inQuote = false;
+    char quote = 0;
+    tagEnd = std::string::npos;
+    for (size_t i = tagStart + 1; i < html.size(); ++i) {
+        const char c = html[i];
+        if (inQuote) {
+            if (c == quote) inQuote = false;
+            continue;
+        }
+        if (c == '"' || c == '\'') {
+            inQuote = true;
+            quote = c;
+            continue;
+        }
+        if (c == '>') {
+            tagEnd = i;
+            break;
+        }
+    }
+    if (tagEnd == std::string::npos) return false;
+
+    size_t i = tagStart + 1;
+    while (i < tagEnd && std::isspace(static_cast<unsigned char>(html[i]))) ++i;
+
+    isClosing = false;
+    if (i < tagEnd && html[i] == '/') {
+        isClosing = true;
+        ++i;
+        while (i < tagEnd && std::isspace(static_cast<unsigned char>(html[i]))) ++i;
+    }
+
+    const size_t nameStart = i;
+    while (i < tagEnd) {
+        unsigned char c = static_cast<unsigned char>(html[i]);
+        if (std::isalnum(c) || c == '_' || c == '-' || c == ':') {
+            ++i;
+            continue;
+        }
+        break;
+    }
+    if (i == nameStart) return false;
+
+    tagName = html.substr(nameStart, i - nameStart);
+
+    isSelfClosing = false;
+    if (tagEnd > tagStart + 1) {
+        size_t back = tagEnd;
+        while (back > tagStart + 1 &&
+               std::isspace(static_cast<unsigned char>(html[back - 1]))) {
+            --back;
+        }
+        if (back > tagStart + 1 && html[back - 1] == '/') isSelfClosing = true;
+    }
+
+    return true;
+}
+
+bool hasOpenTag(const std::vector<ParallelInlineTag>& openTags,
+                ParallelInlineTag tag) {
     for (auto it = openTags.rbegin(); it != openTags.rend(); ++it) {
-        if (*it == tagName) return true;
+        if (*it == tag) return true;
     }
     return false;
+}
+
+void eraseLastOpenTag(std::vector<ParallelInlineTag>& openTags,
+                      ParallelInlineTag tag) {
+    for (auto it = openTags.rbegin(); it != openTags.rend(); ++it) {
+        if (*it == tag) {
+            openTags.erase(std::next(it).base());
+            return;
+        }
+    }
 }
 
 void eraseLastOpenTag(std::vector<std::string>& openTags,
@@ -2461,49 +2583,89 @@ void eraseLastOpenTag(std::vector<std::string>& openTags,
     }
 }
 
-std::string sanitizeParallelVerseHtml(const std::string& html) {
-    if (html.empty()) return html;
+void appendParallelClosingTag(std::string& out, ParallelInlineTag tag) {
+    switch (tag) {
+    case ParallelInlineTag::a: out += "</a>"; break;
+    case ParallelInlineTag::span: out += "</span>"; break;
+    case ParallelInlineTag::sup: out += "</sup>"; break;
+    case ParallelInlineTag::sub: out += "</sub>"; break;
+    case ParallelInlineTag::i: out += "</i>"; break;
+    case ParallelInlineTag::b: out += "</b>"; break;
+    case ParallelInlineTag::em: out += "</em>"; break;
+    case ParallelInlineTag::strong: out += "</strong>"; break;
+    case ParallelInlineTag::small: out += "</small>"; break;
+    case ParallelInlineTag::u: out += "</u>"; break;
+    case ParallelInlineTag::font: out += "</font>"; break;
+    case ParallelInlineTag::mark: out += "</mark>"; break;
+    case ParallelInlineTag::unknown: break;
+    }
+}
 
-    std::string out;
-    out.reserve(html.size() + 16);
-    std::vector<std::string> openTags;
+void appendSanitizedParallelVerseHtml(std::string& out,
+                                      const std::string& html) {
+    if (html.empty()) return;
+    if (html.find('<') == std::string::npos) {
+        out += html;
+        return;
+    }
+
+    std::string_view htmlView(html);
+    out.reserve(out.size() + html.size() + 16);
+    std::vector<ParallelInlineTag> openTags;
+    openTags.reserve(8);
+    bool prevPlainSpace = false;
+
+    auto appendPlainChar = [&](char ch) {
+        if (ch == ' ') {
+            if (prevPlainSpace) return;
+            prevPlainSpace = true;
+        } else {
+            prevPlainSpace = false;
+        }
+        out.push_back(ch);
+    };
+
+    auto appendTagRange = [&](const char* text, size_t len) {
+        out.append(text, len);
+        prevPlainSpace = false;
+    };
 
     size_t pos = 0;
-    while (pos < html.size()) {
-        if (html[pos] != '<') {
-            out.push_back(html[pos]);
+    while (pos < htmlView.size()) {
+        if (htmlView[pos] != '<') {
+            appendPlainChar(htmlView[pos]);
             ++pos;
             continue;
         }
 
         size_t tagEnd = std::string::npos;
-        std::string tagName;
+        std::string_view tagName;
         bool isClosing = false;
         bool isSelfClosing = false;
-        if (!parseTag(html, pos, tagEnd, tagName, isClosing, isSelfClosing)) {
-            out.push_back(html[pos]);
+        if (!parseTagView(htmlView, pos, tagEnd, tagName, isClosing, isSelfClosing)) {
+            out.push_back(htmlView[pos]);
             ++pos;
             continue;
         }
 
-        std::string rawTag = html.substr(pos, tagEnd - pos + 1);
-
-        if (tagName == "br") {
+        if (isParallelBrTag(tagName)) {
             out += "<br/>";
+            prevPlainSpace = false;
             pos = tagEnd + 1;
             continue;
         }
 
-        if (isParallelInlineTag(tagName)) {
+        const ParallelInlineTag inlineTag = classifyParallelInlineTag(tagName);
+        if (inlineTag != ParallelInlineTag::unknown) {
             if (isClosing) {
-                if (hasOpenTag(openTags, tagName)) {
-                    out += rawTag;
-                    eraseLastOpenTag(openTags, tagName);
+                if (hasOpenTag(openTags, inlineTag)) {
+                    appendTagRange(html.data() + pos, tagEnd - pos + 1);
+                    eraseLastOpenTag(openTags, inlineTag);
                 }
             } else {
-                out += rawTag;
+                appendTagRange(html.data() + pos, tagEnd - pos + 1);
                 if (!isSelfClosing) {
-                    openTags.push_back(tagName);
+                    openTags.push_back(inlineTag);
                 }
             }
             pos = tagEnd + 1;
@@ -2511,20 +2673,20 @@ std::string sanitizeParallelVerseHtml(const std::string& html) {
         }
 
         if (isParallelSpacerTag(tagName)) {
-            out.push_back(' ');
+            if (!prevPlainSpace && !out.empty()) {
+                out.push_back(' ');
+                prevPlainSpace = true;
+            }
         }
 
         pos = tagEnd + 1;
     }
 
     while (!openTags.empty()) {
-        out += "</";
-        out += openTags.back();
-        out += ">";
+        appendParallelClosingTag(out, openTags.back());
+        prevPlainSpace = false;
         openTags.pop_back();
     }
-
-    return collapseSpacesOutsideTags(out);
 }
 
 std::string closeDanglingInlineTags(std::string html) {
@@ -3266,11 +3428,13 @@ std::string SwordManager::getParallelText(
     bool paragraphMode,
     int selectedVerse,
     VerseDecorationCallback verseDecorator) {
+    perf::ScopeTimer timer("SwordManager::getParallelText");
 
     (void)paragraphMode; // Parallel view uses column layout; mode not applicable
     if (moduleNames.empty()) return "";
 
     std::lock_guard<std::mutex> lock(mutex_);
+    perf::StepTimer step;
 
     // Determine verse count from first valid module
     int verseCount = 0;
@@ -3296,14 +3460,17 @@ std::string SwordManager::getParallelText(
     }
 
     if (verseCount == 0) verseCount = 31; // fallback
+    const double verseCountMs = step.elapsedMs();
+    step.reset();
 
     // Column width split for inline-block parallel layout.
     int numCols = static_cast<int>(moduleNames.size());
     int colWidth = 100 / numCols;
     int lastColWidth = 100 - colWidth * (numCols - 1);
 
-    std::ostringstream html;
-    html << "<div class=\"parallel\">\n";
+    std::string html;
+    html.reserve(static_cast<size_t>(verseCount) * moduleNames.size() * 96 + 512);
+    html += "<div class=\"parallel\">\n";
 
     std::string chapterHeadingHtml;
     for (const auto& modName : moduleNames) {
@@ -3313,11 +3480,14 @@ std::string SwordManager::getParallelText(
         if (!chapterHeadingHtml.empty()) break;
     }
     if (chapterHeadingHtml.empty()) {
-        html << "<div class=\"chapter-heading\">CHAPTER "
-             << chapter << ".</div>\n";
+        html += "<div class=\"chapter-heading\">CHAPTER ";
+        appendInt(html, chapter);
+        html += ".</div>\n";
     } else {
-        html << chapterHeadingHtml;
+        html += chapterHeadingHtml;
     }
+    const double headingMs = step.elapsedMs();
+    step.reset();
 
     auto tryGetVerseHtmlCache =
         [this](const std::string& key, std::string& valueOut) -> bool {
@@ -3354,6 +3524,57 @@ std::string SwordManager::getParallelText(
         }
     };
 
+    struct ParallelColumnInfo {
+        std::string moduleName;
+        std::string moduleAttr;
+        std::string columnAttr;
+        std::string outerOpen;
+        std::string innerOpen;
+        sword::SWModule* mod = nullptr;
+    };
+
+    std::vector<ParallelColumnInfo> columns;
+    columns.reserve(moduleNames.size());
+    for (size_t i = 0; i < moduleNames.size(); ++i) {
+        const bool isLast = (i + 1 == moduleNames.size());
+        const int width = isLast ? lastColWidth : colWidth;
+        const char* colClass = isLast ? "parallel-col-last" : "parallel-col";
+        const char* cellClass = isLast ? "parallel-cell-last" : "parallel-cell";
+
+        ParallelColumnInfo info;
+        info.moduleName = moduleNames[i];
+        info.moduleAttr = htmlEscapeAttr(moduleNames[i]);
+        appendInt(info.columnAttr, static_cast<int>(i));
+        info.mod = getModule(moduleNames[i]);
+
+        info.outerOpen.reserve(info.moduleAttr.size() * 2 + info.columnAttr.size() * 2 + 96);
+        info.outerOpen += "<div class=\"";
+        info.outerOpen += colClass;
+        info.outerOpen += "\" data-module=\"";
+        info.outerOpen += info.moduleAttr;
+        info.outerOpen += "\" data-parallel-col=\"";
+        info.outerOpen += info.columnAttr;
+        info.outerOpen += "\" style=\"width: ";
+        appendInt(info.outerOpen, width);
+        info.outerOpen += "%;\">";
+
+        info.innerOpen.reserve(32);
+        info.innerOpen += "<div class=\"";
+        info.innerOpen += cellClass;
+        info.innerOpen += "\">";
+
+        columns.push_back(std::move(info));
+    }
+
+    size_t cacheHits = 0;
+    size_t cacheMisses = 0;
+    size_t renderCalls = 0;
+    size_t sanitizedVerses = 0;
+    double renderTextMs = 0.0;
+    double postProcessMs = 0.0;
+    double sanitizeMs = 0.0;
+    perf::StepTimer verseLoopTimer;
+
     // Verse rows
     for (int v = 1; v <= verseCount; ++v) {
         const std::string verseRef = book + " " + std::to_string(chapter)
@@ -3362,49 +3583,81 @@ std::string SwordManager::getParallelText(
         if (selectedVerse > 0 && v == selectedVerse) {
             rowClasses += " verse-selected";
         }
-        html << "<div class=\"" << rowClasses << "\" id=\"v" << v << "\">\n";
-        for (size_t i = 0; i < moduleNames.size(); ++i) {
-            bool isLast = (i + 1 == moduleNames.size());
-            int w = isLast ? lastColWidth : colWidth;
-            const char* colClass = isLast ? "parallel-col-last" : "parallel-col";
-            std::string cellClasses = isLast ? "parallel-cell-last" : "parallel-cell";
-            const std::string columnAttr = std::to_string(i);
-            const std::string moduleAttr = htmlEscapeAttr(moduleNames[i]);
-            sword::SWModule* mod = getModule(moduleNames[i]);
-            html << "<div class=\"" << colClass << "\" data-module=\""
-                 << moduleAttr << "\" data-parallel-col=\"" << columnAttr
-                 << "\" style=\"width: " << w << "%;\">"
-                 << "<div class=\"" << cellClasses << "\" data-module=\""
-                 << moduleAttr << "\" data-parallel-col=\"" << columnAttr
-                 << "\">";
-            if (mod) {
-                mod->setKey(verseRef.c_str());
-                if (!mod->popError()) {
-                    std::string cacheKey = moduleNames[i] + "|" + verseRef;
+        html += "<div class=\"";
+        html += rowClasses;
+        html += "\" id=\"v";
+        appendInt(html, v);
+        html += "\">\n";
+        for (size_t i = 0; i < columns.size(); ++i) {
+            const auto& column = columns[i];
+            html += column.outerOpen;
+            html += column.innerOpen;
+            if (column.mod) {
+                column.mod->setKey(verseRef.c_str());
+                if (!column.mod->popError()) {
+                    std::string cacheKey = column.moduleName + "|" + verseRef;
                     std::string verseText;
                     if (!tryGetVerseHtmlCache(cacheKey, verseText)) {
-                        verseText = std::string(mod->renderText().c_str());
+                        ++cacheMisses;
+                        perf::StepTimer renderStep;
+                        verseText = std::string(column.mod->renderText().c_str());
+                        renderTextMs += renderStep.elapsedMs();
+                        ++renderCalls;
                         if (!verseText.empty()) {
+                            perf::StepTimer postProcessStep;
                             verseText = postProcessHtml(verseText);
+                            postProcessMs += postProcessStep.elapsedMs();
                             storeVerseHtmlCache(cacheKey, verseText);
                         }
+                    } else {
+                        ++cacheHits;
                     }
-                    verseText = sanitizeParallelVerseHtml(verseText);
-                    html << "<a class=\"versenum-link\" href=\"verse:" << v << "\">"
-                         << "<sup class=\"versenum\">" << v << "</sup></a> ";
-                    html << verseText;
+                    perf::StepTimer sanitizeStep;
+                    html += "<a class=\"versenum-link\" href=\"verse:";
+                    appendInt(html, v);
+                    html += "\"><sup class=\"versenum\">";
+                    appendInt(html, v);
+                    html += "</sup></a> ";
+                    appendSanitizedParallelVerseHtml(html, verseText);
+                    sanitizeMs += sanitizeStep.elapsedMs();
+                    ++sanitizedVerses;
                 }
             }
-            if (isLast && verseDecorator) {
-                html << verseDecorator(verseRef);
+            if (i + 1 == columns.size() && verseDecorator) {
+                html += verseDecorator(verseRef);
             }
-            html << "</div></div>\n";
+            html += "</div></div>\n";
         }
-        html << "</div>\n";
+        html += "</div>\n";
+    }
+    const double verseLoopMs = verseLoopTimer.elapsedMs();
+    double otherMs = verseLoopMs - renderTextMs - postProcessMs - sanitizeMs;
+    if (otherMs < 0.0) otherMs = 0.0;
+
+    html += "</div>\n";
+
+    if (perf::enabled()) {
+        perf::logf(
+            "SwordManager::getParallelText %s %d cols=%zu verses=%d cacheHits=%zu cacheMisses=%zu renderCalls=%zu sanitized=%zu verseCount=%.3f ms heading=%.3f ms verseLoop=%.3f ms renderText=%.3f ms postProcess=%.3f ms sanitize=%.3f ms other=%.3f ms html=%zu",
+            book.c_str(),
+            chapter,
+            moduleNames.size(),
+            verseCount,
+            cacheHits,
+            cacheMisses,
+            renderCalls,
+            sanitizedVerses,
+            verseCountMs,
+            headingMs,
+            verseLoopMs,
+            renderTextMs,
+            postProcessMs,
+            sanitizeMs,
+            otherMs,
+            html.size());
     }
 
-    html << "</div>\n";
-    return html.str();
+    return html;
 }
 
 std::string SwordManager::getCommentaryText(const std::string& moduleName,
@@ -4811,6 +5064,7 @@ std::string SwordManager::postProcessHtml(const std::string& html) const {
     std::string out;
     out.reserve(html.size() + 32);
     OutputTarget lastTarget;
+    bool prevPlainSpace = false;
 
     size_t pos = 0;
     while (pos < html.size()) {
@@ -4819,7 +5073,8 @@ std::string SwordManager::postProcessHtml(const std::string& html) const {
             size_t end = (nextTag == std::string::npos) ? html.size() : nextTag;
             appendSanitizedText(out,
                                 std::string_view(html).substr(pos, end - pos),
-                                lastTarget);
+                                lastTarget,
+                                prevPlainSpace);
             pos = end;
             continue;
         }
@@ -4831,7 +5086,8 @@ std::string SwordManager::postProcessHtml(const std::string& html) const {
         if (!parseTag(html, pos, tagEnd, tagName, isClosing, isSelfClosing)) {
             appendSanitizedText(out,
                                 std::string_view(html).substr(pos, 1),
-                                lastTarget);
+                                lastTarget,
+                                prevPlainSpace);
             ++pos;
             continue;
         }
@@ -4858,16 +5114,15 @@ std::string SwordManager::postProcessHtml(const std::string& html) const {
 
                     if (!meta.empty()) {
                         size_t start = out.size();
-                        out += buildWordSpanOpenTag(meta);
-                        out += content;
-                        out += "</span>";
+                        const std::string openTag = buildWordSpanOpenTag(meta);
+                        appendCollapsedHtmlFragment(out, openTag, prevPlainSpace);
+                        appendCollapsedHtmlFragment(out, content, prevPlainSpace);
+                        appendCollapsedHtmlFragment(out, "</span>", prevPlainSpace);
                         lastTarget.start = start;
                         lastTarget.end = out.size();
                         lastTarget.valid = true;
                     } else {
-                        size_t outStart = out.size();
-                        out += content;
-                        trackLastWordInHtmlFragment(content, outStart, lastTarget);
+                        appendCollapsedHtmlFragment(out, content, prevPlainSpace, &lastTarget);
                     }
 
                     pos = closeEnd + 1;
@@ -4875,7 +5130,7 @@ std::string SwordManager::postProcessHtml(const std::string& html) const {
                 }
             }
 
-            out += rawTag;
+            appendCollapsedHtmlFragment(out, rawTag, prevPlainSpace);
             pos = tagEnd + 1;
             continue;
         }
@@ -4890,18 +5145,17 @@ std::string SwordManager::postProcessHtml(const std::string& html) const {
                 bool isMarkerBlock = parseSmallBlockMeta(block, blockMeta);
                 if (isMarkerBlock) {
                     applyMetaToTarget(out, lastTarget, blockMeta);
-                    out += buildInlineMarkerHtml(block, blockMeta);
+                    const std::string markerHtml = buildInlineMarkerHtml(block, blockMeta);
+                    appendCollapsedHtmlFragment(out, markerHtml, prevPlainSpace);
                 } else {
-                    size_t outStart = out.size();
-                    out += block;
-                    trackLastWordInHtmlFragment(block, outStart, lastTarget);
+                    appendCollapsedHtmlFragment(out, block, prevPlainSpace, &lastTarget);
                 }
 
                 pos = blockEnd;
                 continue;
             }
 
-            out += rawTag;
+            appendCollapsedHtmlFragment(out, rawTag, prevPlainSpace);
             pos = tagEnd + 1;
             continue;
         }
@@ -4930,9 +5184,10 @@ std::string SwordManager::postProcessHtml(const std::string& html) const {
 
                     if (!linkMeta.empty() && !inner.empty() && !codeText) {
                         size_t start = out.size();
-                        out += buildWordSpanOpenTag(linkMeta);
-                        out += inner;
-                        out += "</span>";
+                        const std::string openTag = buildWordSpanOpenTag(linkMeta);
+                        appendCollapsedHtmlFragment(out, openTag, prevPlainSpace);
+                        appendCollapsedHtmlFragment(out, inner, prevPlainSpace);
+                        appendCollapsedHtmlFragment(out, "</span>", prevPlainSpace);
                         lastTarget.start = start;
                         lastTarget.end = out.size();
                         lastTarget.valid = true;
@@ -4940,12 +5195,11 @@ std::string SwordManager::postProcessHtml(const std::string& html) const {
                         if (!linkMeta.empty()) {
                             applyMetaToTarget(out, lastTarget, linkMeta);
                             if (codeText) {
-                                out += buildInlineMarkerHtml(inner, linkMeta);
+                                const std::string markerHtml = buildInlineMarkerHtml(inner, linkMeta);
+                                appendCollapsedHtmlFragment(out, markerHtml, prevPlainSpace);
                             }
                         } else if (!inner.empty() && !codeText) {
-                            size_t outStart = out.size();
-                            out += inner;
-                            trackLastWordInHtmlFragment(inner, outStart, lastTarget);
+                            appendCollapsedHtmlFragment(out, inner, prevPlainSpace, &lastTarget);
                         }
                     }
 
@@ -4955,21 +5209,20 @@ std::string SwordManager::postProcessHtml(const std::string& html) const {
             }
         }
 
-        out += rawTag;
+        appendCollapsedHtmlFragment(out, rawTag, prevPlainSpace);
         pos = tagEnd + 1;
     }
 
-    std::string result = collapseSpacesOutsideTags(out);
-    cacheStore(html, result);
+    cacheStore(html, out);
     if (perf::enabled()) {
         double ms = std::chrono::duration<double, std::milli>(
             std::chrono::steady_clock::now() - ppStart).count();
         if (ms > 1.0) {
             perf::logf("SwordManager::postProcessHtml miss len=%zu out=%zu cacheHit=%d bypass=%d: %.3f ms",
-                       html.size(), result.size(), cacheHit ? 1 : 0, bypassed ? 1 : 0, ms);
+                       html.size(), out.size(), cacheHit ? 1 : 0, bypassed ? 1 : 0, ms);
         }
     }
-    return result;
+    return out;
 }
 
 ModuleInfo SwordManager::buildModuleInfo(sword::SWModule* mod) const {

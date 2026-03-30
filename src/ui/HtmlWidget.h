@@ -27,9 +27,11 @@
 #endif
 #include <string>
 #include <functional>
+#include <deque>
 #include <map>
 #include <memory>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 namespace verdad {
@@ -259,13 +261,18 @@ private:
         litehtml::font_metrics metrics;
     };
     std::map<litehtml::uint_ptr, std::shared_ptr<const CachedFont>> fonts_;
+    const CachedFont* activeFltkFont_ = nullptr;
     litehtml::uint_ptr nextFontId_ = 1;
     using TextWidthCacheMap = std::map<std::string, litehtml::pixel_t, std::less<>>;
     std::unordered_map<const CachedFont*, TextWidthCacheMap> textWidthCache_;
+    std::unordered_set<std::string> textWidthProbation_;
+    std::deque<std::string> textWidthProbationOrder_;
     size_t textWidthCacheEntries_ = 0;
     size_t textWidthCacheHits_ = 0;
     size_t textWidthCacheMisses_ = 0;
     size_t textWidthCacheStores_ = 0;
+    size_t textWidthCacheStoreSkips_ = 0;
+    size_t textWidthCachePromotions_ = 0;
 
     // Scrollbar
     Fl_Scrollbar* scrollbar_;
@@ -312,6 +319,8 @@ private:
     };
 
     std::vector<TextFragment> textFragments_;
+
+    void selectFltkFont(const CachedFont& font);
     SelectionPoint selectionAnchor_;
     SelectionPoint selectionFocus_;
     int selectionParallelColumn_ = -1;
