@@ -138,6 +138,9 @@ public:
                                    bool activateTab = false);
     DailyWorkspaceState currentDailyWorkspaceState() const;
     void setDailyWorkspaceState(const DailyWorkspaceState& state);
+    std::string selectedDailyReadingPlanLabel() const;
+    std::string selectedDailyReadingPlanSummaryHtml(const std::string& dateIso,
+                                                    bool includePlanLabel = true) const;
 
     bool newDocument();
     bool openDocument(const std::string& path, bool activateTab);
@@ -355,7 +358,6 @@ private:
     void updateDailyCalendarMeta();
     void updateDailyCalendarHeader();
     std::string dailyDevotionalHeadingLabel(const std::string& moduleName) const;
-    std::string buildSelectedReadingPlanSummaryHtml(const std::string& dateIso) const;
     void showDailyDevotionEntry(const std::string& moduleName,
                                 const std::string& dateIso);
     void showReadingPlanDay(int planId, const std::string& dateIso);

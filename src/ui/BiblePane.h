@@ -5,6 +5,7 @@
 #include <FL/Fl_Choice.H>
 #include <FL/Fl_Input_Choice.H>
 #include <FL/Fl_Button.H>
+#include <FL/Fl_Check_Button.H>
 #include <FL/Fl_Box.H>
 #include <memory>
 #include <string>
@@ -131,6 +132,9 @@ public:
                               bool canGoBack,
                               bool canGoForward);
 
+    /// Refresh the bottom daily reading-plan bar from the Daily workspace state.
+    void refreshDailyReadingPlanBar();
+
 protected:
     void resize(int X, int Y, int W, int H) override;
 
@@ -160,6 +164,10 @@ private:
     Fl_Box* crossRefsRightSeparator_;
     Fl_Box* navSpacer_;
     Fl_Group* parallelHeader_;
+    Fl_Group* dailyReadingBar_;
+    Fl_Widget* dailyReadingBarWidget_;
+    Fl_Check_Button* dailyReadingCompleteButton_;
+    Fl_Button* dailyReadingPlanButton_;
     std::vector<std::string> bibleChoiceModules_;
     std::vector<std::string> bibleChoiceLabels_;
     std::string populatedBookModule_;
@@ -211,6 +219,10 @@ private:
 
     /// Populate chapter choices for current book
     void populateChapters(bool force = false);
+    void layoutDailyReadingBar();
+    void openDailyReadingPlanWorkspace();
+    void onDailyReadingBarLink(const std::string& url);
+    void updateDailyReadingPlanCompleted(bool completed);
 
     /// Keep the reference entry field aligned with the current book/chapter/verse.
     void syncReferenceInput();
@@ -236,6 +248,8 @@ private:
     static void onParallelAdd(Fl_Widget* w, void* data);
     static void onParallelRemove(Fl_Widget* w, void* data);
     static void onParallelModuleChange(Fl_Widget* w, void* data);
+    static void onDailyReadingComplete(Fl_Widget* w, void* data);
+    static void onDailyReadingPlanButton(Fl_Widget* w, void* data);
 
     // HTML widget callbacks
     void onLinkClicked(const std::string& url);

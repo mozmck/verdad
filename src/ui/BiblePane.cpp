@@ -5,19 +5,24 @@
 #include "ui/MainWindow.h"
 #include "ui/LeftPane.h"
 #include "ui/ModuleChoiceUtils.h"
+#include "ui/RightPane.h"
 #include "ui/WrappingChoice.h"
 #include "ui/WrappingInputChoice.h"
 #include "ui/TagPanel.h"
 #include "ui/VerseContext.h"
+#include "reading/DateUtils.h"
 #include "sword/SwordManager.h"
 #include "tags/TagManager.h"
 #include "app/PerfTrace.h"
 
 #include <FL/Fl.H>
+#include <FL/fl_draw.H>
 
 #include <algorithm>
-#include <sstream>
+#include <cstdlib>
 #include <fstream>
+#include <functional>
+#include <sstream>
 
 namespace verdad {
 
@@ -26,6 +31,9 @@ constexpr int kNavH = 30;
 constexpr int kContentPadding = 2;
 constexpr int kParallelHeaderH = 28;
 constexpr int kParallelHeaderSpacing = 6;
+constexpr int kDailyReadingBarH = 30;
+constexpr int kDailyReadingCompleteW = 92;
+constexpr int kDailyReadingPlanButtonW = 30;
 constexpr int kHistoryChoiceWidth = 150; // Fits most refs while leaving room for history buttons.
 constexpr int kParagraphButtonW = 25;
 constexpr int kParallelButtonW = 25;
@@ -102,6 +110,291 @@ std::string verseElementId(int verse) {
 std::string selectedVerseInlineStyleSnippet() {
     return "--verdad-selected-verse:1;color:#1f7f1f !important;";
 }
+
+std::string monthDayLabel(const std::string& isoDate) {
+    reading::Date date{};
+    if (!reading::parseIsoDate(isoDate, date)) {
+        date = reading::today();
+    }
+    std::string month = reading::monthName(date.month);
+    if (month.empty()) return isoDate;
+    return month + " " + std::to_string(date.day);
+}
+
+std::string urlDecode(const std::string& text) {
+    std::string decoded;
+    decoded.reserve(text.size());
+
+    for (size_t i = 0; i < text.size(); ++i) {
+        char c = text[i];
+        if (c == '%' && i + 2 < text.size()) {
+            const std::string hex = text.substr(i + 1, 2);
+            char* end = nullptr;
+            long value = std::strtol(hex.c_str(), &end, 16);
+            if (end && *end == '\0') {
+                decoded.push_back(static_cast<char>(value));
+                i += 2;
+                continue;
+            }
+        }
+        decoded.push_back(c == '+' ? ' ' : c);
+    }
+
+    return decoded;
+}
+
+std::string extractQueryValue(const std::string& url, const char* key) {
+    if (!key || !*key) return "";
+    const std::string marker = std::string(key) + "=";
+    size_t queryPos = url.find('?');
+    if (queryPos == std::string::npos) return "";
+    size_t pos = url.find(marker, queryPos + 1);
+    if (pos == std::string::npos) return "";
+    pos += marker.size();
+    size_t end = url.find('&', pos);
+    return urlDecode(url.substr(pos, end == std::string::npos ? std::string::npos : end - pos));
+}
+
+std::string firstReadingListItem(const std::string& reference) {
+    std::string ref = module_choice::trimCopy(reference);
+    if (ref.empty()) return ref;
+
+    size_t split = ref.find_first_of(",;");
+    if (split == std::string::npos) return ref;
+
+    std::string first = module_choice::trimCopy(ref.substr(0, split));
+    return first.empty() ? ref : first;
+}
+
+std::string decodeBasicHtmlEntities(const std::string& text) {
+    std::string out;
+    out.reserve(text.size());
+
+    for (size_t i = 0; i < text.size(); ++i) {
+        if (text[i] != '&') {
+            out.push_back(text[i]);
+            continue;
+        }
+
+        size_t semi = text.find(';', i + 1);
+        if (semi == std::string::npos) {
+            out.push_back(text[i]);
+            continue;
+        }
+
+        const std::string entity = text.substr(i, semi - i + 1);
+        if (entity == "&amp;") out.push_back('&');
+        else if (entity == "&lt;") out.push_back('<');
+        else if (entity == "&gt;") out.push_back('>');
+        else if (entity == "&quot;") out.push_back('"');
+        else if (entity == "&#39;") out.push_back('\'');
+        else if (entity == "&nbsp;") out.push_back(' ');
+        else {
+            out += entity;
+            i = semi;
+            continue;
+        }
+        i = semi;
+    }
+
+    return out;
+}
+
+std::string stripSimpleHtml(const std::string& html) {
+    std::string text;
+    text.reserve(html.size());
+    bool inTag = false;
+    for (char c : html) {
+        if (c == '<') {
+            inTag = true;
+            continue;
+        }
+        if (c == '>') {
+            inTag = false;
+            continue;
+        }
+        if (!inTag) text.push_back(c);
+    }
+    return decodeBasicHtmlEntities(text);
+}
+
+class DailyReadingBarWidget : public Fl_Widget {
+public:
+    struct Chunk {
+        std::string text;
+        std::string link;
+    };
+
+    using LinkCallback = std::function<void(const std::string&)>;
+
+    DailyReadingBarWidget(int X, int Y, int W, int H, const char* label = nullptr)
+        : Fl_Widget(X, Y, W, H, label) {
+        box(FL_FLAT_BOX);
+        color(FL_BACKGROUND_COLOR);
+        labelfont(FL_HELVETICA);
+        labelsize(12);
+    }
+
+    void setChunks(std::vector<Chunk> chunks) {
+        chunks_ = std::move(chunks);
+        redraw();
+    }
+
+    void setLinkCallback(LinkCallback callback) {
+        linkCallback_ = std::move(callback);
+    }
+
+    int handle(int event) override {
+        switch (event) {
+        case FL_MOVE:
+        case FL_ENTER: {
+            updateHover(linkIndexAt(Fl::event_x(), Fl::event_y()));
+            return 1;
+        }
+        case FL_LEAVE:
+            updateHover(-1);
+            return 1;
+        case FL_PUSH:
+            if (Fl::event_button() == FL_LEFT_MOUSE) {
+                int index = linkIndexAt(Fl::event_x(), Fl::event_y());
+                if (index >= 0 && index < static_cast<int>(hitRects_.size()) &&
+                    linkCallback_) {
+                    linkCallback_(hitRects_[static_cast<size_t>(index)].link);
+                    return 1;
+                }
+            }
+            break;
+        default:
+            break;
+        }
+        return Fl_Widget::handle(event);
+    }
+
+    void draw() override {
+        fl_push_clip(x(), y(), w(), h());
+        fl_color(color());
+        fl_rectf(x(), y(), w(), h());
+
+        hitRects_.clear();
+
+        fl_font(labelfont(), labelsize());
+        const int baseline = y() + ((h() + fl_height()) / 2) - fl_descent();
+        int cursorX = x() + 4;
+        const int maxX = x() + w() - 4;
+
+        for (const auto& chunk : chunks_) {
+            if (chunk.text.empty() || cursorX >= maxX) continue;
+
+            int chunkW = 0;
+            int chunkH = 0;
+            fl_measure(chunk.text.c_str(), chunkW, chunkH, 0);
+            if (chunkW <= 0) continue;
+
+            const int drawW = std::min(chunkW, maxX - cursorX);
+            if (drawW <= 0) break;
+
+            const bool isLink = !chunk.link.empty();
+            fl_color(isLink ? fl_rgb_color(26, 82, 118) : fl_rgb_color(70, 82, 93));
+            fl_draw(chunk.text.c_str(),
+                    cursorX,
+                    y(),
+                    drawW,
+                    h(),
+                    FL_ALIGN_LEFT | FL_ALIGN_INSIDE | FL_ALIGN_CLIP);
+
+            if (isLink) {
+                HitRect rect;
+                rect.x = cursorX;
+                rect.y = y();
+                rect.w = drawW;
+                rect.h = h();
+                rect.link = chunk.link;
+                hitRects_.push_back(std::move(rect));
+
+                if (hoveredLink_ == static_cast<int>(hitRects_.size()) - 1) {
+                    fl_color(fl_rgb_color(26, 82, 118));
+                    fl_line(cursorX, baseline + 1, cursorX + drawW, baseline + 1);
+                }
+            }
+
+            cursorX += drawW;
+        }
+
+        fl_pop_clip();
+    }
+
+private:
+    struct HitRect {
+        int x = 0;
+        int y = 0;
+        int w = 0;
+        int h = 0;
+        std::string link;
+    };
+
+    int linkIndexAt(int mouseX, int mouseY) const {
+        for (size_t i = 0; i < hitRects_.size(); ++i) {
+            const auto& rect = hitRects_[i];
+            if (mouseX >= rect.x && mouseX < rect.x + rect.w &&
+                mouseY >= rect.y && mouseY < rect.y + rect.h) {
+                return static_cast<int>(i);
+            }
+        }
+        return -1;
+    }
+
+    void updateHover(int hoveredLink) {
+        if (hoveredLink_ == hoveredLink) return;
+        hoveredLink_ = hoveredLink;
+        fl_cursor(hoveredLink_ >= 0 ? FL_CURSOR_HAND : FL_CURSOR_DEFAULT);
+        redraw();
+    }
+
+    std::vector<Chunk> chunks_;
+    std::vector<HitRect> hitRects_;
+    LinkCallback linkCallback_;
+    int hoveredLink_ = -1;
+};
+
+std::vector<DailyReadingBarWidget::Chunk> chunksFromSummaryHtml(const std::string& html) {
+    std::vector<DailyReadingBarWidget::Chunk> chunks;
+    size_t cursor = 0;
+
+    while (cursor < html.size()) {
+        size_t anchorStart = html.find("<a", cursor);
+        if (anchorStart == std::string::npos) {
+            std::string text = stripSimpleHtml(html.substr(cursor));
+            if (!text.empty()) chunks.push_back({text, ""});
+            break;
+        }
+
+        if (anchorStart > cursor) {
+            std::string text = stripSimpleHtml(html.substr(cursor, anchorStart - cursor));
+            if (!text.empty()) chunks.push_back({text, ""});
+        }
+
+        size_t hrefStart = html.find("href=\"", anchorStart);
+        if (hrefStart == std::string::npos) break;
+        hrefStart += 6;
+        size_t hrefEnd = html.find('"', hrefStart);
+        if (hrefEnd == std::string::npos) break;
+
+        size_t contentStart = html.find('>', hrefEnd);
+        if (contentStart == std::string::npos) break;
+        ++contentStart;
+
+        size_t anchorEnd = html.find("</a>", contentStart);
+        if (anchorEnd == std::string::npos) break;
+
+        std::string link = html.substr(hrefStart, hrefEnd - hrefStart);
+        std::string text = stripSimpleHtml(html.substr(contentStart, anchorEnd - contentStart));
+        if (!text.empty()) chunks.push_back({text, link});
+
+        cursor = anchorEnd + 4;
+    }
+
+    return chunks;
+}
 } // namespace
 
 BiblePane::BiblePane(VerdadApp* app, int X, int Y, int W, int H)
@@ -129,6 +422,10 @@ BiblePane::BiblePane(VerdadApp* app, int X, int Y, int W, int H)
     , crossRefsRightSeparator_(nullptr)
     , navSpacer_(nullptr)
     , parallelHeader_(nullptr)
+    , dailyReadingBar_(nullptr)
+    , dailyReadingBarWidget_(nullptr)
+    , dailyReadingCompleteButton_(nullptr)
+    , dailyReadingPlanButton_(nullptr)
     , htmlWidget_(nullptr)
     , currentBook_("Genesis")
     , currentChapter_(1) {
@@ -153,7 +450,34 @@ BiblePane::BiblePane(VerdadApp* app, int X, int Y, int W, int H)
     parallelHeader_->end();
     parallelHeader_->hide();
 
-    htmlWidget_ = new HtmlWidget(X, contentY, W, contentH);
+    dailyReadingBar_ = new Fl_Group(X, Y + H - kDailyReadingBarH, W, kDailyReadingBarH);
+    dailyReadingBar_->box(FL_THIN_UP_BOX);
+    dailyReadingBar_->color(FL_BACKGROUND_COLOR);
+    dailyReadingBar_->begin();
+    dailyReadingBarWidget_ = new DailyReadingBarWidget(
+        X + 4,
+        dailyReadingBar_->y() + 2,
+        std::max(20, W - kDailyReadingCompleteW - kDailyReadingPlanButtonW - 16),
+        std::max(20, kDailyReadingBarH - 4));
+    static_cast<DailyReadingBarWidget*>(dailyReadingBarWidget_)->setLinkCallback(
+        [this](const std::string& url) { onDailyReadingBarLink(url); });
+    dailyReadingCompleteButton_ = new Fl_Check_Button(
+        X + W - kDailyReadingPlanButtonW - kDailyReadingCompleteW - 6,
+        dailyReadingBar_->y() + 5,
+        kDailyReadingCompleteW,
+        std::max(20, kDailyReadingBarH - 10),
+        "Completed");
+    dailyReadingCompleteButton_->callback(onDailyReadingComplete, this);
+    dailyReadingPlanButton_ = new Fl_Button(X + W - kDailyReadingPlanButtonW - 4,
+                                            dailyReadingBar_->y() + 3,
+                                            kDailyReadingPlanButtonW,
+                                            std::max(20, kDailyReadingBarH - 6),
+                                            u8"☰");
+    dailyReadingPlanButton_->callback(onDailyReadingPlanButton, this);
+    dailyReadingPlanButton_->tooltip("Reading Plan");
+    dailyReadingBar_->end();
+
+    htmlWidget_ = new HtmlWidget(X, contentY, W, std::max(20, contentH - kDailyReadingBarH));
 
     std::string cssFile = app_->getDataDir() + "/master.css";
     std::ifstream cssStream(cssFile);
@@ -187,6 +511,7 @@ BiblePane::BiblePane(VerdadApp* app, int X, int Y, int W, int H)
         parallelAddButton_->hide();
     }
     syncOptionButtons();
+    refreshDailyReadingPlanBar();
 
 }
 
@@ -205,7 +530,9 @@ void BiblePane::resize(int X, int Y, int W, int H) {
         !strongsToggleButton_ || !morphToggleButton_ ||
         !footnotesToggleButton_ || !crossRefsToggleButton_ ||
         !crossRefsRightSeparator_ ||
-        !navSpacer_ || !parallelHeader_ || !htmlWidget_) {
+        !navSpacer_ || !parallelHeader_ || !dailyReadingBar_ ||
+        !dailyReadingBarWidget_ || !dailyReadingCompleteButton_ ||
+        !dailyReadingPlanButton_ || !htmlWidget_) {
         return;
     }
 
@@ -296,8 +623,9 @@ void BiblePane::resize(int X, int Y, int W, int H) {
     parallelHeader_->damage(FL_DAMAGE_ALL);
     layoutParallelHeader();
 
+    layoutDailyReadingBar();
     int textY = contentY + headerH;
-    int textH = std::max(20, H - navH - padding - headerH);
+    int textH = std::max(20, H - navH - padding - headerH - kDailyReadingBarH);
     htmlWidget_->resize(X, textY, W, textH);
 }
 
@@ -471,6 +799,7 @@ void BiblePane::refresh() {
     perf::ScopeTimer timer("BiblePane::refresh");
     syncOptionButtons();
     updateDisplay();
+    refreshDailyReadingPlanBar();
 }
 
 void BiblePane::setHtmlStyleOverride(const std::string& css) {
@@ -487,6 +816,35 @@ void BiblePane::setBrowserLineSpacing(int pixels) {
     if (bookChoice_) {
         bookChoice_->setBrowserLineSpacing(pixels);
     }
+}
+
+void BiblePane::layoutDailyReadingBar() {
+    if (!dailyReadingBar_ || !dailyReadingBarWidget_ ||
+        !dailyReadingCompleteButton_ || !dailyReadingPlanButton_) {
+        return;
+    }
+
+    dailyReadingBar_->resize(x(), y() + h() - kDailyReadingBarH, w(), kDailyReadingBarH);
+
+    const int buttonH = std::max(20, dailyReadingBar_->h() - 6);
+    const int checkboxH = std::max(20, dailyReadingBar_->h() - 10);
+    const int buttonY = dailyReadingBar_->y() + std::max(2, (dailyReadingBar_->h() - buttonH) / 2);
+    const int checkboxY = dailyReadingBar_->y() + std::max(2, (dailyReadingBar_->h() - checkboxH) / 2);
+    const int buttonX = dailyReadingBar_->x() + dailyReadingBar_->w() - kDailyReadingPlanButtonW - 4;
+    const int checkboxX = buttonX - kDailyReadingCompleteW - 8;
+
+    dailyReadingPlanButton_->resize(buttonX,
+                                    buttonY,
+                                    kDailyReadingPlanButtonW,
+                                    buttonH);
+    dailyReadingCompleteButton_->resize(checkboxX,
+                                        checkboxY,
+                                        kDailyReadingCompleteW,
+                                        checkboxH);
+    dailyReadingBarWidget_->resize(dailyReadingBar_->x() + 6,
+                                   dailyReadingBar_->y() + 2,
+                                   std::max(20, checkboxX - dailyReadingBar_->x() - 12),
+                                   std::max(20, dailyReadingBar_->h() - 4));
 }
 
 void BiblePane::syncOptionButtons() {
@@ -552,11 +910,77 @@ void BiblePane::redrawChrome() {
         parallelHeader_->damage(FL_DAMAGE_ALL);
         parallelHeader_->redraw();
     }
+    if (dailyReadingBar_) {
+        dailyReadingBar_->damage(FL_DAMAGE_ALL);
+        dailyReadingBar_->redraw();
+    }
+    if (dailyReadingBarWidget_) dailyReadingBarWidget_->redraw();
+    if (dailyReadingCompleteButton_) dailyReadingCompleteButton_->redraw();
+    if (dailyReadingPlanButton_) dailyReadingPlanButton_->redraw();
     for (auto& col : parallelHeaderColumns_) {
         if (col.moduleChoice) col.moduleChoice->redraw();
         if (col.removeButton) col.removeButton->redraw();
     }
     redraw();
+}
+
+void BiblePane::refreshDailyReadingPlanBar() {
+    if (!dailyReadingBarWidget_ || !dailyReadingCompleteButton_ || !dailyReadingPlanButton_) {
+        return;
+    }
+
+    layoutDailyReadingBar();
+
+    RightPane* rightPane =
+        (app_ && app_->mainWindow()) ? app_->mainWindow()->rightPane() : nullptr;
+    DailyWorkspaceState state;
+    if (rightPane) {
+        state = rightPane->currentDailyWorkspaceState();
+    }
+    if (!reading::isIsoDateInRange(state.selectedDateIso)) {
+        state.selectedDateIso = reading::formatIsoDate(reading::today());
+    }
+
+    const std::string planLabel =
+        rightPane ? rightPane->selectedDailyReadingPlanLabel() : std::string();
+    std::string summaryHtml =
+        rightPane ? rightPane->selectedDailyReadingPlanSummaryHtml(state.selectedDateIso, false)
+                  : std::string();
+    std::vector<DailyReadingBarWidget::Chunk> chunks;
+    chunks.push_back({monthDayLabel(state.selectedDateIso), ""});
+    chunks.push_back({": ", ""});
+    if (!summaryHtml.empty()) {
+        auto summaryChunks = chunksFromSummaryHtml(summaryHtml);
+        chunks.insert(chunks.end(), summaryChunks.begin(), summaryChunks.end());
+    } else {
+        chunks.push_back({"No reading plan selected.", ""});
+    }
+
+    dailyReadingPlanButton_->copy_label(u8"☰");
+    dailyReadingPlanButton_->tooltip("Reading Plan");
+
+    bool canComplete = false;
+    bool completed = false;
+    if (app_ &&
+        state.readingPlanSource == DailyReadingPlanSource::Editable &&
+        state.readingPlanId > 0) {
+        ReadingPlan plan;
+        if (app_->readingPlanManager().getPlan(state.readingPlanId, plan)) {
+            for (const auto& day : plan.days) {
+                if (day.dateIso == state.selectedDateIso) {
+                    canComplete = true;
+                    completed = day.completed;
+                    break;
+                }
+            }
+        }
+    }
+
+    dailyReadingCompleteButton_->value(completed ? 1 : 0);
+    if (canComplete) dailyReadingCompleteButton_->activate();
+    else dailyReadingCompleteButton_->deactivate();
+
+    static_cast<DailyReadingBarWidget*>(dailyReadingBarWidget_)->setChunks(std::move(chunks));
 }
 
 void BiblePane::selectVerse(int verse) {
@@ -660,9 +1084,11 @@ void BiblePane::setStudyState(const std::string& module,
     }
     if (htmlWidget_) {
         int textY = contentY + headerH;
-        int textH = std::max(20, h() - kNavH - kContentPadding - headerH);
+        int textH = std::max(20, h() - kNavH - kContentPadding - headerH - kDailyReadingBarH);
         htmlWidget_->resize(x(), textY, w(), textH);
     }
+    layoutDailyReadingBar();
+    refreshDailyReadingPlanBar();
 }
 
 BiblePane::DisplayBuffer BiblePane::captureDisplayBuffer() const {
@@ -953,7 +1379,7 @@ void BiblePane::updateDisplay() {
     parallelHeader_->damage(FL_DAMAGE_ALL);
     layoutParallelHeader();
     int textY = contentY + headerH;
-    int textH = std::max(20, h() - kNavH - kContentPadding - headerH);
+    int textH = std::max(20, h() - kNavH - kContentPadding - headerH - kDailyReadingBarH);
     htmlWidget_->resize(x(), textY, w(), textH);
 
     htmlWidget_->setHtml(html);
@@ -966,6 +1392,7 @@ void BiblePane::updateDisplay() {
         htmlWidget_->scrollToTop();
     }
     htmlWidget_->redraw();
+    refreshDailyReadingPlanBar();
     redrawChrome();
     perf::logf("BiblePane::updateDisplay scroll+redraw: %.3f ms", step.elapsedMs());
 }
@@ -1297,6 +1724,75 @@ void BiblePane::populateChapters(bool force) {
     chapterChoice_->value(currentChapter_ - 1);
 }
 
+void BiblePane::openDailyReadingPlanWorkspace() {
+    if (!app_ || !app_->mainWindow() || !app_->mainWindow()->rightPane()) return;
+
+    RightPane* rightPane = app_->mainWindow()->rightPane();
+    DailyWorkspaceState state = rightPane->currentDailyWorkspaceState();
+    state.mode = DailyWorkspaceMode::ReadingPlans;
+    if (!reading::isIsoDateInRange(state.selectedDateIso)) {
+        state.selectedDateIso = reading::formatIsoDate(reading::today());
+    }
+    rightPane->setDailyWorkspaceState(state);
+    rightPane->setDevotionsPlansTabActive(true);
+}
+
+void BiblePane::onDailyReadingBarLink(const std::string& url) {
+    if (url.rfind("verdad-plan://open", 0) == 0) {
+        const std::string ref = firstReadingListItem(extractQueryValue(url, "ref"));
+        if (!ref.empty()) {
+            navigateToReference(ref);
+        }
+        return;
+    }
+
+    onLinkClicked(url);
+}
+
+void BiblePane::updateDailyReadingPlanCompleted(bool completed) {
+    if (!app_ || !app_->mainWindow() || !app_->mainWindow()->rightPane()) {
+        refreshDailyReadingPlanBar();
+        return;
+    }
+
+    RightPane* rightPane = app_->mainWindow()->rightPane();
+    DailyWorkspaceState state = rightPane->currentDailyWorkspaceState();
+    if (state.readingPlanSource != DailyReadingPlanSource::Editable ||
+        state.readingPlanId <= 0 ||
+        !reading::isIsoDateInRange(state.selectedDateIso)) {
+        refreshDailyReadingPlanBar();
+        return;
+    }
+
+    ReadingPlan plan;
+    if (!app_->readingPlanManager().getPlan(state.readingPlanId, plan)) {
+        refreshDailyReadingPlanBar();
+        return;
+    }
+
+    bool hasDay = false;
+    for (const auto& day : plan.days) {
+        if (day.dateIso == state.selectedDateIso) {
+            hasDay = true;
+            break;
+        }
+    }
+    if (!hasDay) {
+        refreshDailyReadingPlanBar();
+        return;
+    }
+
+    if (!app_->readingPlanManager().setDayCompleted(state.readingPlanId,
+                                                    state.selectedDateIso,
+                                                    completed)) {
+        app_->mainWindow()->showTransientStatus("Failed to update reading plan completion.");
+        refreshDailyReadingPlanBar();
+        return;
+    }
+
+    rightPane->setDailyWorkspaceState(state);
+}
+
 void BiblePane::notifyContextChanged() {
     if (app_->mainWindow()) {
         app_->mainWindow()->onBibleStudyContextChanged();
@@ -1445,6 +1941,18 @@ void BiblePane::onParallelModuleChange(Fl_Widget* w, void* data) {
     std::string module = module_choice::selectedModuleName(
         choice, self->bibleChoiceModules_);
     if (!module.empty()) self->setParallelModuleAt(index, module);
+}
+
+void BiblePane::onDailyReadingComplete(Fl_Widget* /*w*/, void* data) {
+    auto* self = static_cast<BiblePane*>(data);
+    if (!self || !self->dailyReadingCompleteButton_) return;
+    self->updateDailyReadingPlanCompleted(self->dailyReadingCompleteButton_->value() != 0);
+}
+
+void BiblePane::onDailyReadingPlanButton(Fl_Widget* /*w*/, void* data) {
+    auto* self = static_cast<BiblePane*>(data);
+    if (!self) return;
+    self->openDailyReadingPlanWorkspace();
 }
 
 void BiblePane::onLinkClicked(const std::string& url) {

@@ -2570,6 +2570,22 @@ void RightPane::setDailyWorkspaceState(const DailyWorkspaceState& state) {
     refreshDailyWorkspace(true);
 }
 
+std::string RightPane::selectedDailyReadingPlanLabel() const {
+    if (!app_) return "";
+
+    if (dailyWorkspaceState_.readingPlanSource == DailyReadingPlanSource::SwordModule) {
+        return dailyDevotionalHeadingLabel(dailyWorkspaceState_.swordReadingPlanModule);
+    }
+
+    if (dailyWorkspaceState_.readingPlanId <= 0) return "";
+
+    ReadingPlan plan;
+    if (!app_->readingPlanManager().getPlan(dailyWorkspaceState_.readingPlanId, plan)) {
+        return "";
+    }
+    return plan.summary.name;
+}
+
 int RightPane::dictionaryPaneHeight() const {
     return dictionaryPaneGroup_ ? dictionaryPaneGroup_->h() : 0;
 }
@@ -3457,17 +3473,17 @@ std::string RightPane::dailyDevotionalHeadingLabel(const std::string& moduleName
     return moduleName + ": " + description;
 }
 
-std::string RightPane::buildSelectedReadingPlanSummaryHtml(const std::string& dateIso) const {
+std::string RightPane::selectedDailyReadingPlanSummaryHtml(const std::string& dateIso,
+                                                           bool includePlanLabel) const {
     if (!app_) return "";
 
-    std::string planLabel;
+    std::string planLabel = selectedDailyReadingPlanLabel();
     std::vector<std::string> itemsHtml;
 
     if (dailyWorkspaceState_.readingPlanSource == DailyReadingPlanSource::SwordModule) {
         const std::string moduleName = dailyWorkspaceState_.swordReadingPlanModule;
         if (moduleName.empty()) return "";
 
-        planLabel = dailyDevotionalHeadingLabel(moduleName);
         std::string entryHtml = app_->swordManager().getDailyDevotionEntry(moduleName, dateIso);
         std::string rewrittenBody = extractDailyEntryBodyHtml(
             rewriteSwordReadingPlanLinks(entryHtml, nullptr));
@@ -3510,7 +3526,7 @@ std::string RightPane::buildSelectedReadingPlanSummaryHtml(const std::string& da
 
     std::ostringstream html;
     html << "<div class=\"daily-reading-summary\">";
-    if (!planLabel.empty()) {
+    if (includePlanLabel && !planLabel.empty()) {
         html << "<span class=\"daily-reading-summary-plan\">"
              << htmlEscape(planLabel)
              << "</span>";
@@ -3538,7 +3554,7 @@ void RightPane::showDailyDevotionEntry(const std::string& moduleName,
     std::string entryHtml = app_->swordManager().getDailyDevotionEntry(moduleName, dateIso);
     dailyHtml_->setHtml(buildDailyDevotionPageHtml(
         dateIso,
-        buildSelectedReadingPlanSummaryHtml(dateIso),
+        selectedDailyReadingPlanSummaryHtml(dateIso, true),
         htmlEscape(dailyDevotionalHeadingLabel(moduleName)),
         entryHtml));
 }
@@ -3643,6 +3659,9 @@ void RightPane::refreshDailyWorkspace(bool /*forceCalendarReload*/) {
 
     updateDailyCalendarMeta();
     updateDailyWorkspaceControls();
+    if (app_->mainWindow() && app_->mainWindow()->biblePane()) {
+        app_->mainWindow()->biblePane()->refreshDailyReadingPlanBar();
+    }
 }
 
 void RightPane::openReadingPlanPassage(const std::string& reference) {
