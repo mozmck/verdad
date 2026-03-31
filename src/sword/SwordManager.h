@@ -139,6 +139,9 @@ public:
     /// Get list of available daily devotion modules.
     std::vector<ModuleInfo> getDailyDevotionModules() const;
 
+    /// Get list of available daily reading-plan modules.
+    std::vector<ModuleInfo> getDailyReadingPlanModules() const;
+
     /// Get list of available general book modules
     std::vector<ModuleInfo> getGeneralBookModules() const;
 
@@ -217,6 +220,12 @@ public:
 
     /// Extract one-line month summaries keyed by ISO date for calendar cells.
     std::unordered_map<std::string, std::string> getDailyDevotionMonthSummaries(
+        const std::string& moduleName,
+        int year,
+        int month);
+
+    /// Extract one-line month summaries keyed by ISO date for SWORD reading plans.
+    std::unordered_map<std::string, std::string> getDailyReadingPlanMonthSummaries(
         const std::string& moduleName,
         int year,
         int month);
@@ -309,6 +318,9 @@ public:
 
     /// Check if module is a daily devotional / reading-plan style resource.
     bool moduleIsDailyDevotion(const std::string& moduleName) const;
+
+    /// Check if a daily devotion resource should be treated as a reading plan.
+    bool moduleIsDailyReadingPlan(const std::string& moduleName) const;
 
     /// Parse a verse key string into components
     struct VerseRef {

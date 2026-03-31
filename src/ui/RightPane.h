@@ -28,6 +28,17 @@ class HtmlEditorWidget;
 class FilterableChoiceWidget;
 class MonthCalendarWidget;
 
+struct DailyReadingPlanChoiceItem {
+    enum class Kind {
+        EditablePlan,
+        SwordModule,
+    };
+
+    Kind kind = Kind::EditablePlan;
+    int planId = 0;
+    std::string moduleName;
+};
+
 /// Right pane for commentary, dictionary, and general books.
 /// Commentary/General Books are top tabs; dictionary is a resizable bottom pane.
 class RightPane : public Fl_Group {
@@ -123,6 +134,8 @@ public:
     void setDevotionsPlansTabActive(bool active);
     void setDailyDevotionModule(const std::string& moduleName,
                                 bool activateTab = false);
+    void setDailyReadingPlanModule(const std::string& moduleName,
+                                   bool activateTab = false);
     DailyWorkspaceState currentDailyWorkspaceState() const;
     void setDailyWorkspaceState(const DailyWorkspaceState& state);
 
@@ -279,7 +292,8 @@ private:
     HtmlWidget* dailyHtml_;
     std::vector<std::string> dailyDevotionalModules_;
     std::vector<std::string> dailyDevotionalLabels_;
-    std::vector<int> dailyReadingPlanIds_;
+    std::vector<DailyReadingPlanChoiceItem> dailyReadingPlanChoices_;
+    std::vector<std::string> dailyCurrentOpenRefs_;
     DailyWorkspaceState dailyWorkspaceState_;
 
     // Studypad tab (global, not tied to study tabs)
@@ -346,6 +360,8 @@ private:
     void showDailyDevotionEntry(const std::string& moduleName,
                                 const std::string& dateIso);
     void showReadingPlanDay(int planId, const std::string& dateIso);
+    void showSwordReadingPlanDay(const std::string& moduleName,
+                                 const std::string& dateIso);
     void openReadingPlanPassage(const std::string& reference);
     void onDailyContentLink(const std::string& url);
 

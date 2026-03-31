@@ -321,8 +321,12 @@ MainWindow::SessionState sessionStateFromPreferences(const PreferenceMap& prefs)
     state.dailyWorkspace.mode =
         dailyWorkspaceModeFromToken(trimCopy(lookup("daily_workspace_mode")));
     state.dailyWorkspace.devotionalModule = lookup("daily_workspace_devotional_module");
+    state.dailyWorkspace.readingPlanSource =
+        dailyReadingPlanSourceFromToken(trimCopy(lookup("daily_workspace_plan_source")));
     state.dailyWorkspace.readingPlanId =
         parseIntOr(lookup("daily_workspace_plan_id"), 0);
+    state.dailyWorkspace.swordReadingPlanModule =
+        lookup("daily_workspace_sword_plan_module");
     state.dailyWorkspace.selectedDateIso = lookup("daily_workspace_date");
     state.dailyWorkspace.calendarVisible =
         parseBoolOr(lookup("daily_workspace_calendar_open"), false);
@@ -800,8 +804,12 @@ void VerdadApp::savePreferences() {
              << dailyWorkspaceModeToken(state.dailyWorkspace.mode) << "\n";
         file << "daily_workspace_devotional_module="
              << state.dailyWorkspace.devotionalModule << "\n";
+        file << "daily_workspace_plan_source="
+             << dailyReadingPlanSourceToken(state.dailyWorkspace.readingPlanSource) << "\n";
         file << "daily_workspace_plan_id="
              << state.dailyWorkspace.readingPlanId << "\n";
+        file << "daily_workspace_sword_plan_module="
+             << state.dailyWorkspace.swordReadingPlanModule << "\n";
         file << "daily_workspace_date="
              << state.dailyWorkspace.selectedDateIso << "\n";
         file << "daily_workspace_calendar_open="

@@ -10,11 +10,18 @@ enum class DailyWorkspaceMode {
     ReadingPlans,
 };
 
+enum class DailyReadingPlanSource {
+    Editable,
+    SwordModule,
+};
+
 struct DailyWorkspaceState {
     bool tabActive = false;
     DailyWorkspaceMode mode = DailyWorkspaceMode::Devotionals;
     std::string devotionalModule;
+    DailyReadingPlanSource readingPlanSource = DailyReadingPlanSource::Editable;
     int readingPlanId = 0;
+    std::string swordReadingPlanModule;
     std::string selectedDateIso;
     bool calendarVisible = false;
 };
@@ -34,6 +41,24 @@ inline DailyWorkspaceMode dailyWorkspaceModeFromToken(const std::string& text) {
         return DailyWorkspaceMode::ReadingPlans;
     }
     return DailyWorkspaceMode::Devotionals;
+}
+
+inline const char* dailyReadingPlanSourceToken(DailyReadingPlanSource source) {
+    switch (source) {
+    case DailyReadingPlanSource::Editable:
+        return "editable";
+    case DailyReadingPlanSource::SwordModule:
+        return "sword_module";
+    }
+    return "editable";
+}
+
+inline DailyReadingPlanSource dailyReadingPlanSourceFromToken(
+    const std::string& text) {
+    if (text == "sword_module" || text == "sword") {
+        return DailyReadingPlanSource::SwordModule;
+    }
+    return DailyReadingPlanSource::Editable;
 }
 
 } // namespace verdad

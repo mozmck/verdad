@@ -169,6 +169,53 @@ bool isDailyDevotionModule(sword::SWModule* mod) {
     return moduleHasFeature(mod, "DailyDevotion");
 }
 
+std::string lowerAsciiCopy(std::string text) {
+    std::transform(text.begin(), text.end(), text.begin(),
+                   [](unsigned char c) {
+                       return static_cast<char>(std::tolower(c));
+                   });
+    return text;
+}
+
+bool isDailyReadingPlanModule(sword::SWModule* mod) {
+    if (!isDailyDevotionModule(mod)) return false;
+
+    std::string metadata;
+    metadata.reserve(512);
+    metadata += safeConfigEntry(mod->getName());
+    metadata += '\n';
+    metadata += moduleConfigEntry(mod, "Abbreviation");
+    metadata += '\n';
+    metadata += localizedModuleConfigEntry(mod, "Description");
+    metadata += '\n';
+    metadata += safeConfigEntry(mod->getDescription());
+    metadata += '\n';
+    metadata += localizedModuleConfigEntry(mod, "About");
+    metadata = lowerAsciiCopy(metadata);
+
+    static const char* kReadingPlanMarkers[] = {
+        "reading plan",
+        "reading calendar",
+        "calendar for reading",
+        "plan for reading",
+        "bible reading calendar",
+        "read through the bible",
+        "through the bible in one year",
+        "through the bible in a year",
+        "ot once and nt twice",
+        "read ot once and nt twice",
+        "bible companion",
+        "m'cheyne",
+        "mcheyne",
+    };
+
+    for (const char* marker : kReadingPlanMarkers) {
+        if (metadata.find(marker) != std::string::npos) return true;
+    }
+
+    return false;
+}
+
 bool parseDailyDevotionMonthDay(const std::string& raw, int& monthOut, int& dayOut) {
     const std::string trimmed = trimCopy(raw);
     if (trimmed.empty()) return false;
@@ -1713,6 +1760,31 @@ std::string summarizeDailyDevotionHtml(const std::string& html) {
     if (plain.empty()) return "";
     if (plain.size() <= 72) return plain;
     return plain.substr(0, 69) + "...";
+}
+
+std::string summarizeDailyReadingPlanHtml(const std::string& html) {
+    static const std::regex linkRe(
+        R"(<a\b[^>]*href\s*=\s*["'][^"']+["'][^>]*>\s*(.*?)\s*</a>)",
+        std::regex::icase);
+
+    std::smatch match;
+    if (std::regex_search(html, match, linkRe)) {
+        std::string linkedText = collapseWhitespaceCopy(stripTags(match[1].str()));
+        if (!linkedText.empty()) return reading::addEllipsis(linkedText, 72);
+    }
+
+    std::string plain = collapseWhitespaceCopy(stripTags(html));
+    if (plain.empty()) return "";
+
+    size_t cut = plain.find(';');
+    if (cut == std::string::npos) {
+        cut = plain.find("  ");
+    }
+    if (cut != std::string::npos) {
+        plain = trimCopy(plain.substr(0, cut));
+    }
+
+    return reading::addEllipsis(plain, 72);
 }
 
 struct CommentaryBuildPerf {
@@ -3303,7 +3375,29 @@ std::vector<ModuleInfo> SwordManager::getDailyDevotionModules() const {
 
     for (auto it = mgr_->Modules.begin(); it != mgr_->Modules.end(); ++it) {
         sword::SWModule* mod = it->second;
-        if (!mod || !isDailyDevotionModule(mod)) continue;
+        if (!mod || !isDailyDevotionModule(mod) || isDailyReadingPlanModule(mod)) {
+            continue;
+        }
+        modules.push_back(buildModuleInfo(mod));
+    }
+
+    std::sort(modules.begin(), modules.end(),
+              [](const ModuleInfo& a, const ModuleInfo& b) {
+                  return a.name < b.name;
+              });
+
+    return modules;
+}
+
+std::vector<ModuleInfo> SwordManager::getDailyReadingPlanModules() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    std::vector<ModuleInfo> modules;
+
+    if (!mgr_) return modules;
+
+    for (auto it = mgr_->Modules.begin(); it != mgr_->Modules.end(); ++it) {
+        sword::SWModule* mod = it->second;
+        if (!mod || !isDailyReadingPlanModule(mod)) continue;
         modules.push_back(buildModuleInfo(mod));
     }
 
@@ -4283,6 +4377,46 @@ SwordManager::getDailyDevotionMonthSummaries(const std::string& moduleName,
     return summaries;
 }
 
+std::unordered_map<std::string, std::string>
+SwordManager::getDailyReadingPlanMonthSummaries(const std::string& moduleName,
+                                                int year,
+                                                int month) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    std::unordered_map<std::string, std::string> summaries;
+
+    sword::SWModule* mod = getModule(moduleName);
+    if (!mod || !isDailyReadingPlanModule(mod) ||
+        year < 1 || month < 1 || month > 12) {
+        return summaries;
+    }
+
+    std::unique_ptr<sword::SWKey> restoreKey(
+        mod->getKey() ? mod->getKey()->clone() : nullptr);
+    const int dayCount = reading::daysInMonth(year, month);
+    for (int day = 1; day <= dayCount; ++day) {
+        const std::string lookupKey = formatDailyDevotionKey(month, day);
+        mod->setKey(lookupKey.c_str());
+        if (mod->popError()) continue;
+
+        std::string html = std::string(mod->renderText().c_str());
+        if (mod->popError() || !containsNonWhitespace(html)) continue;
+
+        std::string summary = summarizeDailyReadingPlanHtml(html);
+        if (summary.empty()) continue;
+
+        summaries.emplace(
+            reading::formatIsoDate(reading::Date{year, month, day}),
+            std::move(summary));
+    }
+
+    if (restoreKey) {
+        mod->setKey(*restoreKey);
+        mod->popError();
+    }
+
+    return summaries;
+}
+
 std::string SwordManager::getGeneralBookEntry(const std::string& moduleName,
                                               const std::string& key) {
     std::lock_guard<std::mutex> lock(mutex_);
@@ -5101,6 +5235,11 @@ bool SwordManager::moduleHasMorph(const std::string& moduleName) const {
 bool SwordManager::moduleIsDailyDevotion(const std::string& moduleName) const {
     std::lock_guard<std::mutex> lock(mutex_);
     return isDailyDevotionModule(getModule(moduleName));
+}
+
+bool SwordManager::moduleIsDailyReadingPlan(const std::string& moduleName) const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return isDailyReadingPlanModule(getModule(moduleName));
 }
 
 SwordManager::VerseRef SwordManager::parseVerseRef(const std::string& ref) {

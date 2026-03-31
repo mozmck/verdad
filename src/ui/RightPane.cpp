@@ -31,6 +31,7 @@
 #include <filesystem>
 #include <fstream>
 #include <functional>
+#include <regex>
 #include <sstream>
 #include <system_error>
 #include <unordered_set>
@@ -441,16 +442,67 @@ std::string extractQueryValue(const std::string& url, const char* key) {
     return urlDecode(url.substr(pos, end == std::string::npos ? std::string::npos : end - pos));
 }
 
-int readingPlanChoiceIndexForId(const std::vector<int>& planIds, int planId) {
-    auto it = std::find(planIds.begin(), planIds.end(), planId);
-    if (it == planIds.end()) return -1;
-    return static_cast<int>(it - planIds.begin());
+int readingPlanChoiceIndexForEditableId(
+    const std::vector<DailyReadingPlanChoiceItem>& items,
+    int planId) {
+    for (size_t i = 0; i < items.size(); ++i) {
+        if (items[i].kind == DailyReadingPlanChoiceItem::Kind::EditablePlan &&
+            items[i].planId == planId) {
+            return static_cast<int>(i);
+        }
+    }
+    return -1;
+}
+
+int readingPlanChoiceIndexForSwordModule(
+    const std::vector<DailyReadingPlanChoiceItem>& items,
+    const std::string& moduleName) {
+    for (size_t i = 0; i < items.size(); ++i) {
+        if (items[i].kind == DailyReadingPlanChoiceItem::Kind::SwordModule &&
+            items[i].moduleName == moduleName) {
+            return static_cast<int>(i);
+        }
+    }
+    return -1;
 }
 
 std::string readingPlanDayCalendarSummary(const ReadingPlanDay& day) {
     if (!trimCopy(day.title).empty()) return day.title;
     if (!day.passages.empty()) return day.passages.front().reference;
     return std::to_string(day.passages.size()) + " passages";
+}
+
+std::vector<std::string> extractSwordReadingPlanReferences(
+    VerdadApp* app,
+    const std::string& html,
+    const std::string& moduleName,
+    const std::string& dateIso,
+    const std::string& verseModuleForRefs) {
+    std::vector<std::string> refs;
+    if (!app || html.empty()) return refs;
+
+    static const std::regex hrefRe(
+        R"(href\s*=\s*["']([^"']+)["'])",
+        std::regex::icase);
+
+    std::unordered_set<std::string> seen;
+    auto begin = std::sregex_iterator(html.begin(), html.end(), hrefRe);
+    auto end = std::sregex_iterator();
+    for (auto it = begin; it != end; ++it) {
+        std::string url = (*it)[1].str();
+        std::vector<std::string> linkRefs =
+            app->swordManager().verseReferencesFromLink(url, dateIso, verseModuleForRefs);
+        for (const auto& ref : linkRefs) {
+            std::string trimmedRef = trimCopy(ref);
+            if (trimmedRef.empty()) continue;
+            if (seen.insert(trimmedRef).second) {
+                refs.push_back(std::move(trimmedRef));
+            }
+        }
+    }
+
+    (void)moduleName;
+    return refs;
 }
 
 const ReadingPlanDay* readingPlanDayForDate(const ReadingPlan& plan,
@@ -498,6 +550,44 @@ std::string buildReadingPlanDayHtml(const ReadingPlan& plan,
                  << htmlEscape(passage.reference) << "</a></li>\n";
         }
         html << "</ul>\n";
+    }
+
+    html << "</div>\n";
+    return html.str();
+}
+
+std::string buildSwordReadingPlanDayHtml(const std::string& moduleName,
+                                         const std::string& description,
+                                         const std::string& dateIso,
+                                         const std::vector<std::string>& refs,
+                                         const std::string& entryHtml) {
+    std::ostringstream html;
+    html << "<div class=\"dictionary reading-plan-day sword-reading-plan-day\">\n";
+    html << "<div class=\"entry-key\">" << htmlEscape(dateIso) << "</div>\n";
+    html << "<h2>" << htmlEscape(moduleName) << "</h2>\n";
+
+    if (!trimCopy(description).empty()) {
+        html << "<p>" << htmlEscape(description) << "</p>\n";
+    }
+    html << "<p><b>Source:</b> Read-only SWORD reading plan</p>\n";
+
+    if (!refs.empty()) {
+        html << "<h3>Readings</h3>\n";
+        html << "<ul>\n";
+        for (const auto& ref : refs) {
+            html << "<li><a href=\"verdad-plan://open?ref="
+                 << urlEncode(ref) << "\">"
+                 << htmlEscape(ref) << "</a></li>\n";
+        }
+        html << "</ul>\n";
+    }
+
+    if (!trimCopy(entryHtml).empty()) {
+        html << "<div class=\"reading-plan-source-entry\">\n";
+        html << entryHtml << "\n";
+        html << "</div>\n";
+    } else {
+        html << "<p><i>No readings are scheduled for this date.</i></p>\n";
     }
 
     html << "</div>\n";
@@ -2278,11 +2368,28 @@ void RightPane::setDailyDevotionModule(const std::string& moduleName,
                                        bool activateTab) {
     dailyWorkspaceState_.mode = DailyWorkspaceMode::Devotionals;
     dailyWorkspaceState_.devotionalModule = moduleName;
+    dailyWorkspaceState_.swordReadingPlanModule.clear();
     if (dailyDevotionalChoice_) {
         module_choice::applyChoiceValue(dailyDevotionalChoice_,
                                         dailyDevotionalModules_,
                                         dailyDevotionalLabels_,
                                         dailyWorkspaceState_.devotionalModule);
+    }
+    refreshDailyWorkspace(true);
+    if (activateTab) {
+        setDevotionsPlansTabActive(true);
+    }
+}
+
+void RightPane::setDailyReadingPlanModule(const std::string& moduleName,
+                                          bool activateTab) {
+    dailyWorkspaceState_.mode = DailyWorkspaceMode::ReadingPlans;
+    dailyWorkspaceState_.readingPlanSource = DailyReadingPlanSource::SwordModule;
+    dailyWorkspaceState_.readingPlanId = 0;
+    dailyWorkspaceState_.swordReadingPlanModule = moduleName;
+    if (dailyReadingPlanChoice_) {
+        int index = readingPlanChoiceIndexForSwordModule(dailyReadingPlanChoices_, moduleName);
+        dailyReadingPlanChoice_->value(index);
     }
     refreshDailyWorkspace(true);
     if (activateTab) {
@@ -2945,8 +3052,9 @@ void RightPane::populateReadingPlanChoices() {
     if (!dailyReadingPlanChoice_ || !app_) return;
 
     auto plans = app_->readingPlanManager().listPlans();
+    auto swordPlans = app_->swordManager().getDailyReadingPlanModules();
     dailyReadingPlanChoice_->clear();
-    dailyReadingPlanIds_.clear();
+    dailyReadingPlanChoices_.clear();
 
     for (const auto& plan : plans) {
         std::ostringstream label;
@@ -2955,19 +3063,50 @@ void RightPane::populateReadingPlanChoices() {
             label << " (" << plan.completedDays << "/" << plan.totalDays << ")";
         }
         dailyReadingPlanChoice_->add(label.str().c_str());
-        dailyReadingPlanIds_.push_back(plan.id);
+        DailyReadingPlanChoiceItem item;
+        item.kind = DailyReadingPlanChoiceItem::Kind::EditablePlan;
+        item.planId = plan.id;
+        dailyReadingPlanChoices_.push_back(std::move(item));
     }
 
-    if (!dailyReadingPlanIds_.empty()) {
-        if (readingPlanChoiceIndexForId(dailyReadingPlanIds_,
-                                        dailyWorkspaceState_.readingPlanId) < 0) {
-            dailyWorkspaceState_.readingPlanId = dailyReadingPlanIds_.front();
-        }
-        dailyReadingPlanChoice_->value(
-            std::max(0, readingPlanChoiceIndexForId(dailyReadingPlanIds_,
-                                                    dailyWorkspaceState_.readingPlanId)));
+    for (const auto& module : swordPlans) {
+        std::string label = module_choice::formatLabel(module) + " (read-only)";
+        dailyReadingPlanChoice_->add(label.c_str());
+        DailyReadingPlanChoiceItem item;
+        item.kind = DailyReadingPlanChoiceItem::Kind::SwordModule;
+        item.moduleName = module.name;
+        dailyReadingPlanChoices_.push_back(std::move(item));
+    }
+
+    int selectedIndex = -1;
+    if (dailyWorkspaceState_.readingPlanSource == DailyReadingPlanSource::SwordModule) {
+        selectedIndex = readingPlanChoiceIndexForSwordModule(dailyReadingPlanChoices_,
+                                                             dailyWorkspaceState_.swordReadingPlanModule);
     } else {
+        selectedIndex = readingPlanChoiceIndexForEditableId(dailyReadingPlanChoices_,
+                                                            dailyWorkspaceState_.readingPlanId);
+    }
+
+    if (selectedIndex < 0 && !dailyReadingPlanChoices_.empty()) {
+        const auto& first = dailyReadingPlanChoices_.front();
+        if (first.kind == DailyReadingPlanChoiceItem::Kind::SwordModule) {
+            dailyWorkspaceState_.readingPlanSource = DailyReadingPlanSource::SwordModule;
+            dailyWorkspaceState_.readingPlanId = 0;
+            dailyWorkspaceState_.swordReadingPlanModule = first.moduleName;
+        } else {
+            dailyWorkspaceState_.readingPlanSource = DailyReadingPlanSource::Editable;
+            dailyWorkspaceState_.readingPlanId = first.planId;
+            dailyWorkspaceState_.swordReadingPlanModule.clear();
+        }
+        selectedIndex = 0;
+    }
+
+    if (selectedIndex >= 0) {
+        dailyReadingPlanChoice_->value(selectedIndex);
+    } else {
+        dailyWorkspaceState_.readingPlanSource = DailyReadingPlanSource::Editable;
         dailyWorkspaceState_.readingPlanId = 0;
+        dailyWorkspaceState_.swordReadingPlanModule.clear();
         dailyReadingPlanChoice_->value(-1);
     }
 }
@@ -2996,6 +3135,17 @@ void RightPane::updateDailyCalendarMeta() {
         if (!dailyWorkspaceState_.devotionalModule.empty()) {
             auto summaries = app_->swordManager().getDailyDevotionMonthSummaries(
                 dailyWorkspaceState_.devotionalModule, month.year, month.month);
+            for (auto& entry : summaries) {
+                CalendarDayMeta dayMeta;
+                dayMeta.summary = std::move(entry.second);
+                dayMeta.hasContent = true;
+                meta.emplace(entry.first, std::move(dayMeta));
+            }
+        }
+    } else if (dailyWorkspaceState_.readingPlanSource == DailyReadingPlanSource::SwordModule) {
+        if (!dailyWorkspaceState_.swordReadingPlanModule.empty()) {
+            auto summaries = app_->swordManager().getDailyReadingPlanMonthSummaries(
+                dailyWorkspaceState_.swordReadingPlanModule, month.year, month.month);
             for (auto& entry : summaries) {
                 CalendarDayMeta dayMeta;
                 dayMeta.summary = std::move(entry.second);
@@ -3043,9 +3193,15 @@ void RightPane::updateDailyWorkspaceControls() {
                                         dailyWorkspaceState_.devotionalModule);
     }
     if (dailyReadingPlanChoice_) {
-        dailyReadingPlanChoice_->value(
-            readingPlanChoiceIndexForId(dailyReadingPlanIds_,
-                                        dailyWorkspaceState_.readingPlanId));
+        int selectedIndex = -1;
+        if (dailyWorkspaceState_.readingPlanSource == DailyReadingPlanSource::SwordModule) {
+            selectedIndex = readingPlanChoiceIndexForSwordModule(
+                dailyReadingPlanChoices_, dailyWorkspaceState_.swordReadingPlanModule);
+        } else {
+            selectedIndex = readingPlanChoiceIndexForEditableId(
+                dailyReadingPlanChoices_, dailyWorkspaceState_.readingPlanId);
+        }
+        dailyReadingPlanChoice_->value(selectedIndex);
     }
 
     const bool readingPlansMode =
@@ -3087,9 +3243,17 @@ void RightPane::updateDailyWorkspaceControls() {
     }
 
     bool hasPlan = false;
+    bool readOnlyPlan = false;
     bool hasDay = false;
     bool dayCompleted = false;
-    if (readingPlansMode && dailyWorkspaceState_.readingPlanId > 0 && app_) {
+    bool hasOpenablePassage = !dailyCurrentOpenRefs_.empty();
+    if (readingPlansMode &&
+        dailyWorkspaceState_.readingPlanSource == DailyReadingPlanSource::SwordModule &&
+        !dailyWorkspaceState_.swordReadingPlanModule.empty()) {
+        hasPlan = true;
+        readOnlyPlan = true;
+        hasDay = true;
+    } else if (readingPlansMode && dailyWorkspaceState_.readingPlanId > 0 && app_) {
         ReadingPlan plan;
         if (app_->readingPlanManager().getPlan(dailyWorkspaceState_.readingPlanId, plan)) {
             hasPlan = true;
@@ -3097,29 +3261,30 @@ void RightPane::updateDailyWorkspaceControls() {
                     readingPlanDayForDate(plan, dailyWorkspaceState_.selectedDateIso)) {
                 hasDay = true;
                 dayCompleted = day->completed;
+                hasOpenablePassage = !day->passages.empty();
             }
         }
     }
 
     if (dailyEditPlanButton_) {
-        if (readingPlansMode && hasPlan) dailyEditPlanButton_->activate();
+        if (readingPlansMode && hasPlan && !readOnlyPlan) dailyEditPlanButton_->activate();
         else dailyEditPlanButton_->deactivate();
     }
     if (dailyDeletePlanButton_) {
-        if (readingPlansMode && hasPlan) dailyDeletePlanButton_->activate();
+        if (readingPlansMode && hasPlan && !readOnlyPlan) dailyDeletePlanButton_->activate();
         else dailyDeletePlanButton_->deactivate();
     }
     if (dailyOpenInBibleButton_) {
-        if (readingPlansMode && hasDay) dailyOpenInBibleButton_->activate();
+        if (readingPlansMode && hasDay && hasOpenablePassage) dailyOpenInBibleButton_->activate();
         else dailyOpenInBibleButton_->deactivate();
     }
     if (dailyCompleteButton_) {
         dailyCompleteButton_->copy_label(dayCompleted ? "Mark Incomplete" : "Mark Complete");
-        if (readingPlansMode && hasDay) dailyCompleteButton_->activate();
+        if (readingPlansMode && hasDay && !readOnlyPlan) dailyCompleteButton_->activate();
         else dailyCompleteButton_->deactivate();
     }
     if (dailyRescheduleButton_) {
-        if (readingPlansMode && hasDay) dailyRescheduleButton_->activate();
+        if (readingPlansMode && hasDay && !readOnlyPlan) dailyRescheduleButton_->activate();
         else dailyRescheduleButton_->deactivate();
     }
 
@@ -3131,6 +3296,7 @@ void RightPane::updateDailyWorkspaceControls() {
 void RightPane::showDailyDevotionEntry(const std::string& moduleName,
                                        const std::string& dateIso) {
     if (!dailyHtml_ || !app_) return;
+    dailyCurrentOpenRefs_.clear();
 
     if (moduleName.empty()) {
         dailyHtml_->setHtml("<p><i>No daily devotion modules installed.</i></p>");
@@ -3142,6 +3308,7 @@ void RightPane::showDailyDevotionEntry(const std::string& moduleName,
 
 void RightPane::showReadingPlanDay(int planId, const std::string& dateIso) {
     if (!dailyHtml_ || !app_) return;
+    dailyCurrentOpenRefs_.clear();
 
     if (planId <= 0) {
         dailyHtml_->setHtml(
@@ -3156,7 +3323,44 @@ void RightPane::showReadingPlanDay(int planId, const std::string& dateIso) {
         return;
     }
 
+    if (const ReadingPlanDay* day = readingPlanDayForDate(plan, dateIso)) {
+        for (const auto& passage : day->passages) {
+            std::string ref = trimCopy(passage.reference);
+            if (!ref.empty()) dailyCurrentOpenRefs_.push_back(std::move(ref));
+        }
+    }
+
     dailyHtml_->setHtml(buildReadingPlanDayHtml(plan, dateIso));
+}
+
+void RightPane::showSwordReadingPlanDay(const std::string& moduleName,
+                                        const std::string& dateIso) {
+    if (!dailyHtml_ || !app_) return;
+
+    dailyCurrentOpenRefs_.clear();
+    if (moduleName.empty()) {
+        dailyHtml_->setHtml(
+            "<p><i>No SWORD reading-plan modules are installed.</i></p>");
+        return;
+    }
+
+    std::string entryHtml = app_->swordManager().getDailyDevotionEntry(moduleName, dateIso);
+    std::string verseModuleForRefs;
+    if (app_->mainWindow() && app_->mainWindow()->biblePane()) {
+        verseModuleForRefs = app_->mainWindow()->biblePane()->currentModule();
+    }
+    dailyCurrentOpenRefs_ = extractSwordReadingPlanReferences(app_,
+                                                              entryHtml,
+                                                              moduleName,
+                                                              dateIso,
+                                                              verseModuleForRefs);
+
+    std::string description = app_->swordManager().getModuleDescription(moduleName);
+    dailyHtml_->setHtml(buildSwordReadingPlanDayHtml(moduleName,
+                                                     description,
+                                                     dateIso,
+                                                     dailyCurrentOpenRefs_,
+                                                     entryHtml));
 }
 
 void RightPane::refreshDailyWorkspace(bool /*forceCalendarReload*/) {
@@ -3180,11 +3384,30 @@ void RightPane::refreshDailyWorkspace(bool /*forceCalendarReload*/) {
         showDailyDevotionEntry(dailyWorkspaceState_.devotionalModule,
                                dailyWorkspaceState_.selectedDateIso);
     } else {
-        if (dailyWorkspaceState_.readingPlanId <= 0 && !dailyReadingPlanIds_.empty()) {
-            dailyWorkspaceState_.readingPlanId = dailyReadingPlanIds_.front();
+        if (dailyWorkspaceState_.readingPlanSource == DailyReadingPlanSource::SwordModule) {
+            if (dailyWorkspaceState_.swordReadingPlanModule.empty() &&
+                !dailyReadingPlanChoices_.empty()) {
+                for (const auto& item : dailyReadingPlanChoices_) {
+                    if (item.kind == DailyReadingPlanChoiceItem::Kind::SwordModule) {
+                        dailyWorkspaceState_.swordReadingPlanModule = item.moduleName;
+                        break;
+                    }
+                }
+            }
+            showSwordReadingPlanDay(dailyWorkspaceState_.swordReadingPlanModule,
+                                    dailyWorkspaceState_.selectedDateIso);
+        } else {
+            if (dailyWorkspaceState_.readingPlanId <= 0 && !dailyReadingPlanChoices_.empty()) {
+                for (const auto& item : dailyReadingPlanChoices_) {
+                    if (item.kind == DailyReadingPlanChoiceItem::Kind::EditablePlan) {
+                        dailyWorkspaceState_.readingPlanId = item.planId;
+                        break;
+                    }
+                }
+            }
+            showReadingPlanDay(dailyWorkspaceState_.readingPlanId,
+                               dailyWorkspaceState_.selectedDateIso);
         }
-        showReadingPlanDay(dailyWorkspaceState_.readingPlanId,
-                           dailyWorkspaceState_.selectedDateIso);
     }
 
     updateDailyCalendarMeta();
@@ -3209,7 +3432,9 @@ void RightPane::onDailyContentLink(const std::string& url) {
     std::string sourceModule =
         (dailyWorkspaceState_.mode == DailyWorkspaceMode::Devotionals)
             ? dailyWorkspaceState_.devotionalModule
-            : std::string();
+            : (dailyWorkspaceState_.readingPlanSource == DailyReadingPlanSource::SwordModule
+                   ? dailyWorkspaceState_.swordReadingPlanModule
+                   : std::string());
     std::string sourceKey = dailyWorkspaceState_.selectedDateIso;
     std::string previewModule;
     if (BiblePane* biblePane = app_->mainWindow()->biblePane()) {
@@ -4046,6 +4271,7 @@ void RightPane::onDailyDevotionalModuleChange(Fl_Widget* /*w*/, void* data) {
     self->dailyWorkspaceState_.mode = DailyWorkspaceMode::Devotionals;
     self->dailyWorkspaceState_.devotionalModule = module_choice::selectedModuleName(
         self->dailyDevotionalChoice_, self->dailyDevotionalModules_);
+    self->dailyWorkspaceState_.swordReadingPlanModule.clear();
     self->refreshDailyWorkspace(true);
 }
 
@@ -4054,11 +4280,21 @@ void RightPane::onDailyReadingPlanChange(Fl_Widget* /*w*/, void* data) {
     if (!self || !self->dailyReadingPlanChoice_) return;
     self->dailyWorkspaceState_.mode = DailyWorkspaceMode::ReadingPlans;
     int index = self->dailyReadingPlanChoice_->value();
-    if (index >= 0 && index < static_cast<int>(self->dailyReadingPlanIds_.size())) {
-        self->dailyWorkspaceState_.readingPlanId =
-            self->dailyReadingPlanIds_[static_cast<size_t>(index)];
+    if (index >= 0 && index < static_cast<int>(self->dailyReadingPlanChoices_.size())) {
+        const auto& item = self->dailyReadingPlanChoices_[static_cast<size_t>(index)];
+        if (item.kind == DailyReadingPlanChoiceItem::Kind::SwordModule) {
+            self->dailyWorkspaceState_.readingPlanSource = DailyReadingPlanSource::SwordModule;
+            self->dailyWorkspaceState_.readingPlanId = 0;
+            self->dailyWorkspaceState_.swordReadingPlanModule = item.moduleName;
+        } else {
+            self->dailyWorkspaceState_.readingPlanSource = DailyReadingPlanSource::Editable;
+            self->dailyWorkspaceState_.readingPlanId = item.planId;
+            self->dailyWorkspaceState_.swordReadingPlanModule.clear();
+        }
     } else {
+        self->dailyWorkspaceState_.readingPlanSource = DailyReadingPlanSource::Editable;
         self->dailyWorkspaceState_.readingPlanId = 0;
+        self->dailyWorkspaceState_.swordReadingPlanModule.clear();
     }
     self->refreshDailyWorkspace(true);
 }
@@ -4145,14 +4381,20 @@ void RightPane::onDailyNewPlan(Fl_Widget* /*w*/, void* data) {
     }
 
     self->dailyWorkspaceState_.mode = DailyWorkspaceMode::ReadingPlans;
+    self->dailyWorkspaceState_.readingPlanSource = DailyReadingPlanSource::Editable;
     self->dailyWorkspaceState_.readingPlanId = createdId;
+    self->dailyWorkspaceState_.swordReadingPlanModule.clear();
     self->populateReadingPlanChoices();
     self->refreshDailyWorkspace(true);
 }
 
 void RightPane::onDailyEditPlan(Fl_Widget* /*w*/, void* data) {
     auto* self = static_cast<RightPane*>(data);
-    if (!self || !self->app_ || self->dailyWorkspaceState_.readingPlanId <= 0) return;
+    if (!self || !self->app_ ||
+        self->dailyWorkspaceState_.readingPlanSource != DailyReadingPlanSource::Editable ||
+        self->dailyWorkspaceState_.readingPlanId <= 0) {
+        return;
+    }
 
     ReadingPlan plan;
     if (!self->app_->readingPlanManager().getPlan(self->dailyWorkspaceState_.readingPlanId,
@@ -4173,7 +4415,11 @@ void RightPane::onDailyEditPlan(Fl_Widget* /*w*/, void* data) {
 
 void RightPane::onDailyDeletePlan(Fl_Widget* /*w*/, void* data) {
     auto* self = static_cast<RightPane*>(data);
-    if (!self || !self->app_ || self->dailyWorkspaceState_.readingPlanId <= 0) return;
+    if (!self || !self->app_ ||
+        self->dailyWorkspaceState_.readingPlanSource != DailyReadingPlanSource::Editable ||
+        self->dailyWorkspaceState_.readingPlanId <= 0) {
+        return;
+    }
 
     ReadingPlan plan;
     if (!self->app_->readingPlanManager().getPlan(self->dailyWorkspaceState_.readingPlanId,
@@ -4200,25 +4446,20 @@ void RightPane::onDailyDeletePlan(Fl_Widget* /*w*/, void* data) {
 
 void RightPane::onDailyOpenInBible(Fl_Widget* /*w*/, void* data) {
     auto* self = static_cast<RightPane*>(data);
-    if (!self || !self->app_ || self->dailyWorkspaceState_.readingPlanId <= 0) return;
+    if (!self || !self->app_) return;
 
-    ReadingPlan plan;
-    if (!self->app_->readingPlanManager().getPlan(self->dailyWorkspaceState_.readingPlanId,
-                                                  plan)) {
-        return;
-    }
-
-    if (const ReadingPlanDay* day =
-            readingPlanDayForDate(plan, self->dailyWorkspaceState_.selectedDateIso)) {
-        if (!day->passages.empty()) {
-            self->openReadingPlanPassage(day->passages.front().reference);
-        }
+    if (!self->dailyCurrentOpenRefs_.empty()) {
+        self->openReadingPlanPassage(self->dailyCurrentOpenRefs_.front());
     }
 }
 
 void RightPane::onDailyToggleComplete(Fl_Widget* /*w*/, void* data) {
     auto* self = static_cast<RightPane*>(data);
-    if (!self || !self->app_ || self->dailyWorkspaceState_.readingPlanId <= 0) return;
+    if (!self || !self->app_ ||
+        self->dailyWorkspaceState_.readingPlanSource != DailyReadingPlanSource::Editable ||
+        self->dailyWorkspaceState_.readingPlanId <= 0) {
+        return;
+    }
 
     ReadingPlan plan;
     if (!self->app_->readingPlanManager().getPlan(self->dailyWorkspaceState_.readingPlanId,
@@ -4244,7 +4485,11 @@ void RightPane::onDailyToggleComplete(Fl_Widget* /*w*/, void* data) {
 
 void RightPane::onDailyReschedule(Fl_Widget* /*w*/, void* data) {
     auto* self = static_cast<RightPane*>(data);
-    if (!self || !self->app_ || self->dailyWorkspaceState_.readingPlanId <= 0) return;
+    if (!self || !self->app_ ||
+        self->dailyWorkspaceState_.readingPlanSource != DailyReadingPlanSource::Editable ||
+        self->dailyWorkspaceState_.readingPlanId <= 0) {
+        return;
+    }
 
     ReadingPlan plan;
     if (!self->app_->readingPlanManager().getPlan(self->dailyWorkspaceState_.readingPlanId,
