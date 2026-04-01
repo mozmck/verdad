@@ -58,8 +58,18 @@ public:
                               bool completed);
     bool swordDayCompleted(const std::string& moduleName,
                            const std::string& dateIso) const;
+    bool ensureSwordScheduleInitialized(
+        const std::string& moduleName,
+        const std::string& preferredStartDateIso = "");
     std::unordered_set<std::string> swordCompletedDates(
         const std::string& moduleName) const;
+    std::string swordScheduledDateForDay(const std::string& moduleName,
+                                         int dayNumber) const;
+    int swordDayNumberForDate(const std::string& moduleName,
+                              const std::string& dateIso) const;
+    bool rescheduleSwordDay(const std::string& moduleName,
+                            const std::string& fromDateIso,
+                            const std::string& toDateIso);
     bool rescheduleDay(int planId,
                        const std::string& fromDateIso,
                        const std::string& toDateIso);

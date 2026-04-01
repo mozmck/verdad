@@ -490,6 +490,11 @@ bool VerdadApp::initialize(int argc, char* argv[]) {
 
     // Set up FLTK
     Fl::scheme("gtk+");
+    uchar backgroundRed = 0;
+    uchar backgroundGreen = 0;
+    uchar backgroundBlue = 0;
+    Fl::get_color(FL_LIGHT2, backgroundRed, backgroundGreen, backgroundBlue);
+    Fl::background(backgroundRed, backgroundGreen, backgroundBlue);
     Fl_File_Icon::load_system_icons();
     Fl::set_fonts("-*");
 

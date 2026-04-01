@@ -294,7 +294,7 @@ public:
             if (drawW <= 0) break;
 
             const bool isLink = !chunk.link.empty();
-            fl_color(isLink ? fl_rgb_color(26, 82, 118) : fl_rgb_color(70, 82, 93));
+            fl_color(isLink ? fl_rgb_color(26, 50, 200) : fl_rgb_color(0, 0, 0));
             fl_draw(chunk.text.c_str(),
                     cursorX,
                     y(),
@@ -312,7 +312,7 @@ public:
                 hitRects_.push_back(std::move(rect));
 
                 if (hoveredLink_ == static_cast<int>(hitRects_.size()) - 1) {
-                    fl_color(fl_rgb_color(26, 82, 118));
+                    fl_color(fl_rgb_color(26, 50, 200));
                     fl_line(cursorX, baseline + 1, cursorX + drawW, baseline + 1);
                 }
             }

@@ -42,6 +42,11 @@ struct DailyReadingPlanChoiceItem {
     std::string moduleName;
 };
 
+struct SwordReadingPlanTemplateDay {
+    int sequenceNumber = 0;
+    std::string moduleKey;
+};
+
 /// Right pane for commentary, dictionary, and general books.
 /// Commentary/General Books are top tabs; dictionary is a resizable bottom pane.
 class RightPane : public Fl_Group {
@@ -311,6 +316,8 @@ private:
     std::vector<std::string> dailyDevotionalModules_;
     std::vector<std::string> dailyDevotionalLabels_;
     std::vector<DailyReadingPlanChoiceItem> dailyReadingPlanChoices_;
+    mutable std::unordered_map<std::string, std::vector<SwordReadingPlanTemplateDay>>
+        swordReadingPlanTemplateCache_;
     DailyWorkspaceState dailyWorkspaceState_;
     ReadingPlan dailyPlanEditorWorkingPlan_;
     bool dailyPlanEditorDirty_ = false;
@@ -385,6 +392,12 @@ private:
     std::string defaultReadingPlanDateIso() const;
     std::string defaultEditableReadingPlanDateIso(int planId) const;
     std::string defaultSwordReadingPlanDateIso(const std::string& moduleName) const;
+    const std::vector<SwordReadingPlanTemplateDay>& swordReadingPlanTemplateDays(
+        const std::string& moduleName) const;
+    const SwordReadingPlanTemplateDay* swordReadingPlanTemplateDayForDate(
+        const std::string& moduleName,
+        const std::string& dateIso,
+        int* dayNumberOut = nullptr) const;
     bool swordReadingPlanHasContentForDate(const std::string& moduleName,
                                            const std::string& dateIso) const;
     std::string dailyDevotionalHeadingLabel(const std::string& moduleName) const;

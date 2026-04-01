@@ -131,6 +131,21 @@ std::vector<ScheduleOffset> compactOffsets(const std::string& startDateIso,
     return compacted;
 }
 
+int dayDifference(const std::string& fromDateIso,
+                  const std::string& toDateIso) {
+    reading::Date fromDate{};
+    reading::Date toDate{};
+    if (!reading::parseIsoDate(fromDateIso, fromDate) ||
+        !reading::parseIsoDate(toDateIso, toDate)) {
+        return 0;
+    }
+
+    std::tm fromTm = reading::toTm(fromDate);
+    std::tm toTm = reading::toTm(toDate);
+    return static_cast<int>(
+        std::difftime(std::mktime(&toTm), std::mktime(&fromTm)) / (60 * 60 * 24));
+}
+
 std::string effectiveDateForSequence(const std::string& startDateIso,
                                      const std::vector<ScheduleOffset>& offsets,
                                      int sequenceNumber) {
@@ -175,6 +190,40 @@ std::vector<ScheduleOffset> buildOffsetsFromDays(const std::string& startDateIso
     }
 
     return offsets;
+}
+
+int sequenceForScheduledDate(const std::string& startDateIso,
+                             const std::vector<ScheduleOffset>& offsets,
+                             const std::string& dateIso) {
+    if (!reading::isIsoDateInRange(startDateIso) ||
+        !reading::isIsoDateInRange(dateIso)) {
+        return -1;
+    }
+
+    std::string anchorDateIso = startDateIso;
+    int anchorSequence = 1;
+
+    for (const auto& offset : offsets) {
+        if (!reading::isIsoDateInRange(offset.dateIso)) continue;
+
+        if (dateIso < offset.dateIso) {
+            const int delta = dayDifference(anchorDateIso, dateIso);
+            const int sequenceNumber = anchorSequence + delta;
+            if (delta >= 0 && sequenceNumber < offset.sequenceNumber) {
+                return sequenceNumber;
+            }
+            return -1;
+        }
+        if (dateIso == offset.dateIso) {
+            return offset.sequenceNumber;
+        }
+        anchorDateIso = offset.dateIso;
+        anchorSequence = offset.sequenceNumber;
+    }
+
+    const int delta = dayDifference(anchorDateIso, dateIso);
+    if (delta < 0) return -1;
+    return anchorSequence + delta;
 }
 
 int findSequenceForDate(const std::vector<ReadingPlanDay>& days,
@@ -267,6 +316,199 @@ bool loadPlanOffsets(sqlite3* db,
     if (stmt) sqlite3_finalize(stmt);
     out = sortedOffsets(std::move(out));
     return ok;
+}
+
+bool loadSwordScheduleStartDate(sqlite3* db,
+                                const std::string& moduleName,
+                                std::string& startDateIsoOut) {
+    if (!db || moduleName.empty()) return false;
+
+    static const char* kSql = R"SQL(
+        SELECT start_date
+          FROM sword_reading_plan_schedules
+         WHERE module_name = ?;
+    )SQL";
+
+    sqlite3_stmt* stmt = nullptr;
+    bool ok = sqlite3_prepare_v2(db, kSql, -1, &stmt, nullptr) == SQLITE_OK;
+    if (ok) ok = bindText(stmt, 1, moduleName);
+
+    startDateIsoOut.clear();
+    if (ok && sqlite3_step(stmt) == SQLITE_ROW) {
+        const char* startDateIso =
+            reinterpret_cast<const char*>(sqlite3_column_text(stmt, 0));
+        startDateIsoOut = startDateIso ? startDateIso : "";
+    }
+
+    if (stmt) sqlite3_finalize(stmt);
+    return ok;
+}
+
+bool setSwordScheduleStartDate(sqlite3* db,
+                               const std::string& moduleName,
+                               const std::string& startDateIso) {
+    if (!db || moduleName.empty() || !reading::isIsoDateInRange(startDateIso)) {
+        return false;
+    }
+
+    static const char* kSql = R"SQL(
+        INSERT INTO sword_reading_plan_schedules (module_name, start_date)
+        VALUES (?, ?)
+        ON CONFLICT(module_name)
+        DO UPDATE SET start_date = excluded.start_date;
+    )SQL";
+
+    sqlite3_stmt* stmt = nullptr;
+    bool ok = sqlite3_prepare_v2(db, kSql, -1, &stmt, nullptr) == SQLITE_OK;
+    if (ok) ok = bindText(stmt, 1, moduleName);
+    if (ok) ok = bindText(stmt, 2, startDateIso);
+    if (ok) ok = sqlite3_step(stmt) == SQLITE_DONE;
+    if (stmt) sqlite3_finalize(stmt);
+    return ok;
+}
+
+bool replaceSwordOffsets(sqlite3* db,
+                         const std::string& moduleName,
+                         const std::vector<ScheduleOffset>& offsets) {
+    if (!db || moduleName.empty()) return false;
+
+    static const char* kDeleteSql =
+        "DELETE FROM sword_reading_plan_offsets WHERE module_name = ?;";
+    static const char* kInsertSql = R"SQL(
+        INSERT INTO sword_reading_plan_offsets (module_name, day_number, start_date)
+        VALUES (?, ?, ?);
+    )SQL";
+
+    sqlite3_stmt* deleteStmt = nullptr;
+    sqlite3_stmt* insertStmt = nullptr;
+    bool ok = sqlite3_prepare_v2(db, kDeleteSql, -1, &deleteStmt, nullptr) == SQLITE_OK;
+    if (ok) ok = sqlite3_prepare_v2(db, kInsertSql, -1, &insertStmt, nullptr) == SQLITE_OK;
+    if (ok) ok = bindText(deleteStmt, 1, moduleName);
+    if (ok) ok = sqlite3_step(deleteStmt) == SQLITE_DONE;
+
+    for (const auto& offset : offsets) {
+        if (!ok) break;
+        if (offset.sequenceNumber <= 1 || !reading::isIsoDateInRange(offset.dateIso)) {
+            continue;
+        }
+
+        sqlite3_reset(insertStmt);
+        sqlite3_clear_bindings(insertStmt);
+        ok = bindText(insertStmt, 1, moduleName);
+        if (ok) ok = sqlite3_bind_int(insertStmt, 2, offset.sequenceNumber) == SQLITE_OK;
+        if (ok) ok = bindText(insertStmt, 3, offset.dateIso);
+        if (ok) ok = sqlite3_step(insertStmt) == SQLITE_DONE;
+    }
+
+    if (deleteStmt) sqlite3_finalize(deleteStmt);
+    if (insertStmt) sqlite3_finalize(insertStmt);
+    return ok;
+}
+
+bool loadSwordOffsets(sqlite3* db,
+                      const std::string& moduleName,
+                      std::vector<ScheduleOffset>& out) {
+    if (!db || moduleName.empty()) return false;
+
+    static const char* kSql = R"SQL(
+        SELECT day_number, start_date
+          FROM sword_reading_plan_offsets
+         WHERE module_name = ?
+         ORDER BY day_number, id;
+    )SQL";
+
+    sqlite3_stmt* stmt = nullptr;
+    bool ok = sqlite3_prepare_v2(db, kSql, -1, &stmt, nullptr) == SQLITE_OK;
+    if (ok) ok = bindText(stmt, 1, moduleName);
+
+    while (ok && sqlite3_step(stmt) == SQLITE_ROW) {
+        ScheduleOffset offset;
+        offset.sequenceNumber = sqlite3_column_int(stmt, 0);
+        const char* dateIso = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 1));
+        offset.dateIso = dateIso ? dateIso : "";
+        out.push_back(std::move(offset));
+    }
+
+    if (stmt) sqlite3_finalize(stmt);
+    out = sortedOffsets(std::move(out));
+    return ok;
+}
+
+bool hasSwordSequenceProgress(sqlite3* db, const std::string& moduleName) {
+    if (!db || moduleName.empty()) return false;
+
+    static const char* kSql = R"SQL(
+        SELECT 1
+          FROM sword_reading_plan_progress_v2
+         WHERE module_name = ?
+         LIMIT 1;
+    )SQL";
+
+    sqlite3_stmt* stmt = nullptr;
+    bool ok = sqlite3_prepare_v2(db, kSql, -1, &stmt, nullptr) == SQLITE_OK;
+    if (ok) ok = bindText(stmt, 1, moduleName);
+    const bool found = ok && sqlite3_step(stmt) == SQLITE_ROW;
+    if (stmt) sqlite3_finalize(stmt);
+    return found;
+}
+
+bool loadSwordScheduleState(sqlite3* db,
+                            const std::string& moduleName,
+                            std::string& startDateIsoOut,
+                            std::vector<ScheduleOffset>& offsetsOut,
+                            bool* hasExplicitScheduleOut = nullptr) {
+    if (!db || moduleName.empty()) return false;
+
+    std::string storedStartDateIso;
+    bool ok = loadSwordScheduleStartDate(db, moduleName, storedStartDateIso);
+    if (!ok) return false;
+
+    offsetsOut.clear();
+    ok = loadSwordOffsets(db, moduleName, offsetsOut);
+    if (!ok) return false;
+
+    const bool hasExplicitSchedule =
+        reading::isIsoDateInRange(storedStartDateIso) || !offsetsOut.empty();
+    if (hasExplicitScheduleOut) {
+        *hasExplicitScheduleOut = hasExplicitSchedule;
+    }
+
+    if (reading::isIsoDateInRange(storedStartDateIso)) {
+        startDateIsoOut = storedStartDateIso;
+    } else {
+        startDateIsoOut = reading::formatIsoDate(reading::today());
+    }
+    return true;
+}
+
+bool legacySwordDayCompleted(sqlite3* db,
+                             const std::string& moduleName,
+                             const std::string& dateIso,
+                             bool* foundOut = nullptr) {
+    if (foundOut) *foundOut = false;
+    if (!db || moduleName.empty() || !reading::isIsoDateInRange(dateIso)) {
+        return false;
+    }
+
+    static const char* kSql = R"SQL(
+        SELECT completed
+          FROM sword_reading_plan_progress
+         WHERE module_name = ? AND day_date = ?;
+    )SQL";
+
+    sqlite3_stmt* stmt = nullptr;
+    bool ok = sqlite3_prepare_v2(db, kSql, -1, &stmt, nullptr) == SQLITE_OK;
+    if (ok) ok = bindText(stmt, 1, moduleName);
+    if (ok) ok = bindText(stmt, 2, dateIso);
+
+    bool completed = false;
+    if (ok && sqlite3_step(stmt) == SQLITE_ROW) {
+        completed = sqlite3_column_int(stmt, 0) != 0;
+        if (foundOut) *foundOut = true;
+    }
+
+    if (stmt) sqlite3_finalize(stmt);
+    return completed;
 }
 
 } // namespace
@@ -449,20 +691,46 @@ bool ReadingPlanManager::setSwordDayCompleted(const std::string& moduleName,
         return false;
     }
 
+    if (!beginTransaction(db_)) return false;
+
+    std::string startDateIso;
+    std::vector<ScheduleOffset> offsets;
+    bool hasExplicitSchedule = false;
+    bool ok = loadSwordScheduleState(db_,
+                                     moduleName,
+                                     startDateIso,
+                                     offsets,
+                                     &hasExplicitSchedule);
+    if (ok && !hasExplicitSchedule) {
+        ok = setSwordScheduleStartDate(db_, moduleName, startDateIso);
+    }
+
+    const int dayNumber = ok ? sequenceForScheduledDate(startDateIso, offsets, dateIso) : -1;
+    if (!ok || dayNumber <= 0) {
+        rollbackTransaction(db_);
+        return false;
+    }
+
     static const char* kSql = R"SQL(
-        INSERT INTO sword_reading_plan_progress (module_name, day_date, completed)
+        INSERT INTO sword_reading_plan_progress_v2 (module_name, day_number, completed)
         VALUES (?, ?, ?)
-        ON CONFLICT(module_name, day_date)
+        ON CONFLICT(module_name, day_number)
         DO UPDATE SET completed = excluded.completed;
     )SQL";
 
     sqlite3_stmt* stmt = nullptr;
-    bool ok = sqlite3_prepare_v2(db_, kSql, -1, &stmt, nullptr) == SQLITE_OK;
+    ok = sqlite3_prepare_v2(db_, kSql, -1, &stmt, nullptr) == SQLITE_OK;
     if (ok) ok = bindText(stmt, 1, moduleName);
-    if (ok) ok = bindText(stmt, 2, dateIso);
+    if (ok) ok = sqlite3_bind_int(stmt, 2, dayNumber) == SQLITE_OK;
     if (ok) ok = sqlite3_bind_int(stmt, 3, completed ? 1 : 0) == SQLITE_OK;
     if (ok) ok = sqlite3_step(stmt) == SQLITE_DONE;
     if (stmt) sqlite3_finalize(stmt);
+
+    if (ok) {
+        ok = commitTransaction(db_);
+    } else {
+        rollbackTransaction(db_);
+    }
     return ok;
 }
 
@@ -473,16 +741,36 @@ bool ReadingPlanManager::swordDayCompleted(const std::string& moduleName,
         return false;
     }
 
+    std::string startDateIso;
+    std::vector<ScheduleOffset> offsets;
+    bool hasExplicitSchedule = false;
+    if (!loadSwordScheduleState(db_,
+                                moduleName,
+                                startDateIso,
+                                offsets,
+                                &hasExplicitSchedule)) {
+        return false;
+    }
+
+    if (!hasExplicitSchedule && !hasSwordSequenceProgress(db_, moduleName)) {
+        bool found = false;
+        bool completed = legacySwordDayCompleted(db_, moduleName, dateIso, &found);
+        if (found) return completed;
+    }
+
+    const int dayNumber = sequenceForScheduledDate(startDateIso, offsets, dateIso);
+    if (dayNumber <= 0) return false;
+
     static const char* kSql = R"SQL(
         SELECT completed
-          FROM sword_reading_plan_progress
-         WHERE module_name = ? AND day_date = ?;
+          FROM sword_reading_plan_progress_v2
+         WHERE module_name = ? AND day_number = ?;
     )SQL";
 
     sqlite3_stmt* stmt = nullptr;
     bool ok = sqlite3_prepare_v2(db_, kSql, -1, &stmt, nullptr) == SQLITE_OK;
     if (ok) ok = bindText(stmt, 1, moduleName);
-    if (ok) ok = bindText(stmt, 2, dateIso);
+    if (ok) ok = sqlite3_bind_int(stmt, 2, dayNumber) == SQLITE_OK;
     bool completed = false;
     if (ok && sqlite3_step(stmt) == SQLITE_ROW) {
         completed = sqlite3_column_int(stmt, 0) != 0;
@@ -496,11 +784,46 @@ std::unordered_set<std::string> ReadingPlanManager::swordCompletedDates(
     std::unordered_set<std::string> dates;
     if (!db_ || moduleName.empty()) return dates;
 
+    std::string startDateIso;
+    std::vector<ScheduleOffset> offsets;
+    bool hasExplicitSchedule = false;
+    if (!loadSwordScheduleState(db_,
+                                moduleName,
+                                startDateIso,
+                                offsets,
+                                &hasExplicitSchedule)) {
+        return dates;
+    }
+
+    if (!hasExplicitSchedule && !hasSwordSequenceProgress(db_, moduleName)) {
+        static const char* kLegacySql = R"SQL(
+            SELECT day_date
+              FROM sword_reading_plan_progress
+             WHERE module_name = ? AND completed != 0
+             ORDER BY day_date;
+        )SQL";
+
+        sqlite3_stmt* legacyStmt = nullptr;
+        bool ok = sqlite3_prepare_v2(db_, kLegacySql, -1, &legacyStmt, nullptr) == SQLITE_OK;
+        if (ok) ok = bindText(legacyStmt, 1, moduleName);
+
+        while (ok && sqlite3_step(legacyStmt) == SQLITE_ROW) {
+            const char* dateIso =
+                reinterpret_cast<const char*>(sqlite3_column_text(legacyStmt, 0));
+            if (dateIso && reading::isIsoDateInRange(dateIso)) {
+                dates.emplace(dateIso);
+            }
+        }
+
+        if (legacyStmt) sqlite3_finalize(legacyStmt);
+        return dates;
+    }
+
     static const char* kSql = R"SQL(
-        SELECT day_date
-          FROM sword_reading_plan_progress
+        SELECT day_number
+          FROM sword_reading_plan_progress_v2
          WHERE module_name = ? AND completed != 0
-         ORDER BY day_date;
+         ORDER BY day_number;
     )SQL";
 
     sqlite3_stmt* stmt = nullptr;
@@ -508,14 +831,132 @@ std::unordered_set<std::string> ReadingPlanManager::swordCompletedDates(
     if (ok) ok = bindText(stmt, 1, moduleName);
 
     while (ok && sqlite3_step(stmt) == SQLITE_ROW) {
-        const char* dateIso = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 0));
-        if (dateIso && reading::isIsoDateInRange(dateIso)) {
-            dates.emplace(dateIso);
+        const int dayNumber = sqlite3_column_int(stmt, 0);
+        std::string dateIso = effectiveDateForSequence(startDateIso, offsets, dayNumber);
+        if (reading::isIsoDateInRange(dateIso)) {
+            dates.emplace(std::move(dateIso));
         }
     }
 
     if (stmt) sqlite3_finalize(stmt);
     return dates;
+}
+
+bool ReadingPlanManager::ensureSwordScheduleInitialized(
+    const std::string& moduleName,
+    const std::string& preferredStartDateIso) {
+    if (!db_ || moduleName.empty()) return false;
+
+    std::string storedStartDateIso;
+    if (!loadSwordScheduleStartDate(db_, moduleName, storedStartDateIso)) {
+        return false;
+    }
+    if (reading::isIsoDateInRange(storedStartDateIso)) {
+        return true;
+    }
+
+    const std::string startDateIso = reading::isIsoDateInRange(preferredStartDateIso)
+        ? preferredStartDateIso
+        : reading::formatIsoDate(reading::today());
+    return setSwordScheduleStartDate(db_, moduleName, startDateIso);
+}
+
+std::string ReadingPlanManager::swordScheduledDateForDay(
+    const std::string& moduleName,
+    int dayNumber) const {
+    if (!db_ || moduleName.empty() || dayNumber <= 0) return "";
+
+    std::string startDateIso;
+    std::vector<ScheduleOffset> offsets;
+    if (!loadSwordScheduleState(db_, moduleName, startDateIso, offsets)) {
+        return "";
+    }
+    return effectiveDateForSequence(startDateIso, offsets, dayNumber);
+}
+
+int ReadingPlanManager::swordDayNumberForDate(const std::string& moduleName,
+                                              const std::string& dateIso) const {
+    if (!db_ || moduleName.empty() || !reading::isIsoDateInRange(dateIso)) {
+        return -1;
+    }
+
+    std::string startDateIso;
+    std::vector<ScheduleOffset> offsets;
+    if (!loadSwordScheduleState(db_, moduleName, startDateIso, offsets)) {
+        return -1;
+    }
+    return sequenceForScheduledDate(startDateIso, offsets, dateIso);
+}
+
+bool ReadingPlanManager::rescheduleSwordDay(const std::string& moduleName,
+                                            const std::string& fromDateIso,
+                                            const std::string& toDateIso) {
+    if (!db_ || moduleName.empty() ||
+        !reading::isIsoDateInRange(fromDateIso) ||
+        !reading::isIsoDateInRange(toDateIso)) {
+        return false;
+    }
+
+    if (!beginTransaction(db_)) return false;
+
+    std::string startDateIso;
+    std::vector<ScheduleOffset> offsets;
+    bool hasExplicitSchedule = false;
+    bool ok = loadSwordScheduleState(db_,
+                                     moduleName,
+                                     startDateIso,
+                                     offsets,
+                                     &hasExplicitSchedule);
+    if (ok && !hasExplicitSchedule) {
+        ok = setSwordScheduleStartDate(db_, moduleName, startDateIso);
+    }
+
+    const int sequenceNumber = ok
+        ? sequenceForScheduledDate(startDateIso, offsets, fromDateIso)
+        : -1;
+    if (!ok || sequenceNumber <= 0) {
+        rollbackTransaction(db_);
+        return false;
+    }
+
+    std::string newStartDateIso = startDateIso;
+    const int dayDelta = dayDifference(fromDateIso, toDateIso);
+
+    if (sequenceNumber == 1) {
+        newStartDateIso = toDateIso;
+        for (auto& offset : offsets) {
+            reading::Date current{};
+            if (!reading::parseIsoDate(offset.dateIso, current)) continue;
+            offset.dateIso = reading::formatIsoDate(reading::addDays(current, dayDelta));
+        }
+    } else {
+        bool foundSequenceOffset = false;
+        for (auto& offset : offsets) {
+            if (offset.sequenceNumber == sequenceNumber) {
+                offset.dateIso = toDateIso;
+                foundSequenceOffset = true;
+            } else if (offset.sequenceNumber > sequenceNumber) {
+                reading::Date current{};
+                if (!reading::parseIsoDate(offset.dateIso, current)) continue;
+                offset.dateIso = reading::formatIsoDate(reading::addDays(current, dayDelta));
+            }
+        }
+        if (!foundSequenceOffset) {
+            offsets.push_back(ScheduleOffset{sequenceNumber, toDateIso});
+        }
+    }
+
+    offsets = compactOffsets(newStartDateIso, offsets);
+
+    if (ok) ok = setSwordScheduleStartDate(db_, moduleName, newStartDateIso);
+    if (ok) ok = replaceSwordOffsets(db_, moduleName, offsets);
+
+    if (ok) {
+        ok = commitTransaction(db_);
+    } else {
+        rollbackTransaction(db_);
+    }
+    return ok;
 }
 
 bool ReadingPlanManager::rescheduleDay(int planId,
@@ -533,14 +974,7 @@ bool ReadingPlanManager::rescheduleDay(int planId,
     const int sequenceNumber = findSequenceForDate(plan.days, fromDateIso);
     if (sequenceNumber <= 0) return false;
 
-    reading::Date fromDate{};
-    reading::Date toDate{};
-    reading::parseIsoDate(fromDateIso, fromDate);
-    reading::parseIsoDate(toDateIso, toDate);
-    std::tm fromTm = reading::toTm(fromDate);
-    std::tm toTm = reading::toTm(toDate);
-    const int dayDelta = static_cast<int>(
-        std::difftime(std::mktime(&toTm), std::mktime(&fromTm)) / (60 * 60 * 24));
+    const int dayDelta = dayDifference(fromDateIso, toDateIso);
 
     if (!beginTransaction(db_)) return false;
 
@@ -675,6 +1109,22 @@ bool ReadingPlanManager::ensureSchema() {
         CREATE INDEX IF NOT EXISTS idx_reading_plan_offsets_plan_day
             ON reading_plan_offsets(plan_id, day_number);
 
+        CREATE TABLE IF NOT EXISTS sword_reading_plan_schedules (
+            module_name TEXT PRIMARY KEY,
+            start_date TEXT NOT NULL DEFAULT ''
+        );
+
+        CREATE TABLE IF NOT EXISTS sword_reading_plan_offsets (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            module_name TEXT NOT NULL,
+            day_number INTEGER NOT NULL,
+            start_date TEXT NOT NULL,
+            UNIQUE(module_name, day_number)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_sword_reading_plan_offsets_module_day
+            ON sword_reading_plan_offsets(module_name, day_number);
+
         CREATE TABLE IF NOT EXISTS sword_reading_plan_progress (
             module_name TEXT NOT NULL,
             day_date TEXT NOT NULL,
@@ -684,6 +1134,16 @@ bool ReadingPlanManager::ensureSchema() {
 
         CREATE INDEX IF NOT EXISTS idx_sword_reading_plan_progress_module_date
             ON sword_reading_plan_progress(module_name, day_date);
+
+        CREATE TABLE IF NOT EXISTS sword_reading_plan_progress_v2 (
+            module_name TEXT NOT NULL,
+            day_number INTEGER NOT NULL,
+            completed INTEGER NOT NULL DEFAULT 0,
+            PRIMARY KEY(module_name, day_number)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_sword_reading_plan_progress_v2_module_day
+            ON sword_reading_plan_progress_v2(module_name, day_number);
     )SQL";
 
     if (!execSql(db_, kSchemaSql)) return false;
@@ -716,7 +1176,7 @@ bool ReadingPlanManager::ensureSchema() {
         return false;
     }
 
-    return execSql(db_, "PRAGMA user_version = 3;");
+    return execSql(db_, "PRAGMA user_version = 4;");
 }
 
 bool ReadingPlanManager::loadPlanDays(sqlite3* db,
