@@ -16,6 +16,7 @@ struct ReadingPlanPassage {
 
 struct ReadingPlanDay {
     int id = 0;
+    int sequenceNumber = 0;
     std::string dateIso;
     std::string title;
     std::vector<ReadingPlanPassage> passages;
@@ -61,16 +62,21 @@ public:
         const std::string& moduleName) const;
     bool rescheduleDay(int planId,
                        const std::string& fromDateIso,
-                       const std::string& toDateIso,
-                       bool shiftLaterIncompleteDays);
+                       const std::string& toDateIso);
 
 private:
     bool openDatabase(const std::string& filepath);
     void closeDatabase();
     bool ensureSchema();
 
-    bool loadPlanDays(sqlite3* db, int planId, std::vector<ReadingPlanDay>& out) const;
-    bool replacePlanDays(sqlite3* db, int planId, const std::vector<ReadingPlanDay>& days) const;
+    bool loadPlanDays(sqlite3* db,
+                      int planId,
+                      const std::string& startDateIso,
+                      std::vector<ReadingPlanDay>& out) const;
+    bool replacePlanDays(sqlite3* db,
+                         int planId,
+                         const std::string& startDateIso,
+                         const std::vector<ReadingPlanDay>& days) const;
     bool loadSinglePlan(sqlite3* db, int planId, ReadingPlan& out) const;
 
     std::string filepath_;

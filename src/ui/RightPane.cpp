@@ -494,13 +494,65 @@ std::vector<std::string> extractSwordReadingPlanReferences(
     const std::string& dateIso,
     const std::string& verseModuleForRefs);
 
-std::string readingPlanDayCalendarSummary(const ReadingPlanDay& day) {
+std::string preferredCalendarVerseModule(VerdadApp* app) {
+    if (!app) return "";
+    if (app->mainWindow() && app->mainWindow()->biblePane()) {
+        std::string module = trimCopy(app->mainWindow()->biblePane()->currentModule());
+        if (!module.empty()) return module;
+    }
+
+    auto bibles = app->swordManager().getBibleModules();
+    return bibles.empty() ? std::string() : bibles.front().name;
+}
+
+std::string abbreviatedCalendarReference(VerdadApp* app,
+                                         const std::string& verseModule,
+                                         const std::string& reference) {
+    std::string trimmed = trimCopy(reference);
+    if (trimmed.empty()) return trimmed;
+
+    SwordManager::VerseRef parsed = SwordManager::parseVerseRef(trimmed);
+    if (parsed.book.empty() || parsed.chapter <= 0) {
+        if (app && !verseModule.empty()) {
+            std::string shortRef = trimCopy(
+                app->swordManager().getShortReference(verseModule, trimmed));
+            if (!shortRef.empty()) return shortRef;
+        }
+        return trimmed;
+    }
+
+    std::string abbreviatedBook = parsed.book;
+    if (app && !verseModule.empty()) {
+        std::ostringstream seed;
+        seed << parsed.book << " " << parsed.chapter << ":1";
+        std::string shortSeed = trimCopy(
+            app->swordManager().getShortReference(verseModule, seed.str()));
+        SwordManager::VerseRef shortParsed = SwordManager::parseVerseRef(shortSeed);
+        if (!shortParsed.book.empty()) {
+            abbreviatedBook = shortParsed.book;
+        }
+    }
+
+    std::ostringstream out;
+    out << abbreviatedBook << " " << parsed.chapter;
+    if (parsed.verse > 0) {
+        out << ":" << parsed.verse;
+        if (parsed.verseEnd > parsed.verse) {
+            out << "-" << parsed.verseEnd;
+        }
+    }
+    return out.str();
+}
+
+std::string readingPlanDayCalendarSummary(VerdadApp* app, const ReadingPlanDay& day) {
     if (day.passages.empty()) return "(No passages)";
 
+    const std::string verseModule = preferredCalendarVerseModule(app);
     std::ostringstream summary;
     for (size_t i = 0; i < day.passages.size(); ++i) {
         if (i) summary << "\n";
-        summary << day.passages[i].reference;
+        summary << abbreviatedCalendarReference(app, verseModule,
+                                                day.passages[i].reference);
     }
     return summary.str();
 }
@@ -865,16 +917,15 @@ std::string buildDailyDevotionPageHtml(const std::string& dateIso,
 
 struct ReadingPlanRescheduleRequest {
     std::string targetDateIso;
-    bool shiftLaterIncompleteDays = false;
 };
 
 bool promptReadingPlanReschedule(const std::string& fromDateIso,
                                  ReadingPlanRescheduleRequest& out) {
-    Fl_Double_Window dialog(430, 188, "Reschedule Reading Day");
+    Fl_Double_Window dialog(430, 164, "Reschedule Reading Day");
     dialog.set_modal();
 
     Fl_Box info(16, 14, 398, 34,
-                "Choose a new date and how the reschedule should behave.");
+                "Choose the new date to restart this reading day and everything after it.");
     info.align(FL_ALIGN_LEFT | FL_ALIGN_INSIDE | FL_ALIGN_WRAP);
 
     Fl_Box fromLabel(16, 58, 74, 24, "Current");
@@ -887,16 +938,8 @@ bool promptReadingPlanReschedule(const std::string& fromDateIso,
     Fl_Input targetInput(92, 86, 120, 26);
     targetInput.value(fromDateIso.c_str());
 
-    Fl_Round_Button moveOnlyButton(16, 122, 240, 22, "Move selected day only");
-    moveOnlyButton.type(FL_RADIO_BUTTON);
-    moveOnlyButton.setonly();
-
-    Fl_Round_Button shiftLaterButton(16, 146, 316, 22,
-                                     "Shift selected day and later incomplete days");
-    shiftLaterButton.type(FL_RADIO_BUTTON);
-
-    Fl_Button cancelButton(250, 150, 76, 28, "Cancel");
-    Fl_Return_Button okButton(338, 150, 76, 28, "OK");
+    Fl_Button cancelButton(250, 126, 76, 28, "Cancel");
+    Fl_Return_Button okButton(338, 126, 76, 28, "OK");
 
     bool accepted = false;
     cancelButton.callback([](Fl_Widget*, void* data) {
@@ -922,7 +965,6 @@ bool promptReadingPlanReschedule(const std::string& fromDateIso,
         }
 
         out.targetDateIso = target;
-        out.shiftLaterIncompleteDays = shiftLaterButton.value() != 0;
         dialog.hide();
     }
 
@@ -3887,7 +3929,7 @@ void RightPane::updateDailyCalendarMeta() {
                 if (date.year != month.year || date.month != month.month) continue;
 
                 CalendarDayMeta dayMeta;
-                dayMeta.summary = readingPlanDayCalendarSummary(day);
+                dayMeta.summary = readingPlanDayCalendarSummary(app_, day);
                 dayMeta.hasContent = true;
                 dayMeta.completed = day.completed;
                 dayMeta.overdue = !day.completed &&
@@ -5697,8 +5739,7 @@ void RightPane::onDailyReschedule(Fl_Widget* /*w*/, void* data) {
     if (!self->app_->readingPlanManager().rescheduleDay(
             self->dailyWorkspaceState_.readingPlanId,
             self->dailyWorkspaceState_.readingPlanSelectedDateIso,
-            request.targetDateIso,
-            request.shiftLaterIncompleteDays)) {
+            request.targetDateIso)) {
         fl_alert("Failed to reschedule the reading day.");
         return;
     }
@@ -5761,6 +5802,7 @@ void RightPane::onDailyPlanAddDay(Fl_Widget* /*w*/, void* data) {
                                      baseDate)) {
         haveBaseDate = true;
     }
+    day.sequenceNumber = static_cast<int>(self->dailyPlanEditorWorkingPlan_.days.size()) + 1;
     day.dateIso = reading::formatIsoDate(
         haveBaseDate ? reading::addDays(baseDate, 1) : reading::today());
     self->dailyPlanEditorWorkingPlan_.days.push_back(std::move(day));
@@ -5784,6 +5826,7 @@ void RightPane::onDailyPlanDuplicateDay(Fl_Widget* /*w*/, void* data) {
     ReadingPlanDay copy = self->dailyPlanEditorWorkingPlan_.days[static_cast<size_t>(index)];
     copy.id = 0;
     copy.completed = false;
+    copy.sequenceNumber = static_cast<int>(self->dailyPlanEditorWorkingPlan_.days.size()) + 1;
     for (auto& passage : copy.passages) {
         passage.id = 0;
     }

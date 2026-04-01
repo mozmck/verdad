@@ -427,6 +427,7 @@ bool generateReadingPlan(SwordManager& swordManager,
                                         (static_cast<double>(i) * (totalDateSlots - 1)) /
                                         (groups.size() - 1)));
         ReadingPlanDay day;
+        day.sequenceNumber = static_cast<int>(i) + 1;
         day.dateIso = reading::formatIsoDate(reading::addDays(startDate, slotIndex));
         day.passages = passagesForGroup(groups[i]);
         plan.days.push_back(std::move(day));

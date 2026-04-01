@@ -49,6 +49,13 @@ std::string joinPlanPassages(const std::vector<ReadingPlanPassage>& passages,
 namespace {
 
 bool compareDaysByDate(const ReadingPlanDay& lhs, const ReadingPlanDay& rhs) {
+    const bool lhsHasSequence = lhs.sequenceNumber > 0;
+    const bool rhsHasSequence = rhs.sequenceNumber > 0;
+    if (lhsHasSequence && rhsHasSequence) {
+        if (lhs.sequenceNumber != rhs.sequenceNumber) {
+            return lhs.sequenceNumber < rhs.sequenceNumber;
+        }
+    }
     if (lhs.dateIso != rhs.dateIso) return lhs.dateIso < rhs.dateIso;
     if (lhs.title != rhs.title) return lhs.title < rhs.title;
     return joinPlanPassages(lhs.passages, ";") < joinPlanPassages(rhs.passages, ";");
@@ -96,7 +103,13 @@ void normalizeReadingPlanDays(std::vector<ReadingPlanDay>& days) {
 
     std::vector<ReadingPlanDay> merged;
     for (auto& day : days) {
-        if (!merged.empty() && merged.back().dateIso == day.dateIso) {
+        const bool sameSequence =
+            !merged.empty() &&
+            merged.back().sequenceNumber > 0 &&
+            day.sequenceNumber > 0 &&
+            merged.back().sequenceNumber == day.sequenceNumber;
+        const bool sameDate = !merged.empty() && merged.back().dateIso == day.dateIso;
+        if (sameSequence || sameDate) {
             if (merged.back().title.empty()) merged.back().title = day.title;
             merged.back().completed = merged.back().completed || day.completed;
             merged.back().passages.insert(merged.back().passages.end(),
@@ -105,6 +118,9 @@ void normalizeReadingPlanDays(std::vector<ReadingPlanDay>& days) {
         } else {
             merged.push_back(std::move(day));
         }
+    }
+    for (size_t i = 0; i < merged.size(); ++i) {
+        merged[i].sequenceNumber = static_cast<int>(i) + 1;
     }
     days = std::move(merged);
 }
