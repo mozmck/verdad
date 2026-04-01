@@ -2,6 +2,7 @@
 #include "ui/WrappingChoice.h"
 
 #include <FL/Fl.H>
+#include <FL/Fl_Group.H>
 #include <FL/Fl_Browser_.H>
 #include <FL/Fl_Double_Window.H>
 #include <FL/Fl_Hold_Browser.H>
@@ -269,7 +270,13 @@ bool WrappingChoice::buildPopup() {
 
     if (popupEntries_.empty()) return false;
 
-    const auto [rootX, rootY] = choice_popup::rootPosition(this);
+    int anchorX = 0;
+    int anchorY = 0;
+    Fl_Window* top = top_window_offset(anchorX, anchorY);
+    const int topRootX = top ? top->x_root() : 0;
+    const int topRootY = top ? top->y_root() : 0;
+    const int rootX = anchorX + topRootX;
+    const int rootY = anchorY + topRootY;
     const int screenNum = window() ? window()->screen_num() : Fl::screen_num(rootX, rootY);
     int workX = 0;
     int workY = 0;
@@ -361,6 +368,8 @@ bool WrappingChoice::buildPopup() {
     const int minPopupX = workX + std::min(kPopupScreenEdgeMargin, std::max(0, workW - popupW));
     const int maxPopupX = std::max(minPopupX, workRight - kPopupScreenEdgeMargin - popupW);
     const int popupX = std::clamp(rootX, minPopupX, maxPopupX);
+    Fl_Group* savedCurrent = Fl_Group::current();
+    Fl_Group::current(nullptr);
     popupWindow_ = new WrappingChoicePopupWindow(this, popupX, popupY, popupW, 1);
     popupWindow_->begin();
 
@@ -431,6 +440,7 @@ bool WrappingChoice::buildPopup() {
 
     popupWindow_->end();
     popupWindow_->hide();
+    Fl_Group::current(savedCurrent);
     return true;
 }
 

@@ -230,6 +230,8 @@ void BibleBookChoice::destroyPopup() {
 void BibleBookChoice::ensurePopupCreated() {
     if (popupWindow_) return;
 
+    Fl_Group* savedCurrent = Fl_Group::current();
+    Fl_Group::current(nullptr);
     popupWindow_ = new BibleBookChoicePopupWindow(this, 0, 0, 1, 1);
     popupWindow_->begin();
 
@@ -248,6 +250,7 @@ void BibleBookChoice::ensurePopupCreated() {
 
     popupWindow_->end();
     popupWindow_->hide();
+    Fl_Group::current(savedCurrent);
 }
 
 void BibleBookChoice::refreshPopupContents() {
@@ -298,7 +301,13 @@ void BibleBookChoice::refreshPopupContents() {
 void BibleBookChoice::updatePopupGeometry() {
     if (!popupWindow_ || !oldTestamentBrowser_ || !newTestamentBrowser_) return;
 
-    const auto [rootX, rootY] = rootPosition(this);
+    int anchorX = 0;
+    int anchorY = 0;
+    Fl_Window* top = top_window_offset(anchorX, anchorY);
+    const int topRootX = top ? top->x_root() : 0;
+    const int topRootY = top ? top->y_root() : 0;
+    const int rootX = anchorX + topRootX;
+    const int rootY = anchorY + topRootY;
     auto* oldBrowser = static_cast<BibleBookChoiceBrowser*>(oldTestamentBrowser_);
     auto* newBrowser = static_cast<BibleBookChoiceBrowser*>(newTestamentBrowser_);
     const int leftColumnW = measureColumnWidth(oldTestamentBooks_, "Old Testament",
