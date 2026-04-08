@@ -643,6 +643,9 @@ bool VerdadApp::applyPreferencesMap(const PreferenceMap& prefs,
                                       importedAppearance.editorLineHeight));
 
     OptionDisplaySettings importedOptions = optionDisplaySettings_;
+    importedOptions.showWordsOfChristRed =
+        parseBoolOr(lookup("show_words_of_christ_red"),
+                    importedOptions.showWordsOfChristRed);
     importedOptions.showStrongsMarkers =
         parseBoolOr(lookup("show_strongs_markers"),
                     importedOptions.showStrongsMarkers);
@@ -756,6 +759,8 @@ void VerdadApp::savePreferences() {
         file << "editor_indent_width=" << appearanceSettings_.editorIndentWidth << "\n";
         file << "editor_line_height="
              << formatPreferenceDouble(appearanceSettings_.editorLineHeight) << "\n";
+        file << "show_words_of_christ_red="
+             << (optionDisplaySettings_.showWordsOfChristRed ? 1 : 0) << "\n";
         file << "show_strongs_markers=" << (optionDisplaySettings_.showStrongsMarkers ? 1 : 0) << "\n";
         file << "show_morph_markers=" << (optionDisplaySettings_.showMorphMarkers ? 1 : 0) << "\n";
         file << "show_footnote_markers=" << (optionDisplaySettings_.showFootnoteMarkers ? 1 : 0) << "\n";
@@ -1085,6 +1090,18 @@ std::string VerdadApp::textStyleOverrideCss() const {
         << "}\n";
 
     css << "span.verdad-inline-marker { display: none; }\n";
+    if (!options.showWordsOfChristRed) {
+        css << ".wordsOfJesus,\n"
+            << ".wordsOfJesus a,\n"
+            << "span.wordsofchrist,\n"
+            << "span.wordsofchrist a,\n"
+            << ".wordsofchrist,\n"
+            << ".wordsofchrist a,\n"
+            << ".jesusWords,\n"
+            << ".jesusWords a {\n"
+            << "  color: inherit !important;\n"
+            << "}\n";
+    }
     if (options.showStrongsMarkers || options.showMorphMarkers) {
         css << "span.w { display: inline-table; vertical-align: top; text-align: center; white-space: nowrap; }\n";
         css << "span.w > span.wt { display: table-row; }\n";

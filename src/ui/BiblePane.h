@@ -7,6 +7,7 @@
 #include <FL/Fl_Button.H>
 #include <FL/Fl_Check_Button.H>
 #include <FL/Fl_Box.H>
+#include <FL/Fl_Menu_Button.H>
 #include <memory>
 #include <string>
 #include <vector>
@@ -156,11 +157,13 @@ private:
     Fl_Box* moduleRightSeparator_;
     Fl_Button* parallelButton_;
     Fl_Button* paragraphButton_;
+    Fl_Button* redWordsToggleButton_;
     Fl_Button* parallelAddButton_;
     Fl_Button* strongsToggleButton_;
     Fl_Button* morphToggleButton_;
     Fl_Button* footnotesToggleButton_;
     Fl_Button* crossRefsToggleButton_;
+    Fl_Menu_Button* displayOptionsMenuButton_;
     Fl_Box* crossRefsRightSeparator_;
     Fl_Box* navSpacer_;
     Fl_Group* parallelHeader_;
@@ -220,6 +223,7 @@ private:
     /// Populate chapter choices for current book
     void populateChapters(bool force = false);
     void layoutDailyReadingBar();
+    void layoutNavBarControls();
     void openDailyReadingPlanWorkspace();
     void onDailyReadingBarLink(const std::string& url);
     void updateDailyReadingPlanCompleted(bool completed);
@@ -241,6 +245,7 @@ private:
     static void onModuleChange(Fl_Widget* w, void* data);
     static void onParallel(Fl_Widget* w, void* data);
     static void onParagraphToggle(Fl_Widget* w, void* data);
+    static void onRedWordsToggle(Fl_Widget* w, void* data);
     static void onStrongsToggle(Fl_Widget* w, void* data);
     static void onMorphToggle(Fl_Widget* w, void* data);
     static void onFootnotesToggle(Fl_Widget* w, void* data);

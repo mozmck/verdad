@@ -37,6 +37,7 @@ public:
     };
 
     struct OptionDisplaySettings {
+        bool showWordsOfChristRed = true;
         bool showStrongsMarkers = false;
         bool showMorphMarkers = false;
         bool showFootnoteMarkers = true;
@@ -120,12 +121,12 @@ public:
     Fl_Font textEditorFont() const;
     Fl_Font boldTextEditorFont() const;
 
-    /// Current inline marker display settings.
+    /// Current Bible display option settings.
     const OptionDisplaySettings& optionDisplaySettings() const {
         return optionDisplaySettings_;
     }
 
-    /// Update inline marker display settings and apply them immediately.
+    /// Update Bible display option settings and apply them immediately.
     void setOptionDisplaySettings(const OptionDisplaySettings& settings);
 
     /// Build runtime CSS overrides for HTML-rendered text panes.

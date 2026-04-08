@@ -37,13 +37,29 @@ constexpr int kDailyReadingPlanButtonW = 30;
 constexpr int kHistoryChoiceWidth = 150; // Fits most refs while leaving room for history buttons.
 constexpr int kParagraphButtonW = 25;
 constexpr int kParallelButtonW = 25;
+constexpr int kDisplayOptionsMenuButtonW = 30;
+constexpr int kRedWordsButtonW = 34;
 constexpr int kStrongsButtonW = 34;
 constexpr int kMorphButtonW = 52;
 constexpr int kFootnotesButtonW = 50;
 constexpr int kCrossRefsButtonW = 46;
 
+enum DisplayOptionMenuIndex {
+    kDisplayOptionParagraph = 0,
+    kDisplayOptionRedWords,
+    kDisplayOptionStrongs,
+    kDisplayOptionMorph,
+    kDisplayOptionFootnotes,
+    kDisplayOptionCrossRefs,
+};
+
 WrappingInputChoice* historyInputChoice(Fl_Input_Choice* choice) {
     return static_cast<WrappingInputChoice*>(choice);
+}
+
+void setToggleMenuItemValue(Fl_Menu_Button* button, int index, bool enabled) {
+    if (!button || index < 0 || index >= button->size()) return;
+    button->mode(index, FL_MENU_TOGGLE | (enabled ? FL_MENU_VALUE : 0));
 }
 
 int findChoiceIndexByLabel(const Fl_Choice* choice, const std::string& label) {
@@ -419,11 +435,13 @@ BiblePane::BiblePane(VerdadApp* app, int X, int Y, int W, int H)
     , moduleRightSeparator_(nullptr)
     , parallelButton_(nullptr)
     , paragraphButton_(nullptr)
+    , redWordsToggleButton_(nullptr)
     , parallelAddButton_(nullptr)
     , strongsToggleButton_(nullptr)
     , morphToggleButton_(nullptr)
     , footnotesToggleButton_(nullptr)
     , crossRefsToggleButton_(nullptr)
+    , displayOptionsMenuButton_(nullptr)
     , crossRefsRightSeparator_(nullptr)
     , navSpacer_(nullptr)
     , parallelHeader_(nullptr)
@@ -516,6 +534,7 @@ BiblePane::BiblePane(VerdadApp* app, int X, int Y, int W, int H)
         parallelAddButton_->hide();
     }
     syncOptionButtons();
+    layoutNavBarControls();
     refreshDailyReadingPlanBar();
 
 }
@@ -531,10 +550,11 @@ void BiblePane::resize(int X, int Y, int W, int H) {
         !prevButton_ || !nextButton_ || !historyLeftSeparator_ ||
         !historyBackButton_ || !historyChoice_ || !historyForwardButton_ ||
         !historyRightSeparator_ || !moduleRightSeparator_ ||
-        !parallelButton_ || !paragraphButton_ || !parallelAddButton_ ||
+        !parallelButton_ || !paragraphButton_ || !redWordsToggleButton_ ||
+        !parallelAddButton_ ||
         !strongsToggleButton_ || !morphToggleButton_ ||
         !footnotesToggleButton_ || !crossRefsToggleButton_ ||
-        !crossRefsRightSeparator_ ||
+        !displayOptionsMenuButton_ || !crossRefsRightSeparator_ ||
         !navSpacer_ || !parallelHeader_ || !dailyReadingBar_ ||
         !dailyReadingBarWidget_ || !dailyReadingCompleteButton_ ||
         !dailyReadingPlanButton_ || !htmlWidget_) {
@@ -543,6 +563,38 @@ void BiblePane::resize(int X, int Y, int W, int H) {
 
     const int navH = kNavH;
     const int padding = kContentPadding;
+    layoutNavBarControls();
+
+    int contentY = Y + navH + padding;
+    int headerH = (parallelMode_ ? kParallelHeaderH : 0);
+    parallelHeader_->resize(X, contentY, W, headerH);
+    if (parallelMode_) {
+        parallelHeader_->show();
+    } else {
+        parallelHeader_->hide();
+    }
+    parallelHeader_->damage(FL_DAMAGE_ALL);
+    layoutParallelHeader();
+
+    layoutDailyReadingBar();
+    int textY = contentY + headerH;
+    int textH = std::max(20, H - navH - padding - headerH - kDailyReadingBarH);
+    htmlWidget_->resize(X, textY, W, textH);
+}
+
+void BiblePane::layoutNavBarControls() {
+    if (!navBar_ || !bookChoice_ || !chapterChoice_ || !moduleChoice_ ||
+        !prevButton_ || !nextButton_ || !historyLeftSeparator_ ||
+        !historyBackButton_ || !historyChoice_ || !historyForwardButton_ ||
+        !historyRightSeparator_ || !moduleRightSeparator_ ||
+        !parallelButton_ || !paragraphButton_ || !redWordsToggleButton_ ||
+        !parallelAddButton_ || !strongsToggleButton_ || !morphToggleButton_ ||
+        !footnotesToggleButton_ || !crossRefsToggleButton_ ||
+        !displayOptionsMenuButton_ || !crossRefsRightSeparator_ ||
+        !navSpacer_) {
+        return;
+    }
+
     const int spacing = 2;
     const int buttonW = 30;
     const int historyBtnW = 24;
@@ -552,10 +604,10 @@ void BiblePane::resize(int X, int Y, int W, int H) {
     const int moduleW = 100;
     const int historyW = kHistoryChoiceWidth;
 
-    navBar_->resize(X, Y, W, navH);
-    int cy = Y + 2;
-    int nh = navH - 4;
-    int cx = X + 2;
+    navBar_->resize(x(), y(), w(), kNavH);
+    const int cy = y() + 2;
+    const int nh = kNavH - 4;
+    int cx = x() + 2;
 
     prevButton_->resize(cx, cy, buttonW, nh);
     cx += buttonW + spacing;
@@ -590,20 +642,55 @@ void BiblePane::resize(int X, int Y, int W, int H) {
     moduleRightSeparator_->resize(cx, cy + 4, separatorW, std::max(10, nh - 8));
     cx += separatorW + spacing;
 
-    paragraphButton_->resize(cx, cy, kParagraphButtonW, nh);
-    cx += kParagraphButtonW + spacing;
+    const int visibleParallelControlsW = kParallelButtonW + (parallelMode_ ? spacing + kParallelButtonW : 0);
+    const int expandedDisplayOptionsW =
+        kParagraphButtonW + spacing +
+        kRedWordsButtonW + spacing +
+        kStrongsButtonW + spacing +
+        kMorphButtonW + spacing +
+        kFootnotesButtonW + spacing +
+        kCrossRefsButtonW +
+        spacing + separatorW + spacing +
+        visibleParallelControlsW;
+    const bool collapseDisplayOptions = cx + expandedDisplayOptionsW > x() + w() - 2;
 
-    strongsToggleButton_->resize(cx, cy, kStrongsButtonW, nh);
-    cx += kStrongsButtonW + spacing;
+    if (collapseDisplayOptions) {
+        displayOptionsMenuButton_->show();
+        displayOptionsMenuButton_->resize(cx, cy, kDisplayOptionsMenuButtonW, nh);
+        paragraphButton_->hide();
+        redWordsToggleButton_->hide();
+        strongsToggleButton_->hide();
+        morphToggleButton_->hide();
+        footnotesToggleButton_->hide();
+        crossRefsToggleButton_->hide();
+        cx += kDisplayOptionsMenuButtonW + spacing;
+    } else {
+        displayOptionsMenuButton_->hide();
 
-    morphToggleButton_->resize(cx, cy, kMorphButtonW, nh);
-    cx += kMorphButtonW + spacing;
+        paragraphButton_->show();
+        paragraphButton_->resize(cx, cy, kParagraphButtonW, nh);
+        cx += kParagraphButtonW + spacing;
 
-    footnotesToggleButton_->resize(cx, cy, kFootnotesButtonW, nh);
-    cx += kFootnotesButtonW + spacing;
+        redWordsToggleButton_->show();
+        redWordsToggleButton_->resize(cx, cy, kRedWordsButtonW, nh);
+        cx += kRedWordsButtonW + spacing;
 
-    crossRefsToggleButton_->resize(cx, cy, kCrossRefsButtonW, nh);
-    cx += kCrossRefsButtonW + spacing;
+        strongsToggleButton_->show();
+        strongsToggleButton_->resize(cx, cy, kStrongsButtonW, nh);
+        cx += kStrongsButtonW + spacing;
+
+        morphToggleButton_->show();
+        morphToggleButton_->resize(cx, cy, kMorphButtonW, nh);
+        cx += kMorphButtonW + spacing;
+
+        footnotesToggleButton_->show();
+        footnotesToggleButton_->resize(cx, cy, kFootnotesButtonW, nh);
+        cx += kFootnotesButtonW + spacing;
+
+        crossRefsToggleButton_->show();
+        crossRefsToggleButton_->resize(cx, cy, kCrossRefsButtonW, nh);
+        cx += kCrossRefsButtonW + spacing;
+    }
 
     crossRefsRightSeparator_->resize(cx, cy + 4, separatorW, std::max(10, nh - 8));
     cx += separatorW + spacing;
@@ -612,26 +699,15 @@ void BiblePane::resize(int X, int Y, int W, int H) {
     cx += kParallelButtonW + spacing;
 
     parallelAddButton_->resize(cx, cy, kParallelButtonW, nh);
-    cx += kParallelButtonW + spacing;
-
-    int spacerW = std::max(0, (X + W - 2) - cx);
-    navSpacer_->resize(cx, cy, spacerW, nh);
-
-    int contentY = Y + navH + padding;
-    int headerH = (parallelMode_ ? kParallelHeaderH : 0);
-    parallelHeader_->resize(X, contentY, W, headerH);
     if (parallelMode_) {
-        parallelHeader_->show();
+        parallelAddButton_->show();
+        cx += kParallelButtonW + spacing;
     } else {
-        parallelHeader_->hide();
+        parallelAddButton_->hide();
     }
-    parallelHeader_->damage(FL_DAMAGE_ALL);
-    layoutParallelHeader();
 
-    layoutDailyReadingBar();
-    int textY = contentY + headerH;
-    int textH = std::max(20, H - navH - padding - headerH - kDailyReadingBarH);
-    htmlWidget_->resize(X, textY, W, textH);
+    int spacerW = std::max(0, (x() + w() - 2) - cx);
+    navSpacer_->resize(cx, cy, spacerW, nh);
 }
 
 void BiblePane::navigateTo(const std::string& book, int chapter, int verse) {
@@ -748,12 +824,14 @@ void BiblePane::toggleParallel() {
     if (parallelButton_) {
         parallelButton_->value(parallelMode_ ? 1 : 0);
     }
+    layoutNavBarControls();
     updateDisplay();
     notifyContextChanged();
 }
 
 void BiblePane::toggleParagraphMode() {
     paragraphMode_ = !paragraphMode_;
+    syncOptionButtons();
     updateDisplay();
 }
 
@@ -855,8 +933,14 @@ void BiblePane::layoutDailyReadingBar() {
 void BiblePane::syncOptionButtons() {
     if (!app_) return;
     const auto& options = app_->optionDisplaySettings();
+    if (paragraphButton_) {
+        paragraphButton_->value(paragraphMode_ ? 1 : 0);
+    }
     if (strongsToggleButton_) {
         strongsToggleButton_->value(options.showStrongsMarkers ? 1 : 0);
+    }
+    if (redWordsToggleButton_) {
+        redWordsToggleButton_->value(options.showWordsOfChristRed ? 1 : 0);
     }
     if (morphToggleButton_) {
         morphToggleButton_->value(options.showMorphMarkers ? 1 : 0);
@@ -867,6 +951,17 @@ void BiblePane::syncOptionButtons() {
     if (crossRefsToggleButton_) {
         crossRefsToggleButton_->value(options.showCrossReferenceMarkers ? 1 : 0);
     }
+    setToggleMenuItemValue(displayOptionsMenuButton_, kDisplayOptionParagraph, paragraphMode_);
+    setToggleMenuItemValue(displayOptionsMenuButton_, kDisplayOptionRedWords,
+                           options.showWordsOfChristRed);
+    setToggleMenuItemValue(displayOptionsMenuButton_, kDisplayOptionStrongs,
+                           options.showStrongsMarkers);
+    setToggleMenuItemValue(displayOptionsMenuButton_, kDisplayOptionMorph,
+                           options.showMorphMarkers);
+    setToggleMenuItemValue(displayOptionsMenuButton_, kDisplayOptionFootnotes,
+                           options.showFootnoteMarkers);
+    setToggleMenuItemValue(displayOptionsMenuButton_, kDisplayOptionCrossRefs,
+                           options.showCrossReferenceMarkers);
 }
 
 void BiblePane::setNavigationHistory(const std::vector<std::string>& labels,
@@ -907,10 +1002,13 @@ void BiblePane::redrawChrome() {
         navBar_->redraw();
     }
     if (parallelAddButton_) parallelAddButton_->redraw();
+    if (paragraphButton_) paragraphButton_->redraw();
+    if (redWordsToggleButton_) redWordsToggleButton_->redraw();
     if (strongsToggleButton_) strongsToggleButton_->redraw();
     if (morphToggleButton_) morphToggleButton_->redraw();
     if (footnotesToggleButton_) footnotesToggleButton_->redraw();
     if (crossRefsToggleButton_) crossRefsToggleButton_->redraw();
+    if (displayOptionsMenuButton_) displayOptionsMenuButton_->redraw();
     if (parallelHeader_) {
         parallelHeader_->damage(FL_DAMAGE_ALL);
         parallelHeader_->redraw();
@@ -1069,10 +1167,7 @@ void BiblePane::setStudyState(const std::string& module,
         paragraphButton_->value(paragraphMode_ ? 1 : 0);
     }
     syncOptionButtons();
-    if (parallelAddButton_) {
-        if (parallelMode_) parallelAddButton_->show();
-        else parallelAddButton_->hide();
-    }
+    layoutNavBarControls();
 
     populateBooks();
 
@@ -1253,11 +1348,28 @@ void BiblePane::buildNavBar() {
     moduleRightSeparator_->box(FL_THIN_DOWN_BOX);
     cx += moduleRightSeparator_->w() + 2;
 
+    displayOptionsMenuButton_ = new Fl_Menu_Button(cx, cy, kDisplayOptionsMenuButtonW, nh, u8"☰");
+    displayOptionsMenuButton_->tooltip("Display options");
+    displayOptionsMenuButton_->add("Paragraph mode", 0, onParagraphToggle, this, FL_MENU_TOGGLE);
+    displayOptionsMenuButton_->add("Words of Jesus in red", 0, onRedWordsToggle, this, FL_MENU_TOGGLE);
+    displayOptionsMenuButton_->add("Strong's markers", 0, onStrongsToggle, this, FL_MENU_TOGGLE);
+    displayOptionsMenuButton_->add("Morphology markers", 0, onMorphToggle, this, FL_MENU_TOGGLE);
+    displayOptionsMenuButton_->add("Footnotes", 0, onFootnotesToggle, this, FL_MENU_TOGGLE);
+    displayOptionsMenuButton_->add("Cross references", 0, onCrossRefsToggle, this, FL_MENU_TOGGLE);
+    displayOptionsMenuButton_->hide();
+
     paragraphButton_ = new Fl_Button(cx, cy, kParagraphButtonW, nh, "\xC2\xB6");
     paragraphButton_->callback(onParagraphToggle, this);
     paragraphButton_->tooltip("Toggle paragraph / verse-per-line display");
     paragraphButton_->type(FL_TOGGLE_BUTTON);
     cx += paragraphButton_->w() + 2;
+
+    redWordsToggleButton_ = new Fl_Button(cx, cy, kRedWordsButtonW, nh, "Red");
+    redWordsToggleButton_->callback(onRedWordsToggle, this);
+    redWordsToggleButton_->tooltip("Highlight or unhighlight words of Jesus in red");
+    redWordsToggleButton_->type(FL_TOGGLE_BUTTON);
+    redWordsToggleButton_->labelcolor(fl_rgb_color(170, 0, 0));
+    cx += redWordsToggleButton_->w() + 2;
 
     strongsToggleButton_ = new Fl_Button(cx, cy, kStrongsButtonW, nh, u8"αא");
     strongsToggleButton_->callback(onStrongsToggle, this);
@@ -1903,6 +2015,16 @@ void BiblePane::onParallel(Fl_Widget* /*w*/, void* data) {
 void BiblePane::onParagraphToggle(Fl_Widget* /*w*/, void* data) {
     auto* self = static_cast<BiblePane*>(data);
     self->toggleParagraphMode();
+}
+
+void BiblePane::onRedWordsToggle(Fl_Widget* /*w*/, void* data) {
+    auto* self = static_cast<BiblePane*>(data);
+    if (!self || !self->app_) return;
+
+    auto options = self->app_->optionDisplaySettings();
+    options.showWordsOfChristRed = !options.showWordsOfChristRed;
+    self->app_->setOptionDisplaySettings(options);
+    self->syncOptionButtons();
 }
 
 void BiblePane::onStrongsToggle(Fl_Widget* /*w*/, void* data) {

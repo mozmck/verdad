@@ -321,9 +321,13 @@ std::string initialDictionaryModuleForKey(VerdadApp* app,
                                           const std::string& key) {
     if (!app || key.empty()) return "";
 
+    static const std::regex strongsKeyPattern(
+        R"(^\s*([HhGg])\d+[A-Za-z]?\s*$)");
+    std::smatch match;
+    if (!std::regex_match(key, match, strongsKeyPattern)) return "";
+
     char prefix = static_cast<char>(
-        std::toupper(static_cast<unsigned char>(key[0])));
-    if (prefix != 'H' && prefix != 'G') return "";
+        std::toupper(static_cast<unsigned char>(match[1].str()[0])));
 
     return app->preferredPreviewDictionary(prefix);
 }

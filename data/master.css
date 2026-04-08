@@ -48,8 +48,68 @@ div.chapter-heading {
 }
 
 /* Words of Christ in red */
-span.wordsofchrist, .jesusWords {
+.wordsOfJesus,
+span.wordsofchrist,
+.wordsofchrist,
+.jesusWords {
     color: #cc0000;
+}
+
+/* SWORD XHTML semantic markup */
+.divineName {
+    font-variant: small-caps;
+}
+
+.small-caps,
+.otPassage,
+.inscription {
+    font-variant: small-caps;
+}
+
+.transChange,
+.transChange.transChange-supplied,
+.transChange.transChange-added,
+.transchange {
+    font-style: italic;
+}
+
+.transChange.transChange-tenseChange {
+    font-style: normal;
+}
+
+.overline {
+    text-decoration: overline;
+}
+
+.rdg {
+    font-style: italic;
+}
+
+.catchWord {
+    font-weight: bold;
+}
+
+.colophon {
+    display: block;
+    font-size: 0.9em;
+    font-style: italic;
+    color: #555;
+    margin: 0.35em 0;
+}
+
+.acrostic {
+    text-align: center;
+}
+
+.selah {
+    text-align: right;
+    width: 50%;
+    margin: 0;
+    padding: 0;
+}
+
+.x-p-indent {
+    text-indent: 1em;
 }
 
 /* Strong's number links - hidden from display but preserved for hover MAG viewer */
@@ -115,7 +175,7 @@ a.noteMarker:hover {
 }
 
 /* Headings */
-div.sechead, .sectionhead {
+.sechead, .sectionhead {
     font-size: 1.1em;
     font-weight: bold;
     color: #333;
@@ -123,7 +183,7 @@ div.sechead, .sectionhead {
 }
 
 /* Titles */
-div.title {
+.title {
     font-size: 1.3em;
     font-weight: bold;
     color: #1a5276;
@@ -131,18 +191,35 @@ div.title {
     margin: 16px 0 8px 0;
 }
 
+.moduleHeader,
+.testamentHeader,
+.bookHeader,
+.chapterHeader {
+    color: #1a5276;
+    text-align: center;
+    margin: 16px 0 8px 0;
+}
+
 /* Poetry/Psalm formatting */
-div.poetry, .line {
+.poetry, .line {
     margin-left: 20px;
     font-style: italic;
 }
 
-div.indented, .indent1 {
+.indented, .indent1 {
     margin-left: 40px;
 }
 
 .indent2 {
     margin-left: 60px;
+}
+
+.indent3 {
+    margin-left: 80px;
+}
+
+.indent4 {
+    margin-left: 100px;
 }
 
 /* Parallel Bible columns */
