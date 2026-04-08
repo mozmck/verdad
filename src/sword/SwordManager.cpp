@@ -372,6 +372,50 @@ bool verseStartsParagraphBoundary(std::string_view verseText) {
            static_cast<unsigned char>(verseText[pos + 1]) == 0xB6;
 }
 
+std::vector<std::string> collectPreverseHeadingMarkup(sword::SWModule* mod) {
+    std::vector<std::pair<int, std::string>> ordered;
+    if (!mod) return {};
+
+    auto& attrs = mod->getEntryAttributes();
+    auto headingIt = attrs.find("Heading");
+    if (headingIt == attrs.end()) return {};
+
+    auto preverseIt = headingIt->second.find("Preverse");
+    if (preverseIt == headingIt->second.end()) return {};
+
+    ordered.reserve(preverseIt->second.size());
+    int fallbackOrder = 0;
+    for (auto const& entry : preverseIt->second) {
+        std::string raw = trimCopy(entry.second.c_str());
+        if (raw.empty()) continue;
+
+        int order = fallbackOrder++;
+        const char* key = entry.first.c_str();
+        if (key && *key) {
+            int parsed = 0;
+            auto [ptr, ec] = std::from_chars(key, key + std::strlen(key), parsed);
+            if (ec == std::errc() && ptr == key + std::strlen(key)) {
+                order = parsed;
+            }
+        }
+
+        ordered.emplace_back(order, std::move(raw));
+    }
+
+    std::sort(ordered.begin(),
+              ordered.end(),
+              [](const auto& lhs, const auto& rhs) {
+                  return lhs.first < rhs.first;
+              });
+
+    std::vector<std::string> headings;
+    headings.reserve(ordered.size());
+    for (auto& entry : ordered) {
+        headings.push_back(std::move(entry.second));
+    }
+    return headings;
+}
+
 class ScopedGlobalOptionOverride {
 public:
     ScopedGlobalOptionOverride(sword::SWMgr* mgr,
@@ -4069,6 +4113,26 @@ std::string SwordManager::getOrRenderVerseHtmlLocked(sword::SWModule* mod,
     return verseText;
 }
 
+std::string SwordManager::renderPreverseHeadingHtmlLocked(
+    sword::SWModule* mod,
+    const std::vector<std::string>& rawHeadings) const {
+    if (!mod || rawHeadings.empty()) return "";
+
+    std::string html;
+    for (const auto& rawHeading : rawHeadings) {
+        std::string rendered = std::string(mod->renderText(rawHeading.c_str()).c_str());
+        if (rendered.empty()) continue;
+
+        rendered = postProcessHtml(rendered);
+        html += rendered;
+        if (!html.empty() && html.back() != '\n') {
+            html += '\n';
+        }
+    }
+
+    return html;
+}
+
 std::shared_ptr<const SwordManager::PreparedChapter>
 SwordManager::prepareChapterTextLocked(sword::SWModule* mod,
                                        const std::string& moduleName,
@@ -4104,22 +4168,30 @@ SwordManager::prepareChapterTextLocked(sword::SWModule* mod,
         const int verse = vk->getVerse();
         const std::string verseRef = book + " " + std::to_string(chapter) +
                                      ":" + std::to_string(verse);
-        const std::string cacheKey = moduleName + "|" + verseRef;
+        const std::string verseCacheKey = moduleName + "|" + verseRef;
         std::string verseText;
-        if (!tryGetVerseHtmlCacheLocked(cacheKey, verseText)) {
+        std::vector<std::string> rawPreverseHeadings;
+        if (!tryGetVerseHtmlCacheLocked(verseCacheKey, verseText)) {
             verseText = std::string(mod->renderText().c_str());
+            rawPreverseHeadings = collectPreverseHeadingMarkup(mod);
             if (!verseText.empty()) {
                 verseText = postProcessHtml(verseText);
                 verseText = applyMultiWordEntryAttrsToRenderedHtml(verseText, mod);
                 verseText = wrapWordWrapperTextForMarkerLayout(verseText);
-                storeVerseHtmlCacheLocked(cacheKey, verseText);
+                storeVerseHtmlCacheLocked(verseCacheKey, verseText);
             }
+        } else {
+            mod->renderText(nullptr, -1, false);
+            rawPreverseHeadings = collectPreverseHeadingMarkup(mod);
         }
 
-        if (!verseText.empty()) {
+        std::string preverseHeadingHtml =
+            renderPreverseHeadingHtmlLocked(mod, rawPreverseHeadings);
+        if (!verseText.empty() || !preverseHeadingHtml.empty()) {
             prepared->verses.push_back(PreparedChapterVerse{
                 verse,
                 verseStartsParagraphBoundary(verseText),
+                std::move(preverseHeadingHtml),
             });
         }
 
@@ -4156,8 +4228,14 @@ std::string SwordManager::renderPreparedChapterTextLocked(
     }
 
     for (const auto& verseInfo : prepared.verses) {
-        if (paragraphMode && verseInfo.verse > 1 && verseInfo.startsParagraph) {
+        if (paragraphMode && verseInfo.verse > 1 &&
+            verseInfo.startsParagraph &&
+            verseInfo.preverseHeadingHtml.empty()) {
             html += "<br><br>\n";
+        }
+
+        if (!verseInfo.preverseHeadingHtml.empty()) {
+            html += verseInfo.preverseHeadingHtml;
         }
 
         std::string verseClass = "verse";
@@ -4431,14 +4509,20 @@ std::string SwordManager::getVerseText(const std::string& moduleName,
 
     mod->setKey(key.c_str());
     std::string text = std::string(mod->renderText().c_str());
+    std::vector<std::string> rawPreverseHeadings = collectPreverseHeadingMarkup(mod);
 
-    if (text.empty()) {
+    if (text.empty() && rawPreverseHeadings.empty()) {
         return "<p><i>No text available for " + htmlEscapeAttr(key) + "</i></p>";
     }
 
-    text = postProcessHtml(text);
-    text = applyMultiWordEntryAttrsToRenderedHtml(text, mod);
-    text = wrapWordWrapperTextForMarkerLayout(text);
+    if (!text.empty()) {
+        text = postProcessHtml(text);
+        text = applyMultiWordEntryAttrsToRenderedHtml(text, mod);
+        text = wrapWordWrapperTextForMarkerLayout(text);
+    }
+
+    std::string preverseHeadingHtml =
+        renderPreverseHeadingHtmlLocked(mod, rawPreverseHeadings);
 
     VerseRef ref;
     try {
@@ -4449,6 +4533,9 @@ std::string SwordManager::getVerseText(const std::string& moduleName,
 
     std::ostringstream html;
     html << "<div class=\"chapter\">\n";
+    if (!preverseHeadingHtml.empty()) {
+        html << preverseHeadingHtml;
+    }
     if (ref.verse > 0) {
         html << "<div class=\"verse\" id=\"v" << ref.verse << "\">";
         html << "<a class=\"versenum-link\" href=\"verse:" << ref.verse << "\">"

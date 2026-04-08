@@ -114,6 +114,7 @@ public:
     struct PreparedChapterVerse {
         int verse = 0;
         bool startsParagraph = false;
+        std::string preverseHeadingHtml;
     };
 
     struct PreparedChapter {
@@ -443,6 +444,9 @@ private:
         bool paragraphMode,
         int selectedVerse,
         const VerseDecorationCallback& verseDecorator) const;
+    std::string renderPreverseHeadingHtmlLocked(
+        sword::SWModule* mod,
+        const std::vector<std::string>& rawHeadings) const;
     std::string getOrRenderVerseHtmlLocked(sword::SWModule* mod,
                                            const std::string& moduleName,
                                            const std::string& verseRef) const;
