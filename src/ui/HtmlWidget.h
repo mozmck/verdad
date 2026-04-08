@@ -360,6 +360,7 @@ private:
     void setScrollX(int x);
     bool isParallelDocument() const;
     void buildParallelColumnBoundaries() const;
+    int parallelColumnAtDocumentX(int docX) const;
     bool hasSelection() const;
     bool isWordCharAt(int fragmentIndex, int charIndex) const;
     SelectionPoint hitTestSelectionPoint(int screenX,

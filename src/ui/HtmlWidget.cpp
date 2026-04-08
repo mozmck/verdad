@@ -814,24 +814,27 @@ void HtmlWidget::buildParallelColumnBoundaries() const {
     while (!stack.empty()) {
         auto [ri, depth] = stack.back();
         stack.pop_back();
-        if (!ri || !ri->src_el() || depth > 6) continue;
+        if (!ri || !ri->src_el() || depth > 10) continue;
 
         int col = parseParallelColumnValue(ri->src_el()->get_attr("data-parallel-col"));
         if (col >= 0) {
-            // Check if this column index is already recorded
+            litehtml::position placement = ri->get_placement();
             bool found = false;
-            for (const auto& b : parallelColumnBoundaries_) {
-                if (b.column == col) { found = true; break; }
+            for (auto& b : parallelColumnBoundaries_) {
+                if (b.column != col) continue;
+                b.xStart = std::min(b.xStart, static_cast<int>(placement.x));
+                b.xEnd = std::max(b.xEnd,
+                                  static_cast<int>(placement.x + placement.width));
+                found = true;
+                break;
             }
             if (!found) {
-                litehtml::position placement = ri->get_placement();
                 parallelColumnBoundaries_.push_back({
                     static_cast<int>(placement.x),
                     static_cast<int>(placement.x + placement.width),
                     col
                 });
             }
-            continue;  // Don't recurse into column children
         }
 
         for (auto& child : ri->children()) {
@@ -843,6 +846,21 @@ void HtmlWidget::buildParallelColumnBoundaries() const {
               [](const ParallelColumnBoundary& a, const ParallelColumnBoundary& b) {
                   return a.xStart < b.xStart;
               });
+}
+
+int HtmlWidget::parallelColumnAtDocumentX(int docX) const {
+    if (!isParallelDocument() || !doc_ || !doc_->root_render()) return -1;
+    if (!parallelBoundariesComputed_) {
+        parallelBoundariesComputed_ = true;
+        buildParallelColumnBoundaries();
+    }
+
+    for (const auto& boundary : parallelColumnBoundaries_) {
+        if (docX >= boundary.xStart && docX < boundary.xEnd) {
+            return boundary.column;
+        }
+    }
+    return -1;
 }
 
 bool HtmlWidget::selectionPointLess(const SelectionPoint& lhs,
@@ -2112,11 +2130,22 @@ int HtmlWidget::handle(int event) {
         }
 
         if (Fl::event_button() == FL_LEFT_MOUSE) {
-            selectionAnchor_ = hitTestSelectionPoint(Fl::event_x(), Fl::event_y());
+            int requiredParallelColumn = -1;
+            if (isParallelDocument()) {
+                int docX = Fl::event_x() - x() + scrollX_;
+                requiredParallelColumn = parallelColumnAtDocumentX(docX);
+            }
+            selectionAnchor_ = hitTestSelectionPoint(Fl::event_x(),
+                                                     Fl::event_y(),
+                                                     requiredParallelColumn);
             selectionFocus_ = selectionAnchor_;
             selectionParallelColumn_ =
-                (selectionAnchor_.valid && isParallelDocument())
-                    ? fragmentParallelColumn(selectionAnchor_.fragmentIndex)
+                (isParallelDocument())
+                    ? ((requiredParallelColumn >= 0)
+                           ? requiredParallelColumn
+                           : (selectionAnchor_.valid
+                                  ? fragmentParallelColumn(selectionAnchor_.fragmentIndex)
+                                  : -1))
                     : -1;
             selecting_ = selectionAnchor_.valid;
             dragSelecting_ = false;
@@ -2567,19 +2596,11 @@ void HtmlWidget::draw_text(litehtml::uint_ptr hdc, const char* text,
     }
 
     if (isParallelDocument() && doc_ && doc_->root_render()) {
-        // Lazily compute column boundaries once per draw pass
-        if (!parallelBoundariesComputed_) {
-            parallelBoundariesComputed_ = true;
-            buildParallelColumnBoundaries();
-        }
-        // Simple x-range lookup instead of per-fragment DOM traversal
-        int docX = static_cast<int>(pos.x);
-        for (const auto& boundary : parallelColumnBoundaries_) {
-            if (docX >= boundary.xStart && docX < boundary.xEnd) {
-                fragment.parallelColumn = boundary.column;
-                break;
-            }
-        }
+        // Use the text run midpoint so line starts near a gutter don't fall
+        // into the previous column.
+        int docX = static_cast<int>(pos.x) - x() + scrollX_ +
+                   static_cast<int>(pos.width / 2);
+        fragment.parallelColumn = parallelColumnAtDocumentX(docX);
     }
 
     const int baselineY = static_cast<int>(pos.y + pos.height) - fl_descent();
