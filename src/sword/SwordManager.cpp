@@ -614,9 +614,8 @@ std::string normalizeStrongsKey(const std::string& strongsNumber) {
 
     static const std::regex keyRe(R"(([A-Za-z]?\d+[A-Za-z]?))");
     std::smatch match;
-    if (std::regex_search(key, match, keyRe)) {
-        key = match[1].str();
-    }
+    if (!std::regex_search(key, match, keyRe)) return "";
+    key = match[1].str();
 
     for (char& c : key) {
         if (std::isalpha(static_cast<unsigned char>(c))) {
@@ -1741,6 +1740,27 @@ std::string buildInlineMarkerHtml(const std::string& innerHtml,
     return out;
 }
 
+std::string buildStrongsMarkerHtml(const HoverMeta& meta) {
+    if (meta.strong.empty()) return "";
+
+    std::vector<std::string> tokens;
+    splitTokens(meta.strong, '|', tokens);
+    if (tokens.empty()) return "";
+
+    std::string out = "<span class=\"verdad-inline-marker strongs-marker\"><small>";
+    for (size_t i = 0; i < tokens.size(); ++i) {
+        if (i) out += ' ';
+        const std::string escaped = htmlEscapeAttr(tokens[i]);
+        out += "<a class=\"strongs\" href=\"strongs:";
+        out += escaped;
+        out += "\">";
+        out += escaped;
+        out += "</a>";
+    }
+    out += "</small></span>";
+    return out;
+}
+
 std::string stripTags(const std::string& html) {
     std::string out;
     out.reserve(html.size());
@@ -2060,7 +2080,15 @@ std::string applyMultiWordEntryAttrsToRenderedHtml(const std::string& html,
     struct PendingWrap {
         size_t start = 0;
         size_t end = 0;
+        size_t existingOpenStart = std::string::npos;
+        size_t existingOpenEnd = std::string::npos;
         HoverMeta meta;
+    };
+
+    auto startsWithWordWrapper = [&html](size_t pos) {
+        static const std::string prefix = R"(<span class="w")";
+        return pos < html.size() &&
+               html.compare(pos, prefix.size(), prefix) == 0;
     };
 
     std::vector<PendingWrap> wraps;
@@ -2087,13 +2115,25 @@ std::string applyMultiWordEntryAttrsToRenderedHtml(const std::string& html,
 
         if (matchIndex == std::string::npos) continue;
 
-        for (size_t j = 0; j < phrase.words.size(); ++j) {
-            wraps.push_back(PendingWrap{
-                htmlWords[matchIndex + j].start,
-                htmlWords[matchIndex + j].end,
-                phrase.meta,
-            });
+        if (startsWithWordWrapper(htmlWords[matchIndex].start)) {
+            searchWordIndex = matchIndex + phrase.words.size();
+            continue;
         }
+
+        const size_t lastWordIndex = matchIndex + phrase.words.size() - 1;
+        PendingWrap wrap;
+        wrap.start = htmlWords[matchIndex].start;
+        wrap.end = htmlWords[lastWordIndex].end;
+        wrap.meta = phrase.meta;
+
+        if (startsWithWordWrapper(htmlWords[lastWordIndex].start)) {
+            size_t openEnd = html.find('>', htmlWords[lastWordIndex].start);
+            if (openEnd != std::string::npos) {
+                wrap.existingOpenStart = htmlWords[lastWordIndex].start;
+                wrap.existingOpenEnd = openEnd;
+            }
+        }
+        wraps.push_back(std::move(wrap));
         searchWordIndex = matchIndex + phrase.words.size();
     }
 
@@ -2108,11 +2148,71 @@ std::string applyMultiWordEntryAttrsToRenderedHtml(const std::string& html,
     std::string out = html;
     for (const auto& wrap : wraps) {
         if (wrap.end <= wrap.start || wrap.end > out.size()) continue;
+        if (wrap.existingOpenStart != std::string::npos &&
+            wrap.existingOpenEnd != std::string::npos &&
+            wrap.existingOpenEnd >= wrap.existingOpenStart &&
+            wrap.existingOpenEnd < out.size() &&
+            wrap.existingOpenStart >= wrap.start) {
+            const std::string openTag =
+                out.substr(wrap.existingOpenStart,
+                           wrap.existingOpenEnd - wrap.existingOpenStart + 1);
+            HoverMeta mergedMeta;
+            std::string existingStrong;
+            std::string existingMorph;
+            if (extractAttributeValue(openTag, "data-strong", existingStrong)) {
+                mergedMeta.strong = decodeHtmlEntities(existingStrong);
+            }
+            if (extractAttributeValue(openTag, "data-morph", existingMorph)) {
+                mergedMeta.morph = decodeHtmlEntities(existingMorph);
+            }
+            if (!wrap.meta.strong.empty()) {
+                appendUniqueTokens(mergedMeta.strong, wrap.meta.strong, '|');
+            }
+            if (!wrap.meta.morph.empty()) {
+                appendUniqueTokens(mergedMeta.morph, wrap.meta.morph, ' ');
+            }
+
+            out.erase(wrap.existingOpenStart,
+                      wrap.existingOpenEnd - wrap.existingOpenStart + 1);
+            out.insert(wrap.start, buildWordSpanOpenTag(mergedMeta));
+            continue;
+        }
+
         out.insert(wrap.end, "</span>");
         out.insert(wrap.start, buildWordSpanOpenTag(wrap.meta));
     }
 
     return out;
+}
+
+bool classListHasToken(const std::string& classes, const char* token) {
+    if (!token || !*token) return false;
+    const size_t tokenLen = std::strlen(token);
+
+    size_t pos = 0;
+    while (pos < classes.size()) {
+        while (pos < classes.size() &&
+               std::isspace(static_cast<unsigned char>(classes[pos]))) {
+            ++pos;
+        }
+        size_t start = pos;
+        while (pos < classes.size() &&
+               !std::isspace(static_cast<unsigned char>(classes[pos]))) {
+            ++pos;
+        }
+        if (pos > start && pos - start == tokenLen) {
+            bool match = true;
+            for (size_t i = 0; i < tokenLen; ++i) {
+                if (!equalsNoCase(classes[start + i], token[i])) {
+                    match = false;
+                    break;
+                }
+            }
+            if (match) return true;
+        }
+    }
+
+    return false;
 }
 
 std::string summarizeDailyDevotionHtml(const std::string& html) {
@@ -2967,6 +3067,270 @@ void applyMetaToTarget(std::string& out,
     target.valid = true;
 }
 
+bool appendInlineMarkerToTarget(std::string& out,
+                                OutputTarget& target,
+                                const std::string& markerHtml) {
+    if (!target.valid || target.end <= target.start || markerHtml.empty()) {
+        return false;
+    }
+    if (target.end > out.size()) {
+        target.valid = false;
+        return false;
+    }
+
+    const std::string prefix = R"(<span class="w")";
+    const bool looksWrapped =
+        target.end - target.start >= prefix.size() + 7 &&
+        out.compare(target.start, prefix.size(), prefix) == 0 &&
+        out.compare(target.end - 7, 7, "</span>") == 0;
+    if (!looksWrapped) return false;
+
+    const size_t closePos = target.end - 7;
+    out.insert(closePos, markerHtml);
+    target.end += markerHtml.size();
+    return true;
+}
+
+HoverMeta extractMetaFromTarget(const std::string& out,
+                                OutputTarget& target) {
+    HoverMeta meta;
+    if (!target.valid || target.end <= target.start || target.end > out.size()) {
+        return meta;
+    }
+
+    const std::string prefix = R"(<span class="w")";
+    const bool looksWrapped =
+        target.end - target.start >= prefix.size() + 7 &&
+        out.compare(target.start, prefix.size(), prefix) == 0 &&
+        out.compare(target.end - 7, 7, "</span>") == 0;
+    if (!looksWrapped) return meta;
+
+    const size_t openEnd = out.find('>', target.start);
+    if (openEnd == std::string::npos || openEnd >= target.end) return meta;
+
+    const std::string openTag =
+        out.substr(target.start, openEnd - target.start + 1);
+    std::string existingStrong;
+    std::string existingMorph;
+    if (extractAttributeValue(openTag, "data-strong", existingStrong)) {
+        meta.strong = decodeHtmlEntities(existingStrong);
+    }
+    if (extractAttributeValue(openTag, "data-morph", existingMorph)) {
+        meta.morph = decodeHtmlEntities(existingMorph);
+    }
+    return meta;
+}
+
+bool findGeneratedMarkerSpanEnd(const std::string& out,
+                                size_t openPos,
+                                size_t limit,
+                                size_t& endOut) {
+    int depth = 0;
+    size_t pos = openPos;
+    while (pos < limit) {
+        if (out[pos] != '<') {
+            ++pos;
+            continue;
+        }
+
+        size_t tagEnd = std::string::npos;
+        std::string tagName;
+        bool isClosing = false;
+        bool isSelfClosing = false;
+        if (!parseTag(out, pos, tagEnd, tagName, isClosing, isSelfClosing)) {
+            ++pos;
+            continue;
+        }
+
+        if (tagName == "span") {
+            if (!isClosing) {
+                ++depth;
+                if (isSelfClosing) --depth;
+            } else {
+                --depth;
+                if (depth == 0) {
+                    endOut = tagEnd + 1;
+                    return true;
+                }
+            }
+        }
+
+        pos = tagEnd + 1;
+    }
+
+    return false;
+}
+
+size_t findFirstTopLevelMarkerSpan(const std::string& inner) {
+    int spanDepth = 0;
+    size_t pos = 0;
+    while (pos < inner.size()) {
+        if (inner[pos] != '<') {
+            ++pos;
+            continue;
+        }
+
+        size_t tagEnd = std::string::npos;
+        std::string tagName;
+        bool isClosing = false;
+        bool isSelfClosing = false;
+        if (!parseTag(inner, pos, tagEnd, tagName, isClosing, isSelfClosing)) {
+            ++pos;
+            continue;
+        }
+
+        if (tagName == "span") {
+            if (!isClosing) {
+                std::string rawTag = inner.substr(pos, tagEnd - pos + 1);
+                std::string cls;
+                if (spanDepth == 0 &&
+                    extractAttributeValue(rawTag, "class", cls) &&
+                    classListHasToken(cls, "verdad-inline-marker")) {
+                    return pos;
+                }
+                ++spanDepth;
+                if (isSelfClosing) --spanDepth;
+            } else if (spanDepth > 0) {
+                --spanDepth;
+            }
+        }
+
+        pos = tagEnd + 1;
+    }
+
+    return std::string::npos;
+}
+
+std::string wrapWordWrapperTextForMarkerLayout(const std::string& html) {
+    if (html.empty()) return html;
+
+    std::string out;
+    out.reserve(html.size() + html.size() / 10);
+
+    size_t pos = 0;
+    while (pos < html.size()) {
+        if (html[pos] != '<') {
+            out.push_back(html[pos]);
+            ++pos;
+            continue;
+        }
+
+        size_t tagEnd = std::string::npos;
+        std::string tagName;
+        bool isClosing = false;
+        bool isSelfClosing = false;
+        if (!parseTag(html, pos, tagEnd, tagName, isClosing, isSelfClosing)) {
+            out.push_back(html[pos]);
+            ++pos;
+            continue;
+        }
+
+        if (isClosing || isSelfClosing || tagName != "span") {
+            out.append(html, pos, tagEnd - pos + 1);
+            pos = tagEnd + 1;
+            continue;
+        }
+
+        const std::string openTag = html.substr(pos, tagEnd - pos + 1);
+        std::string cls;
+        if (!extractAttributeValue(openTag, "class", cls) ||
+            !classListHasToken(cls, "w")) {
+            out += openTag;
+            pos = tagEnd + 1;
+            continue;
+        }
+
+        size_t wrapperEnd = std::string::npos;
+        if (!findGeneratedMarkerSpanEnd(html, pos, html.size(), wrapperEnd) ||
+            wrapperEnd < tagEnd + 8) {
+            out += openTag;
+            pos = tagEnd + 1;
+            continue;
+        }
+
+        const size_t innerStart = tagEnd + 1;
+        const size_t innerLen = wrapperEnd - 7 - innerStart;
+        const std::string inner = html.substr(innerStart, innerLen);
+
+        if (inner.compare(0, 17, R"(<span class="wt">)") == 0) {
+            out.append(html, pos, wrapperEnd - pos);
+            pos = wrapperEnd;
+            continue;
+        }
+
+        const size_t markerPos = findFirstTopLevelMarkerSpan(inner);
+        if (markerPos == std::string::npos || markerPos == 0) {
+            out.append(html, pos, wrapperEnd - pos);
+            pos = wrapperEnd;
+            continue;
+        }
+
+        out += openTag;
+        out += R"(<span class="wt">)";
+        out.append(inner, 0, markerPos);
+        out += "</span>";
+        out.append(inner, markerPos, std::string::npos);
+        out += "</span>";
+
+        pos = wrapperEnd;
+    }
+
+    return out;
+}
+
+void removeGeneratedMarkerSpansFromTarget(std::string& out,
+                                          OutputTarget& target,
+                                          const char* markerClass) {
+    if (!target.valid || !markerClass || !*markerClass ||
+        target.end <= target.start || target.end > out.size()) {
+        return;
+    }
+
+    size_t searchPos = target.start;
+    while (searchPos < target.end) {
+        size_t markerPos = findNoCase(out, "<span", searchPos);
+        if (markerPos == std::string::npos || markerPos >= target.end) break;
+
+        size_t tagEnd = std::string::npos;
+        std::string tagName;
+        bool isClosing = false;
+        bool isSelfClosing = false;
+        if (!parseTag(out, markerPos, tagEnd, tagName, isClosing, isSelfClosing) ||
+            isClosing || tagName != "span") {
+            searchPos = markerPos + 5;
+            continue;
+        }
+
+        const std::string openTag = out.substr(markerPos, tagEnd - markerPos + 1);
+        if (!containsNoCase(openTag, "verdad-inline-marker") ||
+            !containsNoCase(openTag, markerClass)) {
+            searchPos = tagEnd + 1;
+            continue;
+        }
+
+        size_t markerEnd = std::string::npos;
+        if (!findGeneratedMarkerSpanEnd(out, markerPos, target.end, markerEnd)) {
+            searchPos = tagEnd + 1;
+            continue;
+        }
+
+        const size_t eraseLen = markerEnd - markerPos;
+        out.erase(markerPos, eraseLen);
+        target.end -= eraseLen;
+        searchPos = markerPos;
+    }
+}
+
+bool refreshStrongsMarkerOnTarget(std::string& out, OutputTarget& target) {
+    HoverMeta meta = extractMetaFromTarget(out, target);
+    if (meta.strong.empty()) return false;
+
+    removeGeneratedMarkerSpansFromTarget(out, target, "strongs-marker");
+    const std::string markerHtml = buildStrongsMarkerHtml(meta);
+    if (markerHtml.empty()) return false;
+    return appendInlineMarkerToTarget(out, target, markerHtml);
+}
+
 bool mayContainMorphOrStrongsMarkup(const std::string& html) {
     return
         html.find("<small") != std::string::npos ||
@@ -3700,6 +4064,7 @@ std::string SwordManager::getOrRenderVerseHtmlLocked(sword::SWModule* mod,
 
     verseText = postProcessHtml(verseText);
     verseText = applyMultiWordEntryAttrsToRenderedHtml(verseText, mod);
+    verseText = wrapWordWrapperTextForMarkerLayout(verseText);
     storeVerseHtmlCacheLocked(cacheKey, verseText);
     return verseText;
 }
@@ -3746,6 +4111,7 @@ SwordManager::prepareChapterTextLocked(sword::SWModule* mod,
             if (!verseText.empty()) {
                 verseText = postProcessHtml(verseText);
                 verseText = applyMultiWordEntryAttrsToRenderedHtml(verseText, mod);
+                verseText = wrapWordWrapperTextForMarkerLayout(verseText);
                 storeVerseHtmlCacheLocked(cacheKey, verseText);
             }
         }
@@ -4072,6 +4438,7 @@ std::string SwordManager::getVerseText(const std::string& moduleName,
 
     text = postProcessHtml(text);
     text = applyMultiWordEntryAttrsToRenderedHtml(text, mod);
+    text = wrapWordWrapperTextForMarkerLayout(text);
 
     VerseRef ref;
     try {
@@ -4358,6 +4725,7 @@ std::string SwordManager::getParallelText(
                             verseText = postProcessHtml(verseText);
                             verseText = applyMultiWordEntryAttrsToRenderedHtml(verseText,
                                                                                column.mod);
+                            verseText = wrapWordWrapperTextForMarkerLayout(verseText);
                             postProcessMs += postProcessStep.elapsedMs();
                             storeVerseHtmlCacheLocked(cacheKey, verseText);
                         }
@@ -6018,8 +6386,31 @@ std::string SwordManager::postProcessHtml(const std::string& html) const {
                 bool isMarkerBlock = parseSmallBlockMeta(block, blockMeta);
                 if (isMarkerBlock) {
                     applyMetaToTarget(out, lastTarget, blockMeta);
-                    const std::string markerHtml = buildInlineMarkerHtml(block, blockMeta);
-                    appendCollapsedHtmlFragment(out, markerHtml, prevPlainSpace);
+                    bool handledMarker = false;
+                    if (!blockMeta.strong.empty()) {
+                        handledMarker = refreshStrongsMarkerOnTarget(out, lastTarget);
+                        if (!handledMarker) {
+                            const std::string markerHtml = buildStrongsMarkerHtml(blockMeta);
+                            appendCollapsedHtmlFragment(out, markerHtml, prevPlainSpace);
+                            handledMarker = !markerHtml.empty();
+                        }
+                    }
+                    if (!blockMeta.morph.empty()) {
+                        const HoverMeta morphOnly{"", blockMeta.morph};
+                        const std::string markerHtml =
+                            buildInlineMarkerHtml(block, morphOnly);
+                        if (!appendInlineMarkerToTarget(out, lastTarget, markerHtml)) {
+                            appendCollapsedHtmlFragment(out, markerHtml, prevPlainSpace);
+                        }
+                        handledMarker = handledMarker || !markerHtml.empty();
+                    }
+                    if (!handledMarker) {
+                        const std::string markerHtml =
+                            buildInlineMarkerHtml(block, blockMeta);
+                        if (!appendInlineMarkerToTarget(out, lastTarget, markerHtml)) {
+                            appendCollapsedHtmlFragment(out, markerHtml, prevPlainSpace);
+                        }
+                    }
                 } else {
                     appendCollapsedHtmlFragment(out, block, prevPlainSpace, &lastTarget);
                 }
@@ -6068,8 +6459,32 @@ std::string SwordManager::postProcessHtml(const std::string& html) const {
                         if (!linkMeta.empty()) {
                             applyMetaToTarget(out, lastTarget, linkMeta);
                             if (codeText) {
-                                const std::string markerHtml = buildInlineMarkerHtml(inner, linkMeta);
-                                appendCollapsedHtmlFragment(out, markerHtml, prevPlainSpace);
+                                bool handledMarker = false;
+                                if (!linkMeta.strong.empty()) {
+                                    handledMarker = refreshStrongsMarkerOnTarget(out, lastTarget);
+                                    if (!handledMarker) {
+                                        const std::string markerHtml =
+                                            buildStrongsMarkerHtml(linkMeta);
+                                        appendCollapsedHtmlFragment(out, markerHtml, prevPlainSpace);
+                                        handledMarker = !markerHtml.empty();
+                                    }
+                                }
+                                if (!linkMeta.morph.empty()) {
+                                    const HoverMeta morphOnly{"", linkMeta.morph};
+                                    const std::string markerHtml =
+                                        buildInlineMarkerHtml(inner, morphOnly);
+                                    if (!appendInlineMarkerToTarget(out, lastTarget, markerHtml)) {
+                                        appendCollapsedHtmlFragment(out, markerHtml, prevPlainSpace);
+                                    }
+                                    handledMarker = handledMarker || !markerHtml.empty();
+                                }
+                                if (!handledMarker) {
+                                    const std::string markerHtml =
+                                        buildInlineMarkerHtml(inner, linkMeta);
+                                    if (!appendInlineMarkerToTarget(out, lastTarget, markerHtml)) {
+                                        appendCollapsedHtmlFragment(out, markerHtml, prevPlainSpace);
+                                    }
+                                }
                             }
                         } else if (!inner.empty() && !codeText) {
                             appendCollapsedHtmlFragment(out, inner, prevPlainSpace, &lastTarget);

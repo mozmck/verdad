@@ -65,6 +65,10 @@ span.strongs {
     display: none;
 }
 
+small em.strongs {
+    display: none;
+}
+
 a.strongs:hover, span.strongs:hover {
     background-color: inherit;
     border-bottom: none;
@@ -72,6 +76,10 @@ a.strongs:hover, span.strongs:hover {
 
 /* Morphology tags - hidden from display */
 span.morph {
+    display: none;
+}
+
+small em.morph {
     display: none;
 }
 
@@ -570,12 +578,17 @@ span.verdad-inline-marker {
     display: none;
     margin-left: 1px;
     color: #7a5a0a;
+    white-space: nowrap;
 }
 
 span.verdad-inline-marker a.strongs,
 span.verdad-inline-marker a.morph {
     color: inherit;
     cursor: pointer;
+}
+
+span.verdad-inline-marker a.strongs + a.strongs {
+    margin-left: 0.25em;
 }
 
 span.verdad-inline-marker small {

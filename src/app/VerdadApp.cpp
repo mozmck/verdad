@@ -1085,11 +1085,16 @@ std::string VerdadApp::textStyleOverrideCss() const {
         << "}\n";
 
     css << "span.verdad-inline-marker { display: none; }\n";
+    if (options.showStrongsMarkers || options.showMorphMarkers) {
+        css << "span.w { display: inline-table; vertical-align: top; text-align: center; white-space: nowrap; }\n";
+        css << "span.w > span.wt { display: table-row; }\n";
+    }
     if (options.showStrongsMarkers) {
-        css << "span.verdad-inline-marker.strongs-marker { display: inline; }\n";
+        css << "span.w > span.verdad-inline-marker.strongs-marker { display: table-row; margin-left: 0; line-height: 1.05; text-align: center; }\n";
     }
     if (options.showMorphMarkers) {
-        css << "span.verdad-inline-marker.morph-marker { display: inline; }\n";
+        css << "span.w > span.verdad-inline-marker.morph-marker { display: table-row; margin-left: 0; line-height: 1.05; text-align: center; }\n";
+        css << "span.w > span.verdad-inline-marker.morph-marker em.morph { display: inline; }\n";
     }
     if (!options.showFootnoteMarkers) {
         css << "a.noteMarker:not(.crossReference), a.footnote:not(.crossReference) { display: none; }\n";
