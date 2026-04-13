@@ -179,6 +179,8 @@ private:
         startLabel->align(FL_ALIGN_LEFT | FL_ALIGN_INSIDE);
         startDateInput_ = new Fl_Input(656, 14, 110, rowH);
         startDateInput_->tooltip("YYYY-MM-DD");
+        startDateInput_->callback(onControlChanged, this);
+        startDateInput_->when(FL_WHEN_CHANGED);
 
         auto* notesLabel = new Fl_Box(margin, 52, labelW, 24, "Notes");
         notesLabel->align(FL_ALIGN_LEFT | FL_ALIGN_INSIDE);
@@ -277,7 +279,8 @@ private:
 
         std::string startDate = workingPlan_.summary.startDateIso;
         if (!reading::isIsoDateInRange(startDate)) {
-            startDate = reading::formatIsoDate(reading::today());
+            reading::Date today = reading::today();
+            startDate = reading::formatIsoDate(reading::Date{today.year, 1, 1});
         }
         startDateInput_->value(startDate.c_str());
 
@@ -322,7 +325,54 @@ private:
         }
     }
 
+    bool shouldForceJan1StartDate() const {
+        const ReadingPlanTimeframeKind kind = timeframeKindFromChoice();
+        if (kind == ReadingPlanTimeframeKind::OneYear ||
+            kind == ReadingPlanTimeframeKind::TwoYears) {
+            return true;
+        }
+        return kind == ReadingPlanTimeframeKind::Months && parsePreviewAmount() >= 12;
+    }
+
+    bool resolveConfiguredStartDate(reading::Date& startDateOut,
+                                    std::string& errorMessage) const {
+        if (!reading::parseIsoDate(
+                reading::trimCopy(startDateInput_->value() ? startDateInput_->value() : ""),
+                startDateOut)) {
+            errorMessage = "Enter a valid start date in YYYY-MM-DD format.";
+            return false;
+        }
+
+        if (shouldForceJan1StartDate()) {
+            startDateOut.month = 1;
+            startDateOut.day = 1;
+        }
+        return true;
+    }
+
+    void normalizeStartDateInputForLongPlan() {
+        if (!startDateInput_ || !shouldForceJan1StartDate()) return;
+
+        const std::string current = reading::trimCopy(
+            startDateInput_->value() ? startDateInput_->value() : "");
+        if (current.empty()) return;
+
+        reading::Date startDate{};
+        if (!reading::parseIsoDate(current, startDate)) {
+            return;
+        }
+        startDate.month = 1;
+        startDate.day = 1;
+
+        const std::string normalized = reading::formatIsoDate(startDate);
+        if (normalized != current) {
+            startDateInput_->value(normalized.c_str());
+        }
+    }
+
     void updateControls() {
+        normalizeStartDateInputForLongPlan();
+
         const ReadingPlanTimeframeKind kind = timeframeKindFromChoice();
         const bool needsAmount =
             kind == ReadingPlanTimeframeKind::Days ||
@@ -358,9 +408,15 @@ private:
         }
 
         std::ostringstream summary;
+        reading::Date summaryStartDate{};
+        std::string startSummary =
+            reading::trimCopy(startDateInput_->value() ? startDateInput_->value() : "");
+        std::string startDateError;
+        if (resolveConfiguredStartDate(summaryStartDate, startDateError)) {
+            startSummary = reading::formatIsoDate(summaryStartDate);
+        }
         summary << "Generator summary\n\n";
-        summary << "Starts: "
-                << (startDateInput_->value() ? startDateInput_->value() : "") << "\n";
+        summary << "Starts: " << startSummary << "\n";
         summary << "Time frame: "
                 << timeframeLabel(timeframeKindFromChoice(),
                                   parsePreviewAmount(),
@@ -391,26 +447,22 @@ private:
         plan.summary.description =
             reading::trimCopy(descriptionInput_->value() ? descriptionInput_->value() : "");
         plan.summary.color = reading::trimCopy(colorInput_->value() ? colorInput_->value() : "");
-        plan.summary.startDateIso =
-            reading::trimCopy(startDateInput_->value() ? startDateInput_->value() : "");
         if (plan.summary.name.empty()) {
             errorMessage = "Enter a plan name.";
             return false;
         }
-        if (!reading::isIsoDateInRange(plan.summary.startDateIso)) {
-            errorMessage = "Enter a valid start date in YYYY-MM-DD format.";
+        reading::Date startDate{};
+        if (!resolveConfiguredStartDate(startDate, errorMessage)) {
             return false;
         }
+        plan.summary.startDateIso = reading::formatIsoDate(startDate);
         return true;
     }
 
     bool resolveSelectedDateRange(reading::Date& startDateOut,
                                   reading::Date& endDateOut,
                                   std::string& errorMessage) const {
-        if (!reading::parseIsoDate(
-                reading::trimCopy(startDateInput_->value() ? startDateInput_->value() : ""),
-                startDateOut)) {
-            errorMessage = "Enter a valid start date in YYYY-MM-DD format.";
+        if (!resolveConfiguredStartDate(startDateOut, errorMessage)) {
             return false;
         }
 
@@ -469,8 +521,6 @@ private:
         request.description =
             reading::trimCopy(descriptionInput_->value() ? descriptionInput_->value() : "");
         request.color = reading::trimCopy(colorInput_->value() ? colorInput_->value() : "");
-        request.startDateIso =
-            reading::trimCopy(startDateInput_->value() ? startDateInput_->value() : "");
         request.timeframeKind = timeframeKindFromChoice();
         request.customEndDateIso =
             reading::trimCopy(endDateInput_->value() ? endDateInput_->value() : "");
@@ -484,6 +534,12 @@ private:
             errorMessage = "Enter a whole-number amount for the selected time frame.";
             return false;
         }
+
+        reading::Date startDate{};
+        if (!resolveConfiguredStartDate(startDate, errorMessage)) {
+            return false;
+        }
+        request.startDateIso = reading::formatIsoDate(startDate);
 
         int wholeBibleCount = 0;
         int oldTestamentCount = 0;

@@ -1829,24 +1829,10 @@ RightPane::RightPane(VerdadApp* app, int X, int Y, int W, int H)
     dailyPlanNameLabel->align(FL_ALIGN_LEFT | FL_ALIGN_INSIDE);
     dailyPlanNameInput_ = new Fl_Input(dailyPlanEditorGroup_->x() + 50,
                                        dailyPlanEditorGroup_->y(),
-                                       238,
+                                       596,
                                        24);
     dailyPlanNameInput_->when(FL_WHEN_CHANGED);
     dailyPlanNameInput_->callback(onDailyPlanEditorFieldChanged, this);
-
-    auto* dailyPlanStartLabel = new Fl_Box(dailyPlanEditorGroup_->x() + 296,
-                                           dailyPlanEditorGroup_->y(),
-                                           40,
-                                           24,
-                                           "Start");
-    dailyPlanStartLabel->align(FL_ALIGN_LEFT | FL_ALIGN_INSIDE);
-    dailyPlanStartDateInput_ = new Fl_Input(dailyPlanEditorGroup_->x() + 340,
-                                            dailyPlanEditorGroup_->y(),
-                                            110,
-                                            24);
-    dailyPlanStartDateInput_->tooltip("YYYY-MM-DD");
-    dailyPlanStartDateInput_->when(FL_WHEN_CHANGED);
-    dailyPlanStartDateInput_->callback(onDailyPlanEditorFieldChanged, this);
 
     dailyPlanSaveButton_ = new Fl_Button(dailyPlanEditorGroup_->x() + 654,
                                          dailyPlanEditorGroup_->y(),
@@ -2276,16 +2262,18 @@ void RightPane::layoutTopTabContents(int tabsX, int tabsY, int tabsW, int tabsH)
                        dailyHtmlY,
                        contentW,
                        dailyHtmlH);
-    if (dailyPlanEditorGroup_ && dailyPlanNameInput_ && dailyPlanStartDateInput_ &&
+    if (dailyPlanEditorGroup_ && dailyPlanNameInput_ &&
         dailyPlanDescriptionInput_ && dailyPlanDayHelpBox_ && dailyPlanDayScroll_ &&
         dailyPlanDayListGroup_ && dailyPlanSaveButton_ && dailyPlanCancelButton_) {
         const int editorY = dailyRow2Y + rowH + 8;
         const int editorH = std::max(120, (panelY + panelH) - editorY - 2);
         dailyPlanEditorGroup_->resize(contentX, editorY, contentW, editorH);
 
-        dailyPlanNameInput_->resize(contentX + 50, editorY, 238, 24);
-        dailyPlanStartDateInput_->resize(contentX + 340, editorY, 110, 24);
         int editorButtonsX = contentX + contentW - 108;
+        dailyPlanNameInput_->resize(contentX + 50,
+                                    editorY,
+                                    std::max(140, editorButtonsX - (contentX + 58)),
+                                    24);
         dailyPlanSaveButton_->resize(editorButtonsX, editorY, 46, 24);
         dailyPlanCancelButton_->resize(editorButtonsX + 50, editorY, 58, 24);
 
@@ -2352,7 +2340,7 @@ void RightPane::resize(int X, int Y, int W, int H) {
         !dailyRescheduleButton_ || !dailyCalendarGroup_ || !dailyPrevMonthButton_ ||
         !dailyNextMonthButton_ || !dailyMonthLabel_ || !dailyCalendarWidget_ ||
         !dailyHtml_ || !dailyPlanEditorGroup_ || !dailyPlanNameInput_ ||
-        !dailyPlanStartDateInput_ || !dailyPlanDescriptionInput_ ||
+        !dailyPlanDescriptionInput_ ||
         !dailyPlanDayHelpBox_ || !dailyPlanDayScroll_ || !dailyPlanDayListGroup_ ||
         !dailyPlanSaveButton_ || !dailyPlanCancelButton_ ||
         !documentsGroup_ || !documentChoice_ || !documentsEditor_ || !dictionaryPaneGroup_ ||
@@ -4486,19 +4474,16 @@ int RightPane::dailyPlanEditorDayIndexForWidget(const Fl_Widget* widget) const {
 }
 
 void RightPane::applyDailyPlanEditorSummaryFields() {
-    if (!dailyPlanNameInput_ || !dailyPlanStartDateInput_ || !dailyPlanDescriptionInput_) return;
+    if (!dailyPlanNameInput_ || !dailyPlanDescriptionInput_) return;
     dailyPlanEditorWorkingPlan_.summary.name = reading::trimCopy(
         dailyPlanNameInput_->value() ? dailyPlanNameInput_->value() : "");
-    dailyPlanEditorWorkingPlan_.summary.startDateIso = reading::trimCopy(
-        dailyPlanStartDateInput_->value() ? dailyPlanStartDateInput_->value() : "");
     dailyPlanEditorWorkingPlan_.summary.description = reading::trimCopy(
         dailyPlanDescriptionInput_->value() ? dailyPlanDescriptionInput_->value() : "");
 }
 
 void RightPane::updateDailyPlanEditorSummaryFields() {
-    if (!dailyPlanNameInput_ || !dailyPlanStartDateInput_ || !dailyPlanDescriptionInput_) return;
+    if (!dailyPlanNameInput_ || !dailyPlanDescriptionInput_) return;
     dailyPlanNameInput_->value(dailyPlanEditorWorkingPlan_.summary.name.c_str());
-    dailyPlanStartDateInput_->value(dailyPlanEditorWorkingPlan_.summary.startDateIso.c_str());
     dailyPlanDescriptionInput_->value(dailyPlanEditorWorkingPlan_.summary.description.c_str());
 }
 
@@ -4610,7 +4595,7 @@ void RightPane::layoutDailyPlanEditorDayRows() {
         1,
         static_cast<int>(
             std::to_string(std::max<size_t>(1, dailyPlanDayRows_.size())).size()));
-    const int labelW = std::clamp(44 + (dayDigits * 10), 60, 88);
+    const int labelW = std::clamp(68 + (dayDigits * 10), 94, 122);
     const int contentX = dailyPlanDayScroll_->x();
     const int contentY = dailyPlanDayScroll_->y();
     const int contentW = std::max(240, dailyPlanDayScroll_->w() - 20);
@@ -4656,7 +4641,14 @@ void RightPane::rebuildDailyPlanDayRows() {
         auto* label = new Fl_Box(0, 0, 1, 1, "");
         label->align(FL_ALIGN_LEFT | FL_ALIGN_INSIDE);
         std::ostringstream labelText;
-        labelText << "Day " << (i + 1);
+        reading::Date date{};
+        if (reading::parseIsoDate(day.dateIso, date)) {
+            char dateBuffer[16];
+            std::snprintf(dateBuffer, sizeof(dateBuffer), "%02d-%02d", date.month, date.day);
+            labelText << (i + 1) << ": " << dateBuffer;
+        } else {
+            labelText << (i + 1) << ": -- --";
+        }
         label->copy_label(labelText.str().c_str());
 
         auto* input = new ReadingPlanDayInput(0, 0, 1, 1);
@@ -5974,7 +5966,8 @@ void RightPane::onDailyNewPlan(Fl_Widget* /*w*/, void* data) {
     }
 
     ReadingPlan plan;
-    plan.summary.startDateIso = reading::formatIsoDate(reading::today());
+    reading::Date today = reading::today();
+    plan.summary.startDateIso = reading::formatIsoDate(reading::Date{today.year, 1, 1});
     if (!ReadingPlanEditorDialog::createPlan(self->app_, plan)) return;
     const bool createdBlankPlan = std::all_of(
         plan.days.begin(), plan.days.end(),
@@ -6232,13 +6225,6 @@ void RightPane::onDailyPlanEditorFieldChanged(Fl_Widget* w, void* data) {
 
     if (w == self->dailyPlanNameInput_ || w == self->dailyPlanDescriptionInput_) {
         self->applyDailyPlanEditorSummaryFields();
-    } else if (w == self->dailyPlanStartDateInput_) {
-        const std::string previousStartDateIso =
-            self->dailyPlanEditorWorkingPlan_.summary.startDateIso;
-        self->applyDailyPlanEditorSummaryFields();
-        self->shiftDailyPlanEditorDates(previousStartDateIso,
-                                        self->dailyPlanEditorWorkingPlan_.summary.startDateIso);
-        self->rebuildDailyPlanDayRows();
     } else if (int index = self->dailyPlanEditorDayIndexForWidget(w); index >= 0) {
         self->applyDailyPlanEditorDayCell(index);
     }
