@@ -19,6 +19,7 @@
 #include <FL/fl_draw.H>
 
 #include <algorithm>
+#include <cctype>
 #include <cstdlib>
 #include <fstream>
 #include <functional>
@@ -74,6 +75,61 @@ int findChoiceIndexByLabel(const Fl_Choice* choice, const std::string& label) {
         }
     }
     return -1;
+}
+
+std::string normalizeBookLookupKey(const std::string& text) {
+    std::string out;
+    out.reserve(text.size());
+    for (char c : text) {
+        unsigned char uc = static_cast<unsigned char>(c);
+        if (std::isalnum(uc)) {
+            out.push_back(static_cast<char>(std::tolower(uc)));
+        }
+    }
+    return out;
+}
+
+std::string canonicalBookLabelForModule(VerdadApp* app,
+                                        const std::string& moduleName,
+                                        const std::string& book) {
+    const std::string trimmedBook = module_choice::trimCopy(book);
+    if (!app || moduleName.empty() || trimmedBook.empty()) {
+        return trimmedBook;
+    }
+
+    const std::string wanted = normalizeBookLookupKey(trimmedBook);
+    if (wanted.empty()) return trimmedBook;
+
+    std::vector<std::string> books = app->swordManager().getBookNames(moduleName);
+    std::string uniquePrefixMatch;
+    int prefixMatches = 0;
+
+    for (const auto& candidate : books) {
+        const std::string normalizedCandidate = normalizeBookLookupKey(candidate);
+        if (normalizedCandidate == wanted) {
+            return candidate;
+        }
+
+        std::string shortRef = app->swordManager().getShortReference(moduleName,
+                                                                     candidate + " 1:1");
+        SwordManager::VerseRef shortParsed = SwordManager::parseVerseRef(shortRef);
+        const std::string normalizedShortBook = normalizeBookLookupKey(shortParsed.book);
+        if (!normalizedShortBook.empty() && normalizedShortBook == wanted) {
+            return candidate;
+        }
+
+        const bool prefixMatch =
+            (!normalizedCandidate.empty() &&
+             normalizedCandidate.rfind(wanted, 0) == 0) ||
+            (!normalizedShortBook.empty() &&
+             normalizedShortBook.rfind(wanted, 0) == 0);
+        if (prefixMatch) {
+            uniquePrefixMatch = candidate;
+            ++prefixMatches;
+        }
+    }
+
+    return prefixMatches == 1 ? uniquePrefixMatch : trimmedBook;
 }
 
 std::string htmlEscape(const std::string& text) {
@@ -712,12 +768,15 @@ void BiblePane::layoutNavBarControls() {
 
 void BiblePane::navigateTo(const std::string& book, int chapter, int verse) {
     if (moduleName_.empty()) return;
-    if (book == currentBook_ && chapter == currentChapter_) {
+    const std::string canonicalBook = canonicalBookLabelForModule(app_, moduleName_, book);
+    if (canonicalBook.empty()) return;
+
+    if (canonicalBook == currentBook_ && chapter == currentChapter_) {
         selectVerse(verse);
         return;
     }
 
-    currentBook_ = book;
+    currentBook_ = canonicalBook;
     currentChapter_ = chapter;
     int maxVerse = app_->swordManager().getVerseCount(moduleName_, currentBook_, currentChapter_);
     if (maxVerse <= 0) maxVerse = 1;
@@ -750,9 +809,10 @@ void BiblePane::navigateTo(const std::string& book, int chapter, int verse) {
 
 void BiblePane::navigateToReference(const std::string& reference) {
     auto ref = SwordManager::parseVerseRef(reference);
-    if (!ref.book.empty() && ref.chapter > 0) {
+    if (!ref.book.empty()) {
+        int chapter = ref.chapter > 0 ? ref.chapter : 1;
         int verse = ref.verse > 0 ? ref.verse : 1;
-        navigateTo(ref.book, ref.chapter, verse);
+        navigateTo(ref.book, chapter, verse);
     }
 }
 
@@ -1141,7 +1201,9 @@ void BiblePane::setStudyState(const std::string& module,
         if (!bibles.empty()) moduleName_ = bibles.front().name;
     }
 
-    currentBook_ = book.empty() ? currentBook_ : book;
+    currentBook_ = book.empty()
+        ? currentBook_
+        : canonicalBookLabelForModule(app_, moduleName_, book);
     if (currentBook_.empty()) currentBook_ = "Genesis";
 
     currentChapter_ = std::max(1, chapter);

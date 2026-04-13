@@ -1481,14 +1481,14 @@ void MainWindow::openInNewStudyTab(const std::string& module,
     bool parsedOk = false;
     try {
         parsed = SwordManager::parseVerseRef(refText);
-        parsedOk = (!parsed.book.empty() && parsed.chapter > 0 && parsed.verse > 0);
+        parsedOk = !parsed.book.empty();
     } catch (...) {
         parsed = SwordManager::VerseRef{};
     }
 
     std::string book = parsedOk ? parsed.book : "Genesis";
-    int chapter = parsedOk ? parsed.chapter : 1;
-    int verse = parsedOk ? parsed.verse : 1;
+    int chapter = (parsedOk && parsed.chapter > 0) ? parsed.chapter : 1;
+    int verse = (parsedOk && parsed.verse > 0) ? parsed.verse : 1;
 
     addStudyTab(mod, book, chapter, verse);
     if (!mod.empty()) {
