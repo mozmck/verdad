@@ -14,6 +14,8 @@
 namespace verdad {
 namespace {
 
+constexpr reading::Date kGenericDisplayAnchorDate{2001, 1, 1};
+
 struct ChapterSpec {
     std::string book;
     int chapter = 0;
@@ -66,48 +68,55 @@ int inclusiveDaySpan(const reading::Date& start, const reading::Date& end) {
     return static_cast<int>(std::llround(seconds / (60.0 * 60.0 * 24.0))) + 1;
 }
 
-reading::Date resolveEndDate(const ReadingPlanGenerationRequest& request,
-                             const reading::Date& startDate,
-                             std::string* errorOut) {
+bool resolveTemplateDates(const ReadingPlanGenerationRequest& request,
+                          std::vector<std::string>& outDates,
+                          std::string* errorOut) {
+    const reading::Date startDate = kGenericDisplayAnchorDate;
+    reading::Date endDate{};
+
     switch (request.timeframeKind) {
     case ReadingPlanTimeframeKind::Days:
         if (request.timeframeValue <= 0) {
             if (errorOut) *errorOut = "Enter a positive number of days.";
-            return {};
+            return false;
         }
-        return reading::addDays(startDate, request.timeframeValue - 1);
+        endDate = reading::addDays(startDate, request.timeframeValue - 1);
+        break;
     case ReadingPlanTimeframeKind::Weeks:
         if (request.timeframeValue <= 0) {
             if (errorOut) *errorOut = "Enter a positive number of weeks.";
-            return {};
+            return false;
         }
-        return reading::addDays(startDate, (request.timeframeValue * 7) - 1);
+        endDate = reading::addDays(startDate, (request.timeframeValue * 7) - 1);
+        break;
     case ReadingPlanTimeframeKind::Months:
         if (request.timeframeValue <= 0) {
             if (errorOut) *errorOut = "Enter a positive number of months.";
-            return {};
+            return false;
         }
-        return reading::addDays(addMonthsClamped(startDate, request.timeframeValue), -1);
+        endDate = reading::addDays(addMonthsClamped(startDate, request.timeframeValue), -1);
+        break;
     case ReadingPlanTimeframeKind::OneYear:
-        return reading::addDays(addMonthsClamped(startDate, 12), -1);
+        endDate = reading::addDays(addMonthsClamped(startDate, 12), -1);
+        break;
     case ReadingPlanTimeframeKind::TwoYears:
-        return reading::addDays(addMonthsClamped(startDate, 24), -1);
-    case ReadingPlanTimeframeKind::Custom: {
-        reading::Date endDate{};
-        if (!reading::parseIsoDate(request.customEndDateIso, endDate)) {
-            if (errorOut) *errorOut = "Enter a valid end date in YYYY-MM-DD format.";
-            return {};
-        }
-        if (reading::compareDates(endDate, startDate) < 0) {
-            if (errorOut) *errorOut = "The end date must be on or after the start date.";
-            return {};
-        }
-        return endDate;
-    }
+        endDate = reading::addDays(addMonthsClamped(startDate, 24), -1);
+        break;
     }
 
-    if (errorOut) *errorOut = "Unsupported time frame.";
-    return {};
+    const int totalDays = inclusiveDaySpan(startDate, endDate);
+    if (totalDays <= 0) {
+        if (errorOut) *errorOut = "The selected time frame is empty.";
+        return false;
+    }
+
+    outDates = reading::buildGenericReadingPlanTemplateDates(
+        defaultReadingPlanDisplayStartDateIso(),
+        totalDays);
+    if (!outDates.empty()) return true;
+
+    if (errorOut) *errorOut = "The selected time frame is empty.";
+    return false;
 }
 
 bool appendRuleBooks(std::vector<std::string>& orderedBooks,
@@ -340,6 +349,17 @@ std::vector<ReadingPlanPassage> passagesForGroup(const std::vector<Segment>& gro
 
 } // namespace
 
+std::string defaultReadingPlanDisplayStartDateIso() {
+    return reading::formatIsoDate(kGenericDisplayAnchorDate);
+}
+
+bool buildReadingPlanTemplateDates(const ReadingPlanGenerationRequest& request,
+                                   std::vector<std::string>& outDates,
+                                   std::string* errorOut) {
+    outDates.clear();
+    return resolveTemplateDates(request, outDates, errorOut);
+}
+
 bool generateReadingPlan(SwordManager& swordManager,
                          const ReadingPlanGenerationRequest& request,
                          ReadingPlan& out,
@@ -353,23 +373,11 @@ bool generateReadingPlan(SwordManager& swordManager,
         return false;
     }
 
-    reading::Date startDate{};
-    if (!reading::parseIsoDate(request.startDateIso, startDate)) {
-        if (errorOut) *errorOut = "Enter a valid start date in YYYY-MM-DD format.";
+    std::vector<std::string> templateDates;
+    if (!buildReadingPlanTemplateDates(request, templateDates, errorOut)) {
         return false;
     }
-
-    reading::Date endDate = resolveEndDate(request, startDate, errorOut);
-    if (!endDate.valid()) return false;
-
-    const std::vector<std::string> templateDates =
-        reading::buildGenericReadingPlanTemplateDatesForRange(request.startDateIso,
-                                                              reading::formatIsoDate(endDate));
     const int totalDateSlots = static_cast<int>(templateDates.size());
-    if (totalDateSlots <= 0) {
-        if (errorOut) *errorOut = "The selected date range is empty.";
-        return false;
-    }
 
     const std::vector<std::string> allBooks = swordManager.getBookNames(request.moduleName);
     const std::vector<std::string> oldTestamentBooks =
@@ -432,8 +440,7 @@ bool generateReadingPlan(SwordManager& swordManager,
     ReadingPlan plan;
     plan.summary.name = request.name;
     plan.summary.description = request.description;
-    plan.summary.color = request.color;
-    plan.summary.startDateIso = request.startDateIso;
+    plan.summary.startDateIso = defaultReadingPlanDisplayStartDateIso();
 
     for (size_t i = 0; i < groups.size(); ++i) {
         const int slotIndex = (groups.size() <= 1 || totalDateSlots <= 1)

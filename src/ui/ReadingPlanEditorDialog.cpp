@@ -1,7 +1,6 @@
 #include "ui/ReadingPlanEditorDialog.h"
 
 #include "app/VerdadApp.h"
-#include "reading/DateUtils.h"
 #include "reading/ReadingPlanGenerator.h"
 #include "reading/ReadingPlanUtils.h"
 #include "sword/SwordManager.h"
@@ -18,7 +17,6 @@
 #include <FL/Fl_Return_Button.H>
 #include <FL/fl_ask.H>
 
-#include <cmath>
 #include <regex>
 #include <sstream>
 #include <string>
@@ -78,7 +76,7 @@ std::string resolvePreferredBibleModule(VerdadApp* app) {
     return modules.empty() ? std::string() : modules.front().name;
 }
 
-std::string timeframeLabel(ReadingPlanTimeframeKind kind, int value, const std::string& endDate) {
+std::string timeframeLabel(ReadingPlanTimeframeKind kind, int value) {
     switch (kind) {
     case ReadingPlanTimeframeKind::Days:
         return std::to_string(value) + " day" + (value == 1 ? "" : "s");
@@ -90,29 +88,14 @@ std::string timeframeLabel(ReadingPlanTimeframeKind kind, int value, const std::
         return "1 year";
     case ReadingPlanTimeframeKind::TwoYears:
         return "2 years";
-    case ReadingPlanTimeframeKind::Custom:
-        return endDate.empty() ? "Custom range" : ("Through " + endDate);
     }
     return "";
 }
 
-reading::Date addMonthsClamped(const reading::Date& date, int deltaMonths) {
-    std::tm value = reading::toTm(date);
-    const int originalDay = date.day;
-    value.tm_mon += deltaMonths;
-    value.tm_mday = 1;
-    std::mktime(&value);
-
-    reading::Date shifted = reading::fromTm(value);
-    shifted.day = std::min(originalDay, reading::daysInMonth(shifted.year, shifted.month));
-    return reading::normalizeDate(shifted);
-}
-
-int inclusiveDaySpan(const reading::Date& start, const reading::Date& end) {
-    std::tm startTm = reading::toTm(start);
-    std::tm endTm = reading::toTm(end);
-    const double seconds = std::difftime(std::mktime(&endTm), std::mktime(&startTm));
-    return static_cast<int>(std::llround(seconds / (60.0 * 60.0 * 24.0))) + 1;
+bool timeframeKindNeedsAmount(ReadingPlanTimeframeKind kind) {
+    return kind == ReadingPlanTimeframeKind::Days ||
+           kind == ReadingPlanTimeframeKind::Weeks ||
+           kind == ReadingPlanTimeframeKind::Months;
 }
 
 class ReadingPlanCreationController {
@@ -147,12 +130,9 @@ private:
     bool accepted_ = false;
 
     Fl_Input* nameInput_ = nullptr;
-    Fl_Input* colorInput_ = nullptr;
-    Fl_Input* startDateInput_ = nullptr;
     Fl_Multiline_Input* descriptionInput_ = nullptr;
     Fl_Choice* timeframeChoice_ = nullptr;
     Fl_Input* timeframeValueInput_ = nullptr;
-    Fl_Input* endDateInput_ = nullptr;
     Fl_Choice* splitChoice_ = nullptr;
     Fl_Input* wholeBibleCountInput_ = nullptr;
     Fl_Input* oldTestamentCountInput_ = nullptr;
@@ -168,19 +148,7 @@ private:
 
         auto* nameLabel = new Fl_Box(margin, 16, labelW, 24, "Name");
         nameLabel->align(FL_ALIGN_LEFT | FL_ALIGN_INSIDE);
-        nameInput_ = new Fl_Input(margin + labelW, 14, 340, rowH);
-
-        auto* colorLabel = new Fl_Box(460, 16, 42, 24, "Color");
-        colorLabel->align(FL_ALIGN_LEFT | FL_ALIGN_INSIDE);
-        colorInput_ = new Fl_Input(506, 14, 92, rowH);
-        colorInput_->tooltip("Optional hex color, for example #5d8aa8");
-
-        auto* startLabel = new Fl_Box(610, 16, 44, 24, "Start");
-        startLabel->align(FL_ALIGN_LEFT | FL_ALIGN_INSIDE);
-        startDateInput_ = new Fl_Input(656, 14, 110, rowH);
-        startDateInput_->tooltip("YYYY-MM-DD");
-        startDateInput_->callback(onControlChanged, this);
-        startDateInput_->when(FL_WHEN_CHANGED);
+        nameInput_ = new Fl_Input(margin + labelW, 14, 662, rowH);
 
         auto* notesLabel = new Fl_Box(margin, 52, labelW, 24, "Notes");
         notesLabel->align(FL_ALIGN_LEFT | FL_ALIGN_INSIDE);
@@ -194,25 +162,17 @@ private:
         timeframeChoice_->add("Months");
         timeframeChoice_->add("One year");
         timeframeChoice_->add("Two years");
-        timeframeChoice_->add("Custom");
         timeframeChoice_->callback(onControlChanged, this);
 
-        auto* amountLabel = new Fl_Box(306, 132, 54, 24, "Amount");
+        auto* amountLabel = new Fl_Box(306, 132, 42, 24, "Days");
         amountLabel->align(FL_ALIGN_LEFT | FL_ALIGN_INSIDE);
-        timeframeValueInput_ = new Fl_Input(362, 130, 70, rowH);
+        timeframeValueInput_ = new Fl_Input(352, 130, 80, rowH);
         timeframeValueInput_->callback(onControlChanged, this);
         timeframeValueInput_->when(FL_WHEN_CHANGED);
 
-        auto* endLabel = new Fl_Box(446, 132, 58, 24, "End date");
-        endLabel->align(FL_ALIGN_LEFT | FL_ALIGN_INSIDE);
-        endDateInput_ = new Fl_Input(508, 130, 110, rowH);
-        endDateInput_->tooltip("YYYY-MM-DD");
-        endDateInput_->callback(onControlChanged, this);
-        endDateInput_->when(FL_WHEN_CHANGED);
-
-        auto* splitLabel = new Fl_Box(632, 132, 40, 24, "Split");
+        auto* splitLabel = new Fl_Box(458, 132, 40, 24, "Split");
         splitLabel->align(FL_ALIGN_LEFT | FL_ALIGN_INSIDE);
-        splitChoice_ = new Fl_Choice(676, 130, 90, rowH);
+        splitChoice_ = new Fl_Choice(502, 130, 110, rowH);
         splitChoice_->add("Chapter");
         splitChoice_->add("Verse");
         splitChoice_->callback(onControlChanged, this);
@@ -257,7 +217,7 @@ private:
                                       "Custom book lines can use plain book names or a repeat suffix.\nExamples: John   or   Romans x3");
         customHelp->align(FL_ALIGN_LEFT | FL_ALIGN_INSIDE | FL_ALIGN_WRAP);
 
-        summaryBox_ = new Fl_Box(500, 304, 266, 314, "");
+        summaryBox_ = new Fl_Box(500, 304, 266, 282, "");
         summaryBox_->box(FL_DOWN_FRAME);
         summaryBox_->align(FL_ALIGN_LEFT | FL_ALIGN_INSIDE | FL_ALIGN_WRAP);
 
@@ -274,19 +234,10 @@ private:
 
     void loadDefaults() {
         nameInput_->value(workingPlan_.summary.name.c_str());
-        colorInput_->value(workingPlan_.summary.color.c_str());
         descriptionInput_->value(workingPlan_.summary.description.c_str());
-
-        std::string startDate = workingPlan_.summary.startDateIso;
-        if (!reading::isIsoDateInRange(startDate)) {
-            reading::Date today = reading::today();
-            startDate = reading::formatIsoDate(reading::Date{today.year, 1, 1});
-        }
-        startDateInput_->value(startDate.c_str());
 
         timeframeChoice_->value(3);
         timeframeValueInput_->value("30");
-        endDateInput_->value("");
         splitChoice_->value(0);
         wholeBibleCountInput_->value("1");
         oldTestamentCountInput_->value("0");
@@ -318,72 +269,17 @@ private:
             return ReadingPlanTimeframeKind::OneYear;
         case 4:
             return ReadingPlanTimeframeKind::TwoYears;
-        case 5:
-            return ReadingPlanTimeframeKind::Custom;
         default:
             return ReadingPlanTimeframeKind::OneYear;
         }
     }
 
-    bool shouldForceJan1StartDate() const {
-        const ReadingPlanTimeframeKind kind = timeframeKindFromChoice();
-        if (kind == ReadingPlanTimeframeKind::OneYear ||
-            kind == ReadingPlanTimeframeKind::TwoYears) {
-            return true;
-        }
-        return kind == ReadingPlanTimeframeKind::Months && parsePreviewAmount() >= 12;
-    }
-
-    bool resolveConfiguredStartDate(reading::Date& startDateOut,
-                                    std::string& errorMessage) const {
-        if (!reading::parseIsoDate(
-                reading::trimCopy(startDateInput_->value() ? startDateInput_->value() : ""),
-                startDateOut)) {
-            errorMessage = "Enter a valid start date in YYYY-MM-DD format.";
-            return false;
-        }
-
-        if (shouldForceJan1StartDate()) {
-            startDateOut.month = 1;
-            startDateOut.day = 1;
-        }
-        return true;
-    }
-
-    void normalizeStartDateInputForLongPlan() {
-        if (!startDateInput_ || !shouldForceJan1StartDate()) return;
-
-        const std::string current = reading::trimCopy(
-            startDateInput_->value() ? startDateInput_->value() : "");
-        if (current.empty()) return;
-
-        reading::Date startDate{};
-        if (!reading::parseIsoDate(current, startDate)) {
-            return;
-        }
-        startDate.month = 1;
-        startDate.day = 1;
-
-        const std::string normalized = reading::formatIsoDate(startDate);
-        if (normalized != current) {
-            startDateInput_->value(normalized.c_str());
-        }
-    }
-
     void updateControls() {
-        normalizeStartDateInputForLongPlan();
-
         const ReadingPlanTimeframeKind kind = timeframeKindFromChoice();
-        const bool needsAmount =
-            kind == ReadingPlanTimeframeKind::Days ||
-            kind == ReadingPlanTimeframeKind::Weeks ||
-            kind == ReadingPlanTimeframeKind::Months;
-        const bool needsEndDate = kind == ReadingPlanTimeframeKind::Custom;
+        const bool needsAmount = timeframeKindNeedsAmount(kind);
 
         if (needsAmount) timeframeValueInput_->activate();
         else timeframeValueInput_->deactivate();
-        if (needsEndDate) endDateInput_->activate();
-        else endDateInput_->deactivate();
     }
 
     void updateSummary() {
@@ -408,19 +304,9 @@ private:
         }
 
         std::ostringstream summary;
-        reading::Date summaryStartDate{};
-        std::string startSummary =
-            reading::trimCopy(startDateInput_->value() ? startDateInput_->value() : "");
-        std::string startDateError;
-        if (resolveConfiguredStartDate(summaryStartDate, startDateError)) {
-            startSummary = reading::formatIsoDate(summaryStartDate);
-        }
         summary << "Generator summary\n\n";
-        summary << "Starts: " << startSummary << "\n";
-        summary << "Time frame: "
-                << timeframeLabel(timeframeKindFromChoice(),
-                                  parsePreviewAmount(),
-                                  endDateInput_->value() ? endDateInput_->value() : "")
+        summary << "Time frame: " << timeframeLabel(timeframeKindFromChoice(),
+                                                    parsePreviewAmount())
                 << "\n";
         summary << "Split by: " << ((splitChoice_ && splitChoice_->value() == 1) ? "Verse" : "Chapter") << "\n";
         summary << "Whole Bible: " << wholeBibleCount << "\n";
@@ -446,73 +332,11 @@ private:
         plan.summary.name = reading::trimCopy(nameInput_->value() ? nameInput_->value() : "");
         plan.summary.description =
             reading::trimCopy(descriptionInput_->value() ? descriptionInput_->value() : "");
-        plan.summary.color = reading::trimCopy(colorInput_->value() ? colorInput_->value() : "");
         if (plan.summary.name.empty()) {
             errorMessage = "Enter a plan name.";
             return false;
         }
-        reading::Date startDate{};
-        if (!resolveConfiguredStartDate(startDate, errorMessage)) {
-            return false;
-        }
-        plan.summary.startDateIso = reading::formatIsoDate(startDate);
         return true;
-    }
-
-    bool resolveSelectedDateRange(reading::Date& startDateOut,
-                                  reading::Date& endDateOut,
-                                  std::string& errorMessage) const {
-        if (!resolveConfiguredStartDate(startDateOut, errorMessage)) {
-            return false;
-        }
-
-        const ReadingPlanTimeframeKind kind = timeframeKindFromChoice();
-        switch (kind) {
-        case ReadingPlanTimeframeKind::Days:
-        case ReadingPlanTimeframeKind::Weeks:
-        case ReadingPlanTimeframeKind::Months: {
-            int timeframeValue = 0;
-            if (!parseNonNegativeInt(
-                    timeframeValueInput_->value() ? timeframeValueInput_->value() : "",
-                    timeframeValue)) {
-                errorMessage = "Enter a whole-number amount for the selected time frame.";
-                return false;
-            }
-            if (timeframeValue <= 0) {
-                errorMessage = "Enter a positive number for the selected time frame.";
-                return false;
-            }
-            if (kind == ReadingPlanTimeframeKind::Days) {
-                endDateOut = reading::addDays(startDateOut, timeframeValue - 1);
-            } else if (kind == ReadingPlanTimeframeKind::Weeks) {
-                endDateOut = reading::addDays(startDateOut, (timeframeValue * 7) - 1);
-            } else {
-                endDateOut = reading::addDays(addMonthsClamped(startDateOut, timeframeValue), -1);
-            }
-            return true;
-        }
-        case ReadingPlanTimeframeKind::OneYear:
-            endDateOut = reading::addDays(addMonthsClamped(startDateOut, 12), -1);
-            return true;
-        case ReadingPlanTimeframeKind::TwoYears:
-            endDateOut = reading::addDays(addMonthsClamped(startDateOut, 24), -1);
-            return true;
-        case ReadingPlanTimeframeKind::Custom:
-            if (!reading::parseIsoDate(
-                    reading::trimCopy(endDateInput_->value() ? endDateInput_->value() : ""),
-                    endDateOut)) {
-                errorMessage = "Enter a valid end date in YYYY-MM-DD format.";
-                return false;
-            }
-            if (reading::compareDates(endDateOut, startDateOut) < 0) {
-                errorMessage = "The end date must be on or after the start date.";
-                return false;
-            }
-            return true;
-        }
-
-        errorMessage = "Unsupported time frame.";
-        return false;
     }
 
     bool buildRequest(ReadingPlanGenerationRequest& request, std::string& errorMessage) const {
@@ -520,26 +344,22 @@ private:
         request.name = reading::trimCopy(nameInput_->value() ? nameInput_->value() : "");
         request.description =
             reading::trimCopy(descriptionInput_->value() ? descriptionInput_->value() : "");
-        request.color = reading::trimCopy(colorInput_->value() ? colorInput_->value() : "");
         request.timeframeKind = timeframeKindFromChoice();
-        request.customEndDateIso =
-            reading::trimCopy(endDateInput_->value() ? endDateInput_->value() : "");
         request.splitMode =
             (splitChoice_ && splitChoice_->value() == 1)
                 ? ReadingPlanSplitMode::Verse
                 : ReadingPlanSplitMode::Chapter;
 
-        if (!parseNonNegativeInt(timeframeValueInput_->value() ? timeframeValueInput_->value() : "",
-                                 request.timeframeValue)) {
-            errorMessage = "Enter a whole-number amount for the selected time frame.";
-            return false;
+        if (timeframeKindNeedsAmount(request.timeframeKind)) {
+            if (!parseNonNegativeInt(
+                    timeframeValueInput_->value() ? timeframeValueInput_->value() : "",
+                    request.timeframeValue)) {
+                errorMessage = "Enter a whole-number value for the selected time frame.";
+                return false;
+            }
+        } else {
+            request.timeframeValue = 0;
         }
-
-        reading::Date startDate{};
-        if (!resolveConfiguredStartDate(startDate, errorMessage)) {
-            return false;
-        }
-        request.startDateIso = reading::formatIsoDate(startDate);
 
         int wholeBibleCount = 0;
         int oldTestamentCount = 0;
@@ -596,22 +416,17 @@ private:
             return false;
         }
 
-        reading::Date startDate{};
-        reading::Date endDate{};
-        if (!resolveSelectedDateRange(startDate, endDate, errorMessage)) {
+        ReadingPlanGenerationRequest templateRequest;
+        templateRequest.timeframeKind = timeframeKindFromChoice();
+        templateRequest.timeframeValue = parsePreviewAmount();
+
+        std::vector<std::string> templateDates;
+        if (!buildReadingPlanTemplateDates(templateRequest, templateDates, &errorMessage)) {
             fl_alert("%s", errorMessage.c_str());
             return false;
         }
 
-        const std::vector<std::string> templateDates =
-            reading::buildGenericReadingPlanTemplateDatesForRange(
-                reading::formatIsoDate(startDate),
-                reading::formatIsoDate(endDate));
-        if (templateDates.empty()) {
-            fl_alert("The selected date range is empty.");
-            return false;
-        }
-
+        blankPlan.summary.startDateIso = defaultReadingPlanDisplayStartDateIso();
         blankPlan.days.reserve(templateDates.size());
         for (size_t i = 0; i < templateDates.size(); ++i) {
             ReadingPlanDay day;

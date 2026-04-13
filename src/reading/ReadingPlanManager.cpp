@@ -193,6 +193,40 @@ std::vector<ScheduleOffset> buildOffsetsFromDays(const std::string& startDateIso
     return offsets;
 }
 
+bool hasContiguousStoredSchedule(const std::vector<ReadingPlanDay>& days) {
+    if (days.empty() || !reading::isIsoDateInRange(days.front().dateIso)) return false;
+
+    reading::Date anchorDate{};
+    if (!reading::parseIsoDate(days.front().dateIso, anchorDate)) return false;
+
+    for (size_t i = 0; i < days.size(); ++i) {
+        const ReadingPlanDay& day = days[i];
+        const int expectedSequence = static_cast<int>(i) + 1;
+        if (day.sequenceNumber > 0 && day.sequenceNumber != expectedSequence) {
+            return false;
+        }
+        if (!reading::isIsoDateInRange(day.dateIso)) return false;
+
+        const std::string expectedDateIso =
+            reading::formatIsoDate(reading::addDays(anchorDate, expectedSequence - 1));
+        if (day.dateIso != expectedDateIso) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+bool hasLegacyTemplateAnchorMismatch(const std::vector<ReadingPlanDay>& rawDays,
+                                     const std::vector<ScheduleOffset>& offsets,
+                                     const std::string& canonicalStartDateIso) {
+    return !offsets.empty() &&
+           reading::isIsoDateInRange(canonicalStartDateIso) &&
+           hasContiguousStoredSchedule(rawDays) &&
+           !rawDays.empty() &&
+           rawDays.front().dateIso != canonicalStartDateIso;
+}
+
 int sequenceForScheduledDate(const std::string& startDateIso,
                              const std::vector<ScheduleOffset>& offsets,
                              const std::string& dateIso) {
@@ -1255,9 +1289,11 @@ bool ReadingPlanManager::loadPlanDays(sqlite3* db,
     const bool hasStoredTemplateDates = std::any_of(
         rawDays.begin(), rawDays.end(),
         [](const ReadingPlanDay& day) { return reading::isIsoDateInRange(day.dateIso); });
+    const bool hasLegacyAnchorMismatch =
+        hasLegacyTemplateAnchorMismatch(rawDays, offsets, canonicalStartDateIso);
     const bool useDerivedSchedule =
         reading::isIsoDateInRange(canonicalStartDateIso) &&
-        (!offsets.empty() || !hasStoredTemplateDates);
+        (!hasStoredTemplateDates || (!hasLegacyAnchorMismatch && !offsets.empty()));
 
     out.clear();
     out.reserve(rawDays.size());

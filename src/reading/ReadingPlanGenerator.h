@@ -16,7 +16,6 @@ enum class ReadingPlanTimeframeKind {
     Months,
     OneYear,
     TwoYears,
-    Custom,
 };
 
 enum class ReadingPlanSplitMode {
@@ -41,14 +40,17 @@ struct ReadingPlanGenerationRequest {
     std::string moduleName;
     std::string name;
     std::string description;
-    std::string color;
-    std::string startDateIso;
     ReadingPlanTimeframeKind timeframeKind = ReadingPlanTimeframeKind::OneYear;
     int timeframeValue = 0;
-    std::string customEndDateIso;
     ReadingPlanSplitMode splitMode = ReadingPlanSplitMode::Chapter;
     std::vector<ReadingPlanScopeRule> scopeRules;
 };
+
+std::string defaultReadingPlanDisplayStartDateIso();
+
+bool buildReadingPlanTemplateDates(const ReadingPlanGenerationRequest& request,
+                                   std::vector<std::string>& outDates,
+                                   std::string* errorOut = nullptr);
 
 bool generateReadingPlan(SwordManager& swordManager,
                          const ReadingPlanGenerationRequest& request,
