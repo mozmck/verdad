@@ -296,6 +296,28 @@ std::vector<std::string> candidateDataDirs() {
     return dirs;
 }
 
+const char* rightPaneTabToken(MainWindow::RightPaneTab tab) {
+    switch (tab) {
+    case MainWindow::RightPaneTab::Commentary:
+        return "commentary";
+    case MainWindow::RightPaneTab::GeneralBooks:
+        return "general_books";
+    case MainWindow::RightPaneTab::DevotionsPlans:
+        return "daily";
+    case MainWindow::RightPaneTab::Documents:
+        return "documents";
+    }
+    return "commentary";
+}
+
+MainWindow::RightPaneTab rightPaneTabFromToken(const std::string& text) {
+    const std::string token = trimCopy(text);
+    if (token == "general_books") return MainWindow::RightPaneTab::GeneralBooks;
+    if (token == "daily") return MainWindow::RightPaneTab::DevotionsPlans;
+    if (token == "documents") return MainWindow::RightPaneTab::Documents;
+    return MainWindow::RightPaneTab::Commentary;
+}
+
 MainWindow::SessionState sessionStateFromPreferences(const PreferenceMap& prefs) {
     auto lookup = [&](const std::string& key) -> std::string {
         auto it = prefs.find(key);
@@ -311,13 +333,12 @@ MainWindow::SessionState sessionStateFromPreferences(const PreferenceMap& prefs)
     state.leftPanePreviewHeight = parseIntOr(lookup("left_pane_preview_h"), 150);
     state.dictionaryPaneHeight = parseIntOr(lookup("dictionary_pane_h"), 0);
     state.activeStudyTab = parseIntOr(lookup("active_study_tab"), 0);
-    state.generalBooksTabActive = parseBoolOr(lookup("general_book_active"), false);
+    state.rightPaneTab = rightPaneTabFromToken(lookup("rightpane_tab"));
     state.generalBookModule = lookup("general_book_module");
     state.generalBookKey = lookup("general_book_key");
-    state.documentsTabActive = parseBoolOr(lookup("documents_tab_active"), false);
     state.documentPath = lookup("document_path");
     state.dailyWorkspace.tabActive =
-        parseBoolOr(lookup("daily_workspace_active"), false);
+        (state.rightPaneTab == MainWindow::RightPaneTab::DevotionsPlans);
     state.dailyWorkspace.mode = DailyWorkspaceMode::Devotionals;
     state.dailyWorkspace.devotionalModule = lookup("daily_workspace_devotional_module");
     state.dailyWorkspace.readingPlanSource =
@@ -327,14 +348,8 @@ MainWindow::SessionState sessionStateFromPreferences(const PreferenceMap& prefs)
     state.dailyWorkspace.swordReadingPlanModule =
         lookup("daily_workspace_sword_plan_module");
 
-    std::string activeLegacyGeneralBookModule;
-    std::string activeLegacyGeneralBookKey;
-    bool activeLegacyGeneralBooksTabActive = false;
-    std::string firstActiveLegacyGeneralBookModule;
-    std::string firstActiveLegacyGeneralBookKey;
     std::string firstLegacyGeneralBookModule;
     std::string firstLegacyGeneralBookKey;
-    int activeLegacyDictionaryPaneHeight = 0;
     int firstLegacyDictionaryPaneHeight = 0;
 
     int tabCount = std::max(0, parseIntOr(lookup("study_tab_count"), 0));
@@ -377,22 +392,6 @@ MainWindow::SessionState sessionStateFromPreferences(const PreferenceMap& prefs)
         int legacyDictionaryPaneHeight = parseIntOr(lookup("dictionary_pane_h"), 0);
         std::string legacyGeneralBookModule = lookup("general_book_module");
         std::string legacyGeneralBookKey = lookup("general_book_key");
-        std::string legacyActiveRaw = lookup("general_book_active");
-        if (legacyActiveRaw.empty()) legacyActiveRaw = lookup("dictionary_active");
-        bool legacyGeneralBooksTabActive = parseBoolOr(legacyActiveRaw, false);
-
-        if (i == state.activeStudyTab) {
-            activeLegacyGeneralBookModule = legacyGeneralBookModule;
-            activeLegacyGeneralBookKey = legacyGeneralBookKey;
-            activeLegacyGeneralBooksTabActive = legacyGeneralBooksTabActive;
-            activeLegacyDictionaryPaneHeight = legacyDictionaryPaneHeight;
-        }
-        if (firstActiveLegacyGeneralBookModule.empty() &&
-            legacyGeneralBooksTabActive &&
-            !legacyGeneralBookModule.empty()) {
-            firstActiveLegacyGeneralBookModule = legacyGeneralBookModule;
-            firstActiveLegacyGeneralBookKey = legacyGeneralBookKey;
-        }
         if (firstLegacyGeneralBookModule.empty() && !legacyGeneralBookModule.empty()) {
             firstLegacyGeneralBookModule = legacyGeneralBookModule;
             firstLegacyGeneralBookKey = legacyGeneralBookKey;
@@ -405,23 +404,13 @@ MainWindow::SessionState sessionStateFromPreferences(const PreferenceMap& prefs)
     }
 
     if (state.dictionaryPaneHeight <= 0) {
-        if (activeLegacyDictionaryPaneHeight > 0) {
-            state.dictionaryPaneHeight = activeLegacyDictionaryPaneHeight;
-        } else if (firstLegacyDictionaryPaneHeight > 0) {
+        if (firstLegacyDictionaryPaneHeight > 0) {
             state.dictionaryPaneHeight = firstLegacyDictionaryPaneHeight;
         }
     }
 
     if (state.generalBookModule.empty()) {
-        if (!activeLegacyGeneralBookModule.empty()) {
-            state.generalBookModule = activeLegacyGeneralBookModule;
-            state.generalBookKey = activeLegacyGeneralBookKey;
-            state.generalBooksTabActive = activeLegacyGeneralBooksTabActive;
-        } else if (!firstActiveLegacyGeneralBookModule.empty()) {
-            state.generalBookModule = firstActiveLegacyGeneralBookModule;
-            state.generalBookKey = firstActiveLegacyGeneralBookKey;
-            state.generalBooksTabActive = true;
-        } else if (!firstLegacyGeneralBookModule.empty()) {
+        if (!firstLegacyGeneralBookModule.empty()) {
             state.generalBookModule = firstLegacyGeneralBookModule;
             state.generalBookKey = firstLegacyGeneralBookKey;
         }
@@ -800,12 +789,10 @@ void VerdadApp::savePreferences() {
         file << "left_pane_preview_h=" << state.leftPanePreviewHeight << "\n";
         file << "dictionary_pane_h=" << state.dictionaryPaneHeight << "\n";
         file << "active_study_tab=" << state.activeStudyTab << "\n";
-        file << "general_book_active=" << (state.generalBooksTabActive ? 1 : 0) << "\n";
+        file << "rightpane_tab=" << rightPaneTabToken(state.rightPaneTab) << "\n";
         file << "general_book_module=" << state.generalBookModule << "\n";
         file << "general_book_key=" << state.generalBookKey << "\n";
-        file << "documents_tab_active=" << (state.documentsTabActive ? 1 : 0) << "\n";
         file << "document_path=" << state.documentPath << "\n";
-        file << "daily_workspace_active=" << (state.dailyWorkspace.tabActive ? 1 : 0) << "\n";
         file << "daily_workspace_mode="
              << dailyWorkspaceModeToken(state.dailyWorkspace.mode) << "\n";
         file << "daily_workspace_devotional_module="
