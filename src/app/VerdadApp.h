@@ -92,6 +92,7 @@ public:
     struct ModuleManagerSettings {
         std::string languageFilter = "en";
         int installTimeoutMillis = 0;
+        bool showRemoteNetworkWarning = true;
         bool hasSelectedSources = false;
         std::vector<std::string> selectedSources;
     };

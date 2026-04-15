@@ -765,6 +765,9 @@ bool VerdadApp::applyPreferencesMap(const PreferenceMap& prefs,
             timeoutMillis > 0
                 ? clampModuleManagerTimeoutMillis(timeoutMillis)
                 : 0;
+        importedModuleManager.showRemoteNetworkWarning =
+            parseBoolOr(lookup("module_manager_show_remote_warning"),
+                        importedModuleManager.showRemoteNetworkWarning);
 
         auto sourceCountIt = prefs.find("module_manager_source_count");
         importedModuleManager.selectedSources.clear();
@@ -868,6 +871,8 @@ void VerdadApp::savePreferences() {
             file << "module_manager_timeout_ms="
                  << moduleManagerSettings_.installTimeoutMillis << "\n";
         }
+        file << "module_manager_show_remote_warning="
+             << (moduleManagerSettings_.showRemoteNetworkWarning ? 1 : 0) << "\n";
         if (moduleManagerSettings_.hasSelectedSources) {
             file << "module_manager_source_count="
                  << moduleManagerSettings_.selectedSources.size() << "\n";

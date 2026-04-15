@@ -812,6 +812,31 @@ SearchIndexer::SearchIndexer(const std::string& dbPath)
     workerThread_ = std::thread(&SearchIndexer::workerLoop, this);
 }
 
+SearchIndexer::ScopedSuspend::~ScopedSuspend() {
+    release();
+}
+
+SearchIndexer::ScopedSuspend::ScopedSuspend(ScopedSuspend&& other) noexcept
+    : owner_(other.owner_) {
+    other.owner_ = nullptr;
+}
+
+SearchIndexer::ScopedSuspend&
+SearchIndexer::ScopedSuspend::operator=(ScopedSuspend&& other) noexcept {
+    if (this == &other) return *this;
+
+    release();
+    owner_ = other.owner_;
+    other.owner_ = nullptr;
+    return *this;
+}
+
+void SearchIndexer::ScopedSuspend::release() {
+    if (!owner_) return;
+    owner_->resumeBackgroundIndexing();
+    owner_ = nullptr;
+}
+
 SearchIndexer::~SearchIndexer() {
     stopRequested_.store(true);
     {
@@ -1104,6 +1129,38 @@ std::string SearchIndexer::moduleIndexError(const std::string& moduleName) const
     }
     sqlite3_finalize(stmt);
     return error;
+}
+
+SearchIndexer::ScopedSuspend SearchIndexer::suspendBackgroundIndexing() {
+    if (!db_) return ScopedSuspend();
+
+    {
+        std::lock_guard<std::mutex> lock(workerMutex_);
+        ++suspendDepth_;
+    }
+    workerCv_.notify_all();
+    waitForWorkerIdle();
+    return ScopedSuspend(this);
+}
+
+void SearchIndexer::resumeBackgroundIndexing() {
+    bool shouldNotify = false;
+    {
+        std::lock_guard<std::mutex> lock(workerMutex_);
+        if (suspendDepth_ > 0) {
+            --suspendDepth_;
+            shouldNotify = (suspendDepth_ == 0);
+        }
+    }
+
+    if (shouldNotify) workerCv_.notify_all();
+}
+
+void SearchIndexer::waitForWorkerIdle() {
+    std::unique_lock<std::mutex> lock(workerMutex_);
+    workerIdleCv_.wait(lock, [this]() {
+        return !workerTaskRunning_;
+    });
 }
 
 std::string SearchIndexer::buildFilterFtsQuery(const SearchRequest& request) {
@@ -1813,10 +1870,18 @@ std::vector<SearchResult> SearchIndexer::searchSmart(
 void SearchIndexer::workerLoop() {
     while (true) {
         IndexTask task;
+        auto finishTask = [this]() {
+            {
+                std::lock_guard<std::mutex> lock(workerMutex_);
+                workerTaskRunning_ = false;
+            }
+            workerIdleCv_.notify_all();
+        };
         {
             std::unique_lock<std::mutex> lock(workerMutex_);
             workerCv_.wait(lock, [this]() {
-                return stopWorker_ || !pendingModules_.empty();
+                return stopWorker_ ||
+                       (suspendDepth_ == 0 && !pendingModules_.empty());
             });
             if (stopWorker_) break;
             task = pendingModules_.front();
@@ -1826,10 +1891,17 @@ void SearchIndexer::workerLoop() {
                 task.force = task.force || forceIt->second;
                 pendingForces_.erase(forceIt);
             }
+            workerTaskRunning_ = true;
         }
 
-        if (task.moduleName.empty()) continue;
-        if (!task.force && isModuleIndexed(task.moduleName)) continue;
+        if (task.moduleName.empty()) {
+            finishTask();
+            continue;
+        }
+        if (!task.force && isModuleIndexed(task.moduleName)) {
+            finishTask();
+            continue;
+        }
 
         {
             std::lock_guard<std::mutex> lock(statusMutex_);
@@ -1844,6 +1916,7 @@ void SearchIndexer::workerLoop() {
             activeModule_.clear();
             activeProgress_ = 0;
         }
+        finishTask();
     }
 }
 

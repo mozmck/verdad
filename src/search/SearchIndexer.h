@@ -23,6 +23,26 @@ namespace verdad {
 /// The database only stores module index data (no tags/settings data).
 class SearchIndexer {
 public:
+    class ScopedSuspend {
+    public:
+        ScopedSuspend() = default;
+        ~ScopedSuspend();
+
+        ScopedSuspend(const ScopedSuspend&) = delete;
+        ScopedSuspend& operator=(const ScopedSuspend&) = delete;
+
+        ScopedSuspend(ScopedSuspend&& other) noexcept;
+        ScopedSuspend& operator=(ScopedSuspend&& other) noexcept;
+
+    private:
+        friend class SearchIndexer;
+
+        explicit ScopedSuspend(SearchIndexer* owner) : owner_(owner) {}
+        void release();
+
+        SearchIndexer* owner_ = nullptr;
+    };
+
     struct SearchRequest {
         enum class BibleScope {
             All,
@@ -78,6 +98,9 @@ public:
     /// Return the last indexing error for a module, if any.
     std::string moduleIndexError(const std::string& moduleName) const;
 
+    /// Pause background indexing until the returned guard is destroyed.
+    [[nodiscard]] ScopedSuspend suspendBackgroundIndexing();
+
     /// Search plain indexed text (multi-word or exact phrase).
     /// maxResults <= 0 means no result limit.
     std::vector<SearchResult> searchWord(const SearchRequest& request,
@@ -122,6 +145,8 @@ private:
 
     void workerLoop();
     void indexModuleNow(const std::string& moduleName);
+    void resumeBackgroundIndexing();
+    void waitForWorkerIdle();
 
     static std::string buildFilterFtsQuery(const SearchRequest& request);
     static std::string buildWordFtsQuery(const SearchRequest& request,
@@ -141,8 +166,11 @@ private:
     std::thread workerThread_;
     mutable std::mutex workerMutex_;
     std::condition_variable workerCv_;
+    std::condition_variable workerIdleCv_;
     std::deque<IndexTask> pendingModules_;
     std::unordered_map<std::string, bool> pendingForces_;
+    int suspendDepth_ = 0;
+    bool workerTaskRunning_ = false;
 
     std::atomic<bool> indexing_{false};
     std::atomic<bool> stopRequested_{false};

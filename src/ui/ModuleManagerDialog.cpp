@@ -12,6 +12,7 @@
 #include <FL/Fl.H>
 #include <FL/Fl_Box.H>
 #include <FL/Fl_Button.H>
+#include <FL/Fl_Check_Button.H>
 #include <FL/Fl_Choice.H>
 #include <FL/Fl_File_Chooser.H>
 #include <FL/Fl_Hold_Browser.H>
@@ -63,6 +64,10 @@ constexpr int kCompactLabelWidth = 54;
 constexpr int kSourceManagerButtonWidth = 112;
 constexpr int kSourceManagerCheckboxWidth = 46;
 constexpr int kSourceManagerRefreshWidth = 92;
+
+struct RemoteNetworkWarningDialogState {
+    bool accepted = false;
+};
 
 std::string trimCopy(const std::string& s) {
     size_t start = 0;
@@ -1730,6 +1735,78 @@ std::string describeRefreshFailure(const std::string& caption,
     return message.str();
 }
 
+bool showRemoteNetworkWarningDialog(bool* dontShowAgain) {
+    if (dontShowAgain) *dontShowAgain = false;
+
+    constexpr int kDialogW = 470;
+    constexpr int kDialogH = 240;
+    constexpr int kDialogPad = 16;
+    constexpr int kWarningBoxH = 128;
+    constexpr int kCheckboxY = 152;
+    constexpr int kDialogButtonW = 90;
+    constexpr int kDialogButtonH = 28;
+    constexpr int kDialogButtonGap = 10;
+
+    RemoteNetworkWarningDialogState state;
+    Fl_Double_Window dialog(kDialogW, kDialogH, "Remote Download Warning");
+    dialog.set_modal();
+    dialog.begin();
+
+    auto* warningBox = new Fl_Box(
+        kDialogPad, kDialogPad, kDialogW - (2 * kDialogPad), kWarningBoxH,
+        "Remote module sources can be monitored on the network.\n\n"
+        "If you live in a persecuted country and do not want to risk detection,\n"
+        "do not use remote sources.\n\n"
+        "Continue with remote network access?");
+    warningBox->box(FL_BORDER_BOX);
+    warningBox->align(FL_ALIGN_LEFT | FL_ALIGN_INSIDE | FL_ALIGN_WRAP);
+
+    auto* dontShowButton = new Fl_Check_Button(
+        kDialogPad, kCheckboxY, kDialogW - (2 * kDialogPad), 24,
+        "Don't show this warning again");
+
+    auto* cancelButton = new Fl_Button(
+        kDialogW - (2 * kDialogPad) - (2 * kDialogButtonW) - kDialogButtonGap,
+        kDialogH - kDialogPad - kDialogButtonH,
+        kDialogButtonW,
+        kDialogButtonH,
+        "Cancel");
+    cancelButton->callback(
+        [](Fl_Widget* widget, void* data) {
+            auto* state = static_cast<RemoteNetworkWarningDialogState*>(data);
+            if (state) state->accepted = false;
+            if (widget && widget->window()) widget->window()->hide();
+        },
+        &state);
+
+    auto* continueButton = new Fl_Button(
+        kDialogW - kDialogPad - kDialogButtonW,
+        kDialogH - kDialogPad - kDialogButtonH,
+        kDialogButtonW,
+        kDialogButtonH,
+        "Continue");
+    continueButton->callback(
+        [](Fl_Widget* widget, void* data) {
+            auto* state = static_cast<RemoteNetworkWarningDialogState*>(data);
+            if (state) state->accepted = true;
+            if (widget && widget->window()) widget->window()->hide();
+        },
+        &state);
+
+    dialog.end();
+    ui_font::applyCurrentAppUiFont(&dialog);
+    dialog.show();
+    cancelButton->take_focus();
+    while (dialog.shown()) {
+        Fl::wait();
+    }
+
+    if (dontShowAgain && state.accepted && dontShowButton->value()) {
+        *dontShowAgain = true;
+    }
+    return state.accepted;
+}
+
 } // namespace
 
 ModuleManagerDialog::ModuleManagerDialog(VerdadApp* app, int W, int H)
@@ -2953,13 +3030,20 @@ void ModuleManagerDialog::openSourceManager() {
 }
 
 bool ModuleManagerDialog::confirmRemoteNetworkUse() {
-    int answer = fl_choice(
-        "Remote module sources can be monitored on the network.\n\n"
-        "If you live in a persecuted country and do not want to risk detection,\n"
-        "do not use remote sources.\n\n"
-        "Continue with remote network access?",
-        "Cancel", "Continue", nullptr);
-    return answer == 1;
+    if (app_ && !app_->moduleManagerSettings().showRemoteNetworkWarning) {
+        return true;
+    }
+
+    bool dontShowAgain = false;
+    const bool confirmed = showRemoteNetworkWarningDialog(&dontShowAgain);
+    if (confirmed && dontShowAgain && app_) {
+        VerdadApp::ModuleManagerSettings settings = app_->moduleManagerSettings();
+        settings.showRemoteNetworkWarning = false;
+        app_->setModuleManagerSettings(settings);
+        app_->savePreferences();
+    }
+
+    return confirmed;
 }
 
 std::string ModuleManagerDialog::sourceUrl(const SourceRow& row) const {
@@ -3464,6 +3548,14 @@ void ModuleManagerDialog::installOrUpdateSelectedModules() {
         statusBox_->copy_label("Install failed: local .sword folder unavailable");
         return;
     }
+
+    // Installing mutates ~/.sword while the indexer builds fresh SWMgr
+    // instances in the background, so pause indexing until the module set is
+    // stable again.
+    SearchIndexer::ScopedSuspend suspendedIndexing =
+        (app_ && app_->searchIndexer())
+            ? app_->searchIndexer()->suspendBackgroundIndexing()
+            : SearchIndexer::ScopedSuspend();
 
     const std::string localSwordRoot = userSwordRootDir();
     sword::SWMgr destMgr(localSwordRoot.c_str(),
