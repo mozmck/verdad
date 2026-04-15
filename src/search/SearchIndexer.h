@@ -19,6 +19,8 @@ struct sqlite3;
 
 namespace verdad {
 
+class ImportedModuleManager;
+
 /// SQLite FTS5-backed search index for searchable SWORD modules.
 /// The database only stores module index data (no tags/settings data).
 class SearchIndexer {
@@ -66,7 +68,8 @@ public:
 
     using RegexProgressCallback = std::function<bool(const RegexSearchProgress&)>;
 
-    explicit SearchIndexer(const std::string& dbPath);
+    explicit SearchIndexer(const std::string& dbPath,
+                           const ImportedModuleManager* importedModuleMgr = nullptr);
     ~SearchIndexer();
 
     SearchIndexer(const SearchIndexer&) = delete;
@@ -160,6 +163,7 @@ private:
 
     std::string dbPath_;
     sqlite3* db_ = nullptr;
+    const ImportedModuleManager* importedModuleMgr_ = nullptr;
 
     mutable std::mutex dbMutex_;
 

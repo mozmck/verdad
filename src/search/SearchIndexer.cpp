@@ -1,3 +1,4 @@
+#include "import/ImportedModuleManager.h"
 #include "search/SearchIndexer.h"
 #include "search/SmartSearch.h"
 #include "sword/SwordPaths.h"
@@ -787,8 +788,10 @@ std::string buildStrongsSnippet(const std::string& xhtml,
 
 } // namespace
 
-SearchIndexer::SearchIndexer(const std::string& dbPath)
-    : dbPath_(dbPath) {
+SearchIndexer::SearchIndexer(const std::string& dbPath,
+                             const ImportedModuleManager* importedModuleMgr)
+    : dbPath_(dbPath)
+    , importedModuleMgr_(importedModuleMgr) {
     int rc = sqlite3_open_v2(
         dbPath_.c_str(), &db_,
         SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_FULLMUTEX,
@@ -1968,6 +1971,130 @@ void SearchIndexer::indexModuleNow(const std::string& moduleName) {
         if (it != moduleCatalog_.end()) {
             catalogEntry = it->second;
         }
+    }
+
+    if (importedModuleMgr_ && importedModuleMgr_->hasModule(moduleName)) {
+        auto importedEntries = importedModuleMgr_->indexEntries(moduleName);
+        if (importedEntries.empty()) {
+            writeError("Imported module has no extracted entries.");
+            sqlite3_close(writeDb);
+            return;
+        }
+
+        const std::string resourceType = "general_book";
+        const std::string moduleToken = !catalogEntry.moduleToken.empty()
+            ? catalogEntry.moduleToken
+            : normalizeFilterToken(moduleName);
+        const std::string moduleSignature = !catalogEntry.signature.empty()
+            ? catalogEntry.signature
+            : buildModuleSignature(
+                importedModuleMgr_->moduleInfo(moduleName),
+                resourceType,
+                moduleToken);
+
+        sqlite3_exec(writeDb, "BEGIN IMMEDIATE TRANSACTION;", nullptr, nullptr, nullptr);
+
+        sqlite3_stmt* deleteIndex = nullptr;
+        sqlite3_stmt* deleteStatus = nullptr;
+        sqlite3_stmt* insertRow = nullptr;
+        sqlite3_stmt* markIndexed = nullptr;
+        sqlite3_stmt* deleteError = nullptr;
+
+        sqlite3_prepare_v2(
+            writeDb,
+            "DELETE FROM library_index WHERE module_name = ?",
+            -1, &deleteIndex, nullptr);
+        sqlite3_prepare_v2(
+            writeDb,
+            "DELETE FROM indexed_modules WHERE module_name = ?",
+            -1, &deleteStatus, nullptr);
+        sqlite3_prepare_v2(
+            writeDb,
+            "INSERT INTO library_index(resource_type, module_token, scope_token, title, content, strongs_text, module_name, key_text) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            -1, &insertRow, nullptr);
+        sqlite3_prepare_v2(
+            writeDb,
+            "INSERT OR REPLACE INTO indexed_modules(module_name, resource_type, module_signature, entry_count, indexed_at) "
+            "VALUES (?, ?, ?, ?, datetime('now'))",
+            -1, &markIndexed, nullptr);
+        sqlite3_prepare_v2(
+            writeDb,
+            "DELETE FROM module_index_errors WHERE module_name = ?",
+            -1, &deleteError, nullptr);
+
+        if (!deleteIndex || !deleteStatus || !insertRow || !markIndexed || !deleteError) {
+            if (deleteIndex) sqlite3_finalize(deleteIndex);
+            if (deleteStatus) sqlite3_finalize(deleteStatus);
+            if (insertRow) sqlite3_finalize(insertRow);
+            if (markIndexed) sqlite3_finalize(markIndexed);
+            if (deleteError) sqlite3_finalize(deleteError);
+            sqlite3_exec(writeDb, "ROLLBACK;", nullptr, nullptr, nullptr);
+            writeError("Failed to prepare imported-module index statements.");
+            sqlite3_close(writeDb);
+            return;
+        }
+
+        bindText(deleteIndex, 1, moduleName);
+        sqlite3_step(deleteIndex);
+        bindText(deleteStatus, 1, moduleName);
+        sqlite3_step(deleteStatus);
+
+        int insertedEntries = 0;
+        for (size_t i = 0; i < importedEntries.size(); ++i) {
+            const auto& entry = importedEntries[i];
+            bindText(insertRow, 1, resourceType);
+            bindText(insertRow, 2, moduleToken);
+            bindText(insertRow, 3, "");
+            bindText(insertRow, 4, entry.title);
+            bindText(insertRow, 5, entry.plainText);
+            bindText(insertRow, 6, "");
+            bindText(insertRow, 7, moduleName);
+            bindText(insertRow, 8, entry.key);
+            if (sqlite3_step(insertRow) != SQLITE_DONE) {
+                sqlite3_reset(insertRow);
+                sqlite3_clear_bindings(insertRow);
+                sqlite3_exec(writeDb, "ROLLBACK;", nullptr, nullptr, nullptr);
+                sqlite3_finalize(deleteIndex);
+                sqlite3_finalize(deleteStatus);
+                sqlite3_finalize(insertRow);
+                sqlite3_finalize(markIndexed);
+                sqlite3_finalize(deleteError);
+                writeError("Failed to insert imported module index entry.");
+                sqlite3_close(writeDb);
+                return;
+            }
+            ++insertedEntries;
+            sqlite3_reset(insertRow);
+            sqlite3_clear_bindings(insertRow);
+            setProgress(static_cast<int>(((i + 1) * 100) /
+                                         std::max<size_t>(importedEntries.size(), 1)));
+        }
+
+        bindText(markIndexed, 1, moduleName);
+        bindText(markIndexed, 2, resourceType);
+        bindText(markIndexed, 3, moduleSignature);
+        sqlite3_bind_int(markIndexed, 4, insertedEntries);
+        bool marked = sqlite3_step(markIndexed) == SQLITE_DONE;
+
+        bindText(deleteError, 1, moduleName);
+        sqlite3_step(deleteError);
+
+        sqlite3_finalize(deleteIndex);
+        sqlite3_finalize(deleteStatus);
+        sqlite3_finalize(insertRow);
+        sqlite3_finalize(markIndexed);
+        sqlite3_finalize(deleteError);
+
+        if (marked) {
+            sqlite3_exec(writeDb, "COMMIT;", nullptr, nullptr, nullptr);
+            setProgress(100);
+        } else {
+            sqlite3_exec(writeDb, "ROLLBACK;", nullptr, nullptr, nullptr);
+            writeError("Failed to finalize imported module index metadata.");
+        }
+        sqlite3_close(writeDb);
+        return;
     }
 
     std::unique_ptr<sword::SWConfig> bundledSysConfig;

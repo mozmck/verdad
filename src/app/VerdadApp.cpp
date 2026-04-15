@@ -1,5 +1,6 @@
 #include "app/VerdadApp.h"
 #include "app/PlatformPaths.h"
+#include "import/ImportedModuleManager.h"
 #include "reading/ReadingPlanManager.h"
 #include "sword/SwordManager.h"
 #include "search/SearchIndexer.h"
@@ -532,7 +533,8 @@ VerdadApp::VerdadApp()
     : swordMgr_(std::make_unique<SwordManager>())
     , searchIndexer_(nullptr)
     , tagMgr_(std::make_unique<TagManager>())
-    , readingPlanMgr_(std::make_unique<ReadingPlanManager>()) {
+    , readingPlanMgr_(std::make_unique<ReadingPlanManager>())
+    , importedModuleMgr_(std::make_unique<ImportedModuleManager>()) {
     instance_ = this;
 }
 
@@ -560,10 +562,14 @@ bool VerdadApp::initialize(int argc, char* argv[]) {
     // Load tags from the SQLite tag database.
     tagMgr_->load(joinPath(getConfigDir(), "tags.db"));
     readingPlanMgr_->load(joinPath(getConfigDir(), "reading_plans.db"));
+    importedModuleMgr_->load(joinPath(getConfigDir(), "imports.db"),
+                             joinPath(getConfigDir(), "imports"));
+    swordMgr_->setImportedModuleManager(importedModuleMgr_.get());
 
     // Initialize FTS5 index database (separate from tags/settings data).
     searchIndexer_ = std::make_unique<SearchIndexer>(
-        joinPath(getConfigDir(), "module_index.db"));
+        joinPath(getConfigDir(), "module_index.db"),
+        importedModuleMgr_.get());
 
     // Set up FLTK
     applyThemePalette(appearanceSettings_.themeMode);

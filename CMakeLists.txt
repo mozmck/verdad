@@ -97,6 +97,7 @@ set(SOURCES
     src/main.cpp
     src/app/VerdadApp.cpp
     src/app/PlatformPaths.cpp
+    src/import/ImportedModuleManager.cpp
     src/sword/SwordManager.cpp
     src/sword/SwordPaths.cpp
     src/search/SearchIndexer.cpp
@@ -129,6 +130,7 @@ set(HEADERS
     src/app/VerdadApp.h
     src/app/PerfTrace.h
     src/app/PlatformPaths.h
+    src/import/ImportedModuleManager.h
     src/sword/SwordManager.h
     src/sword/SwordPaths.h
     src/search/SearchIndexer.h

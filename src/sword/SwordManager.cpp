@@ -1,4 +1,5 @@
 #include "sword/SwordManager.h"
+#include "import/ImportedModuleManager.h"
 #include "sword/SwordPaths.h"
 #include "app/PerfTrace.h"
 #include "reading/DateUtils.h"
@@ -4149,6 +4150,12 @@ std::string commentaryEntryHtml(sword::SWModule* mod,
 SwordManager::SwordManager() = default;
 SwordManager::~SwordManager() = default;
 
+void SwordManager::setImportedModuleManager(
+        const ImportedModuleManager* importedModuleMgr) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    importedModuleMgr_ = importedModuleMgr;
+}
+
 void SwordManager::clearRenderCachesLocked() {
     postProcessCache_.clear();
     postProcessLru_.clear();
@@ -4486,10 +4493,15 @@ std::vector<ModuleInfo> SwordManager::getModules() const {
     std::lock_guard<std::mutex> lock(mutex_);
     std::vector<ModuleInfo> modules;
 
-    if (!mgr_) return modules;
+    if (mgr_) {
+        for (auto it = mgr_->Modules.begin(); it != mgr_->Modules.end(); ++it) {
+            modules.push_back(buildModuleInfo(it->second));
+        }
+    }
 
-    for (auto it = mgr_->Modules.begin(); it != mgr_->Modules.end(); ++it) {
-        modules.push_back(buildModuleInfo(it->second));
+    if (importedModuleMgr_) {
+        auto importedModules = importedModuleMgr_->modules();
+        modules.insert(modules.end(), importedModules.begin(), importedModules.end());
     }
 
     std::sort(modules.begin(), modules.end(),
@@ -4598,23 +4610,28 @@ std::vector<ModuleInfo> SwordManager::getGeneralBookModules() const {
     std::lock_guard<std::mutex> lock(mutex_);
     std::vector<ModuleInfo> modules;
 
-    if (!mgr_) return modules;
+    if (mgr_) {
+        for (auto it = mgr_->Modules.begin(); it != mgr_->Modules.end(); ++it) {
+            sword::SWModule* mod = it->second;
+            if (!mod) continue;
 
-    for (auto it = mgr_->Modules.begin(); it != mgr_->Modules.end(); ++it) {
-        sword::SWModule* mod = it->second;
-        if (!mod) continue;
-
-        const char* typeRaw = mod->getType();
-        std::string type = typeRaw ? typeRaw : "";
-        std::string lower = toLowerAscii(type);
-        bool isGeneralBook =
-            lower == "genbook" ||
-            containsNoCase(lower, "genbook") ||
-            containsNoCase(lower, "general book") ||
-            containsNoCase(lower, "generic book");
-        if (isGeneralBook) {
-            modules.push_back(buildModuleInfo(mod));
+            const char* typeRaw = mod->getType();
+            std::string type = typeRaw ? typeRaw : "";
+            std::string lower = toLowerAscii(type);
+            bool isGeneralBook =
+                lower == "genbook" ||
+                containsNoCase(lower, "genbook") ||
+                containsNoCase(lower, "general book") ||
+                containsNoCase(lower, "generic book");
+            if (isGeneralBook) {
+                modules.push_back(buildModuleInfo(mod));
+            }
         }
+    }
+
+    if (importedModuleMgr_) {
+        auto importedModules = importedModuleMgr_->modules();
+        modules.insert(modules.end(), importedModules.begin(), importedModules.end());
     }
 
     std::sort(modules.begin(), modules.end(),
@@ -4627,6 +4644,10 @@ std::vector<ModuleInfo> SwordManager::getGeneralBookModules() const {
 
 std::vector<GeneralBookTocEntry> SwordManager::getGeneralBookToc(
     const std::string& moduleName) const {
+    if (importedModuleMgr_ && importedModuleMgr_->hasModule(moduleName)) {
+        return importedModuleMgr_->toc(moduleName);
+    }
+
     std::lock_guard<std::mutex> lock(mutex_);
     std::vector<GeneralBookTocEntry> toc;
 
@@ -5489,6 +5510,10 @@ SwordManager::getDailyReadingPlanMonthSummaries(const std::string& moduleName,
 
 std::string SwordManager::getGeneralBookEntry(const std::string& moduleName,
                                               const std::string& key) {
+    if (importedModuleMgr_ && importedModuleMgr_->hasModule(moduleName)) {
+        return importedModuleMgr_->entryHtml(moduleName, key);
+    }
+
     std::lock_guard<std::mutex> lock(mutex_);
     sword::SWModule* mod = getModule(moduleName);
     if (!mod) return "<p><i>General book module not found: " + htmlEscapeAttr(moduleName) + "</i></p>";
@@ -6266,6 +6291,10 @@ int SwordManager::getVerseCount(const std::string& moduleName,
 }
 
 std::string SwordManager::getModuleDescription(const std::string& moduleName) const {
+    if (importedModuleMgr_ && importedModuleMgr_->hasModule(moduleName)) {
+        return importedModuleMgr_->moduleInfo(moduleName).description;
+    }
+
     std::lock_guard<std::mutex> lock(mutex_);
     sword::SWModule* mod = getModule(moduleName);
     if (!mod) return "";

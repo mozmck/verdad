@@ -13,6 +13,7 @@ class SwordManager;
 class SearchIndexer;
 class TagManager;
 class ReadingPlanManager;
+class ImportedModuleManager;
 class MainWindow;
 
 /// Main application class - owns all managers and the main window
@@ -117,6 +118,10 @@ public:
     ReadingPlanManager& readingPlanManager() { return *readingPlanMgr_; }
     const ReadingPlanManager& readingPlanManager() const { return *readingPlanMgr_; }
 
+    /// Get the imported file/module manager.
+    ImportedModuleManager& importedModuleManager() { return *importedModuleMgr_; }
+    const ImportedModuleManager& importedModuleManager() const { return *importedModuleMgr_; }
+
     /// Get the search indexer (may be nullptr if initialization failed)
     SearchIndexer* searchIndexer() { return searchIndexer_.get(); }
     const SearchIndexer* searchIndexer() const { return searchIndexer_.get(); }
@@ -218,6 +223,7 @@ private:
     std::unique_ptr<SearchIndexer> searchIndexer_;
     std::unique_ptr<TagManager> tagMgr_;
     std::unique_ptr<ReadingPlanManager> readingPlanMgr_;
+    std::unique_ptr<ImportedModuleManager> importedModuleMgr_;
     std::unique_ptr<MainWindow> mainWindow_;
     AppearanceSettings appearanceSettings_;
     PreviewDictionarySettings previewDictionarySettings_;

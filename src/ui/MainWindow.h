@@ -339,6 +339,7 @@ private:
     static void onFileNewDocument(Fl_Widget* w, void* data);
     static void onFileSaveDocument(Fl_Widget* w, void* data);
     static void onFileExportDocumentOdt(Fl_Widget* w, void* data);
+    static void onToolsImportFiles(Fl_Widget* w, void* data);
     static void onToolsImportSettings(Fl_Widget* w, void* data);
     static void onToolsExportSettings(Fl_Widget* w, void* data);
     static void onViewParallel(Fl_Widget* w, void* data);

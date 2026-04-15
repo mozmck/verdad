@@ -1,6 +1,7 @@
 #include "ui/MainWindow.h"
 #include "app/BuildConfig.h"
 #include "app/VerdadApp.h"
+#include "import/ImportedModuleManager.h"
 #include "ui/LeftPane.h"
 #include "ui/BiblePane.h"
 #include "ui/FilterableChoiceWidget.h"
@@ -25,9 +26,13 @@
 #include <FL/Fl_Return_Button.H>
 #include <FL/Fl_Box.H>
 #include <FL/Fl_Browser_.H>
+#include <FL/Fl_Button.H>
+#include <FL/Fl_Check_Button.H>
 #include <FL/Fl_Hold_Browser.H>
+#include <FL/Fl_Input.H>
 #include <FL/Fl_Input_.H>
 #include <FL/Fl_Menu_.H>
+#include <FL/Fl_Multiline_Input.H>
 #include <FL/Fl_PNG_Image.H>
 
 #include <algorithm>
@@ -286,6 +291,298 @@ bool endsWithIgnoreCase(const std::string& text, const std::string& suffix) {
     }
     return true;
 }
+
+bool isSupportedImportFile(const fs::path& path) {
+    std::string ext = path.extension().string();
+    std::transform(ext.begin(), ext.end(), ext.begin(),
+                   [](unsigned char c) {
+                       return static_cast<char>(std::tolower(c));
+                   });
+    return ext == ".pdf" || ext == ".txt" || ext == ".md" || ext == ".markdown";
+}
+
+class ImportFilesDialog {
+public:
+    explicit ImportFilesDialog(MainWindow* owner)
+        : owner_(owner)
+        , app_(VerdadApp::instance()) {}
+
+    bool runModal() {
+        if (!owner_ || !app_) return false;
+
+        window_ = new Fl_Double_Window(920, 560, "Import Files");
+        window_->begin();
+
+        int x = 14;
+        int y = 12;
+        auto* intro = new Fl_Box(x, y, 892, 36,
+                                 "Import PDF, TXT, or Markdown files as searchable modules in General Books.");
+        intro->align(FL_ALIGN_LEFT | FL_ALIGN_INSIDE | FL_ALIGN_WRAP);
+        y += 40;
+
+        const int gap = 12;
+        const int colW = 440;
+        const int browserH = 240;
+
+        auto* existingLabel = new Fl_Box(x, y, colW, 22, "Imported files");
+        existingLabel->align(FL_ALIGN_LEFT | FL_ALIGN_INSIDE);
+        auto* pendingLabel = new Fl_Box(x + colW + gap, y, colW, 22, "Pending import");
+        pendingLabel->align(FL_ALIGN_LEFT | FL_ALIGN_INSIDE);
+        y += 22;
+
+        existingBrowser_ = new Fl_Hold_Browser(x, y, colW, browserH);
+        pendingBrowser_ = new Fl_Hold_Browser(x + colW + gap, y, colW, browserH);
+        y += browserH + 8;
+
+        auto* removeImportButton = new Fl_Button(x, y, 130, 28, "Remove import");
+        removeImportButton->callback(onRemoveImport, this);
+
+        auto* addFilesButton = new Fl_Button(x + colW + gap, y, 96, 28, "Add files...");
+        addFilesButton->callback(onAddFiles, this);
+        auto* addFolderButton = new Fl_Button(x + colW + gap + 104, y, 102, 28, "Add folder...");
+        addFolderButton->callback(onAddFolder, this);
+        auto* clearPendingButton = new Fl_Button(x + colW + gap + 214, y, 112, 28, "Clear pending");
+        clearPendingButton->callback(onClearPending, this);
+        y += 42;
+
+        copyCheck_ = new Fl_Check_Button(x, y, 892, 24,
+                                         "Copy imported files to the user data directory");
+        copyCheck_->value(1);
+        y += 30;
+
+        auto* tagsLabel = new Fl_Box(x, y, 60, 24, "Tags");
+        tagsLabel->align(FL_ALIGN_LEFT | FL_ALIGN_INSIDE);
+        tagsInput_ = new Fl_Input(x + 64, y, 842, 24);
+        y += 32;
+
+        auto* notesLabel = new Fl_Box(x, y, 60, 24, "Notes");
+        notesLabel->align(FL_ALIGN_LEFT | FL_ALIGN_INSIDE);
+        notesInput_ = new Fl_Multiline_Input(x + 64, y, 842, 72);
+        y += 82;
+
+        statusBox_ = new Fl_Box(x, y, 892, 48, "");
+        statusBox_->align(FL_ALIGN_LEFT | FL_ALIGN_INSIDE | FL_ALIGN_WRAP);
+
+        auto* closeButton = new Fl_Button(920 - 210, 560 - 42, 90, 28, "Close");
+        closeButton->callback(onClose, this);
+        auto* importButton = new Fl_Return_Button(920 - 110, 560 - 42, 90, 28, "Import");
+        importButton->callback(onImport, this);
+
+        window_->end();
+        ui_font::applyCurrentAppUiFont(window_);
+
+        refreshExisting();
+        refreshPending();
+        setStatus("Add individual files or an entire folder, then import them into the library.");
+
+        window_->set_modal();
+        window_->show();
+        while (window_->shown()) {
+            Fl::wait();
+        }
+
+        delete window_;
+        window_ = nullptr;
+        return changed_;
+    }
+
+private:
+    void setStatus(const std::string& text) {
+        if (statusBox_) statusBox_->copy_label(text.c_str());
+    }
+
+    void refreshExisting() {
+        if (!existingBrowser_) return;
+        existingRecords_ = app_->importedModuleManager().records();
+        existingBrowser_->clear();
+        for (const auto& record : existingRecords_) {
+            std::string label = record.moduleName + " [" + record.fileType + "]";
+            if (!trimCopy(record.tags).empty()) {
+                label += " {" + trimCopy(record.tags) + "}";
+            }
+            existingBrowser_->add(label.c_str());
+        }
+    }
+
+    void refreshPending() {
+        if (!pendingBrowser_) return;
+        pendingBrowser_->clear();
+        for (const auto& path : pendingPaths_) {
+            pendingBrowser_->add(path.c_str());
+        }
+    }
+
+    void addPath(const std::string& path) {
+        std::error_code ec;
+        fs::path filePath(path);
+        fs::path canonical = fs::weakly_canonical(filePath, ec);
+        std::string normalized = (ec ? filePath.lexically_normal() : canonical).string();
+        if (!isSupportedImportFile(fs::path(normalized))) return;
+        if (std::find(pendingPaths_.begin(), pendingPaths_.end(), normalized) ==
+            pendingPaths_.end()) {
+            pendingPaths_.push_back(normalized);
+        }
+    }
+
+    void addFiles() {
+        Fl_Native_File_Chooser chooser;
+        chooser.title("Import Files");
+        chooser.type(Fl_Native_File_Chooser::BROWSE_MULTI_FILE);
+        chooser.filter("Supported Files\t*.{pdf,PDF,txt,TXT,md,MD,markdown,MARKDOWN}");
+
+        int result = chooser.show();
+        if (result != 0) {
+            if (result < 0) setStatus("Unable to open the file chooser.");
+            return;
+        }
+
+        int count = chooser.count();
+        if (count <= 0) {
+            const char* filename = chooser.filename();
+            if (filename) addPath(filename);
+        } else {
+            for (int i = 1; i <= count; ++i) {
+                const char* filename = chooser.filename(i);
+                if (filename) addPath(filename);
+            }
+        }
+        refreshPending();
+        setStatus("Added files to the pending import list.");
+    }
+
+    void addFolder() {
+        Fl_Native_File_Chooser chooser;
+        chooser.title("Choose Folder to Import");
+        chooser.type(Fl_Native_File_Chooser::BROWSE_DIRECTORY);
+
+        int result = chooser.show();
+        if (result != 0) {
+            if (result < 0) setStatus("Unable to open the folder chooser.");
+            return;
+        }
+
+        std::string directory = chooser.filename() ? chooser.filename() : "";
+        if (directory.empty()) return;
+
+        std::error_code ec;
+        for (fs::recursive_directory_iterator it(fs::path(directory), ec), end;
+             !ec && it != end;
+             it.increment(ec)) {
+            if (it->is_regular_file() && isSupportedImportFile(it->path())) {
+                addPath(it->path().string());
+            }
+        }
+
+        refreshPending();
+        setStatus("Scanned the selected folder for supported files.");
+    }
+
+    void clearPending() {
+        pendingPaths_.clear();
+        refreshPending();
+        setStatus("Cleared the pending import list.");
+    }
+
+    void removeImport() {
+        int index = existingBrowser_ ? existingBrowser_->value() - 1 : -1;
+        if (index < 0 || index >= static_cast<int>(existingRecords_.size())) {
+            setStatus("Select an imported module to remove.");
+            return;
+        }
+
+        const auto& record = existingRecords_[static_cast<size_t>(index)];
+        int confirm = fl_choice("Remove imported file \"%s\"?\n\nIts extracted content and metadata will be deleted.",
+                                "Cancel", "Remove", nullptr, record.moduleName.c_str());
+        if (confirm != 1) return;
+
+        std::string error;
+        if (!app_->importedModuleManager().removeModule(record.moduleName, &error)) {
+            setStatus(error.empty() ? "Failed to remove imported file." : error);
+            return;
+        }
+
+        changed_ = true;
+        app_->refreshSearchIndexCatalog();
+        owner_->refresh();
+        refreshExisting();
+        setStatus("Removed imported file.");
+    }
+
+    void importPending() {
+        if (pendingPaths_.empty()) {
+            setStatus("No files are queued for import.");
+            return;
+        }
+
+        ImportedModuleManager::ImportOptions options;
+        options.copyFiles = copyCheck_ && copyCheck_->value() != 0;
+        options.tags = tagsInput_ ? trimCopy(tagsInput_->value()) : "";
+        options.notes = notesInput_ ? trimCopy(notesInput_->value()) : "";
+
+        auto result = app_->importedModuleManager().importPaths(pendingPaths_, options);
+        if (result.importedCount() > 0 || result.updatedCount() > 0) {
+            changed_ = true;
+            app_->refreshSearchIndexCatalog();
+            owner_->refresh();
+        }
+
+        std::ostringstream summary;
+        summary << "Imported " << result.importedCount()
+                << ", updated " << result.updatedCount()
+                << ", skipped " << result.skippedCount()
+                << ", failed " << result.failureCount() << ".";
+        setStatus(summary.str());
+
+        refreshExisting();
+        if (result.failureCount() == 0) {
+            pendingPaths_.clear();
+            refreshPending();
+        }
+    }
+
+    static void onAddFiles(Fl_Widget*, void* data) {
+        auto* self = static_cast<ImportFilesDialog*>(data);
+        if (self) self->addFiles();
+    }
+
+    static void onAddFolder(Fl_Widget*, void* data) {
+        auto* self = static_cast<ImportFilesDialog*>(data);
+        if (self) self->addFolder();
+    }
+
+    static void onClearPending(Fl_Widget*, void* data) {
+        auto* self = static_cast<ImportFilesDialog*>(data);
+        if (self) self->clearPending();
+    }
+
+    static void onRemoveImport(Fl_Widget*, void* data) {
+        auto* self = static_cast<ImportFilesDialog*>(data);
+        if (self) self->removeImport();
+    }
+
+    static void onImport(Fl_Widget*, void* data) {
+        auto* self = static_cast<ImportFilesDialog*>(data);
+        if (self) self->importPending();
+    }
+
+    static void onClose(Fl_Widget*, void* data) {
+        auto* self = static_cast<ImportFilesDialog*>(data);
+        if (self && self->window_) self->window_->hide();
+    }
+
+    MainWindow* owner_ = nullptr;
+    VerdadApp* app_ = nullptr;
+    Fl_Double_Window* window_ = nullptr;
+    Fl_Hold_Browser* existingBrowser_ = nullptr;
+    Fl_Hold_Browser* pendingBrowser_ = nullptr;
+    Fl_Check_Button* copyCheck_ = nullptr;
+    Fl_Input* tagsInput_ = nullptr;
+    Fl_Multiline_Input* notesInput_ = nullptr;
+    Fl_Box* statusBox_ = nullptr;
+    std::vector<std::string> pendingPaths_;
+    std::vector<ImportedModuleManager::ModuleRecord> existingRecords_;
+    bool changed_ = false;
+};
 
 std::string pathLeaf(const std::string& path) {
     if (path.empty()) return "";
@@ -2422,6 +2719,7 @@ void MainWindow::buildMenu() {
     menuBar_->add("&File/&Export Studypad to ODT...", 0, onFileExportDocumentOdt, this);
     menuBar_->add("&File/&Quit", FL_CTRL + 'q', onFileQuit, this);
     menuBar_->add("&Tools/&Module Manager...", 0, onFileModuleManager, this);
+    menuBar_->add("&Tools/&Import Files...", 0, onToolsImportFiles, this);
     menuBar_->add("&Tools/&Settings...", 0, onViewSettings, this);
     menuBar_->add("&Tools/&Import Settings...", 0, onToolsImportSettings, this);
     menuBar_->add("&Tools/&Export Settings...", 0, onToolsExportSettings, this);
@@ -2465,6 +2763,17 @@ void MainWindow::onFileExportDocumentOdt(Fl_Widget* /*w*/, void* data) {
     auto* self = static_cast<MainWindow*>(data);
     if (!self || !self->rightPane_) return;
     self->rightPane_->exportDocumentToOdt();
+}
+
+void MainWindow::onToolsImportFiles(Fl_Widget* /*w*/, void* data) {
+    auto* self = static_cast<MainWindow*>(data);
+    if (!self || !self->app_) return;
+
+    ImportFilesDialog dialog(self);
+    bool changed = dialog.runModal();
+    if (changed) {
+        self->showTransientStatus("Updated imported files", 2.8);
+    }
 }
 
 void MainWindow::onToolsImportSettings(Fl_Widget* /*w*/, void* data) {

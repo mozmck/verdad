@@ -23,6 +23,8 @@ namespace sword {
 
 namespace verdad {
 
+class ImportedModuleManager;
+
 /// Information about a SWORD module
 struct ModuleInfo {
     std::string name;           // Module abbreviation (e.g. "KJV")
@@ -134,6 +136,9 @@ public:
 
     /// Initialize the SWORD manager. Returns true on success.
     bool initialize();
+
+    /// Attach the imported-module provider used to surface file imports as modules.
+    void setImportedModuleManager(const ImportedModuleManager* importedModuleMgr);
 
     /// Get list of all available modules
     std::vector<ModuleInfo> getModules() const;
@@ -393,6 +398,7 @@ private:
     std::unique_ptr<sword::SWMgr> mgr_;
     std::unique_ptr<sword::SWConfig> bundledSysConfig_;
     mutable std::mutex mutex_;
+    const ImportedModuleManager* importedModuleMgr_ = nullptr;
     mutable std::unordered_map<std::string, PostProcessCacheEntry> postProcessCache_;
     mutable std::list<const std::string*> postProcessLru_;
     static constexpr size_t kPostProcessCacheLimit = 1024;
