@@ -806,6 +806,36 @@ void parseHtmlToEditorContent(const std::string& html,
     }
 }
 
+struct VerseReferenceRange {
+    int start = 0;
+    int end = 0;
+};
+
+bool findValidVerseReferenceSuffix(const std::string& candidate,
+                                   int basePos,
+                                   VerseReferenceRange& rangeOut) {
+    for (size_t start = 0; start < candidate.size(); ++start) {
+        if (start > 0 &&
+            !std::isspace(static_cast<unsigned char>(candidate[start - 1]))) {
+            continue;
+        }
+
+        size_t textStart = start;
+        while (textStart < candidate.size() &&
+               std::isspace(static_cast<unsigned char>(candidate[textStart]))) {
+            ++textStart;
+        }
+
+        std::string suffix = candidate.substr(textStart);
+        if (suffix.empty() || !SwordManager::isValidVerseRef(suffix)) continue;
+
+        rangeOut.start = basePos + static_cast<int>(textStart);
+        rangeOut.end = basePos + static_cast<int>(candidate.size());
+        return true;
+    }
+    return false;
+}
+
 std::vector<std::pair<int, int>> verseReferenceRanges(const std::string& text) {
     static const std::regex refRe(
         R"(((?:[1-3]\s+)?[A-Za-z]+(?:\s+[A-Za-z]+)*\s+\d+:\d+(?:-\d+)?))");
@@ -815,14 +845,11 @@ std::vector<std::pair<int, int>> verseReferenceRanges(const std::string& text) {
     auto end = std::sregex_iterator();
     for (auto it = begin; it != end; ++it) {
         std::string candidate = (*it)[1].str();
-        try {
-            auto ref = SwordManager::parseVerseRef(candidate);
-            if (!ref.book.empty() && ref.chapter > 0 && ref.verse > 0) {
-                int pos = static_cast<int>((*it).position(1));
-                int len = static_cast<int>((*it).length(1));
-                ranges.emplace_back(pos, pos + len);
-            }
-        } catch (...) {
+        VerseReferenceRange range;
+        if (findValidVerseReferenceSuffix(candidate,
+                                          static_cast<int>((*it).position(1)),
+                                          range)) {
+            ranges.emplace_back(range.start, range.end);
         }
     }
     return ranges;
@@ -858,19 +885,18 @@ std::string escapeAndAutoLink(const std::string& text) {
     auto begin = std::sregex_iterator(text.begin(), text.end(), refRe);
     auto end = std::sregex_iterator();
     for (auto it = begin; it != end; ++it) {
-        size_t pos = static_cast<size_t>((*it).position(1));
-        size_t len = static_cast<size_t>((*it).length(1));
         std::string candidate = (*it)[1].str();
-
-        bool valid = false;
-        try {
-            auto ref = SwordManager::parseVerseRef(candidate);
-            valid = !ref.book.empty() && ref.chapter > 0 && ref.verse > 0;
-        } catch (...) {
-            valid = false;
+        VerseReferenceRange range;
+        if (!findValidVerseReferenceSuffix(
+                candidate,
+                static_cast<int>((*it).position(1)),
+                range)) {
+            continue;
         }
 
-        if (!valid) continue;
+        size_t pos = static_cast<size_t>(range.start);
+        size_t len = static_cast<size_t>(range.end - range.start);
+        candidate = text.substr(pos, len);
 
         out += escapeHtml(text.substr(cursor, pos - cursor));
         out += "<a href=\"sword://" + escapeHtml(candidate) + "\">" +
@@ -1350,6 +1376,41 @@ int prevUtf8Boundary(std::string_view text, int pos) {
     return pos;
 }
 
+namespace {
+
+int previousWordStart(Fl_Text_Buffer* buffer, std::string_view text, int pos) {
+    pos = std::clamp(pos, 0, static_cast<int>(text.size()));
+    if (!buffer || pos <= 0) return prevUtf8Boundary(text, pos);
+
+    while (pos > 0) {
+        int previous = prevUtf8Boundary(text, pos);
+        if (previous == pos || !buffer->is_word_separator(previous)) break;
+        pos = previous;
+    }
+    while (pos > 0) {
+        int previous = prevUtf8Boundary(text, pos);
+        if (previous == pos || buffer->is_word_separator(previous)) break;
+        pos = previous;
+    }
+    return pos;
+}
+
+int nextWordEnd(Fl_Text_Buffer* buffer, std::string_view text, int pos) {
+    const int textSize = static_cast<int>(text.size());
+    pos = std::clamp(pos, 0, textSize);
+    if (!buffer || pos >= textSize) return nextUtf8Boundary(text, pos);
+
+    while (pos < textSize && buffer->is_word_separator(pos)) {
+        pos = nextUtf8Boundary(text, pos);
+    }
+    while (pos < textSize && !buffer->is_word_separator(pos)) {
+        pos = nextUtf8Boundary(text, pos);
+    }
+    return pos;
+}
+
+} // namespace
+
 bool isPrintableUtf8Text(const char* text, int len) {
     if (!text || len <= 0) return false;
     const char* p = text;
@@ -1459,12 +1520,15 @@ private:
     int positionForPoint(int px, int py) const;
     int positionForLineX(int lineIndex, int targetX) const;
     int lineIndexForPosition(int pos) const;
+    int lineIndexForCaretPosition(int pos) const;
+    int visualLineStartForPosition(int pos, int* lineIndexOut = nullptr) const;
+    int visualLineEndForPosition(int pos, int* lineIndexOut = nullptr) const;
     int clampPosition(int pos) const;
     std::string currentText() const;
     MeasuredGlyph measureGlyph(std::string_view text, int pos, bool ruleLine) const;
     int lineAdvanceForHeights(int maxHeight) const;
 
-    void moveCursor(int pos, bool extendSelection);
+    void moveCursor(int pos, bool extendSelection, int visualLineHint = -1);
     void showContextMenuForPosition(int pos, int screenX, int screenY);
     void setSelection(int start, int end);
     void clearSelection();
@@ -1488,6 +1552,7 @@ private:
     mutable int requestedLineAdvance_ = 0;
     int insertPos_ = 0;
     int anchorPos_ = 0;
+    int caretLineHint_ = -1;
     int preferredX_ = -1;
     bool dragging_ = false;
     Fl_Text_Buffer* buffer_ = nullptr;
@@ -1618,6 +1683,7 @@ void HtmlEditorTextArea::buffer(Fl_Text_Buffer* buffer) {
     buffer_ = buffer;
     insertPos_ = 0;
     anchorPos_ = 0;
+    caretLineHint_ = -1;
     preferredX_ = -1;
     invalidateLayout();
 }
@@ -1645,6 +1711,7 @@ void HtmlEditorTextArea::setLineAdvance(int pixels) {
 
 void HtmlEditorTextArea::invalidateLayout() {
     layoutValid_ = false;
+    caretLineHint_ = -1;
     redraw();
 }
 
@@ -1708,9 +1775,10 @@ void HtmlEditorTextArea::clearSelection() {
     redraw();
 }
 
-void HtmlEditorTextArea::moveCursor(int pos, bool extendSelection) {
+void HtmlEditorTextArea::moveCursor(int pos, bool extendSelection, int visualLineHint) {
     pos = clampPosition(pos);
     insertPos_ = pos;
+    caretLineHint_ = visualLineHint;
     if (extendSelection) {
         setSelection(std::min(anchorPos_, pos), std::max(anchorPos_, pos));
     } else {
@@ -1777,6 +1845,7 @@ void HtmlEditorTextArea::selectAll() {
     if (!buffer_) return;
     anchorPos_ = 0;
     insertPos_ = buffer_->length();
+    caretLineHint_ = -1;
     setSelection(0, buffer_->length());
     show_insert_position();
 }
@@ -1796,6 +1865,7 @@ void HtmlEditorTextArea::insertText(const char* text, int len) {
     buffer_->insert(insertPos_, text, len);
     insertPos_ += len;
     anchorPos_ = insertPos_;
+    caretLineHint_ = -1;
     clearSelection();
     owner_->finalizeUserEditAttempt();
     show_insert_position();
@@ -1806,6 +1876,7 @@ void HtmlEditorTextArea::deleteRange(int start, int end) {
     owner_->prepareForUserEdit();
     buffer_->remove(start, end);
     insertPos_ = anchorPos_ = start;
+    caretLineHint_ = -1;
     clearSelection();
     owner_->finalizeUserEditAttempt();
     show_insert_position();
@@ -1898,25 +1969,29 @@ bool HtmlEditorTextArea::handleKeyEvent() {
     std::string text = currentText();
     switch (key) {
     case FL_Left:
-        moveCursor(ctrl && buffer_ ? buffer_->word_start(prevUtf8Boundary(text, insertPos_))
-                                   : prevUtf8Boundary(text, insertPos_),
+        moveCursor(ctrl ? previousWordStart(buffer_, text, insertPos_)
+                        : prevUtf8Boundary(text, insertPos_),
                    shift);
         preferredX_ = -1;
         return true;
     case FL_Right:
-        moveCursor(ctrl && buffer_ ? buffer_->word_end(nextUtf8Boundary(text, insertPos_))
-                                   : nextUtf8Boundary(text, insertPos_),
+        moveCursor(ctrl ? nextWordEnd(buffer_, text, insertPos_)
+                        : nextUtf8Boundary(text, insertPos_),
                    shift);
         preferredX_ = -1;
         return true;
-    case FL_Home:
-        moveCursor(buffer_ ? buffer_->line_start(insertPos_) : 0, shift);
+    case FL_Home: {
+        int lineIndex = -1;
+        moveCursor(visualLineStartForPosition(insertPos_, &lineIndex), shift, lineIndex);
         preferredX_ = -1;
         return true;
-    case FL_End:
-        moveCursor(buffer_ ? buffer_->line_end(insertPos_) : static_cast<int>(text.size()), shift);
+    }
+    case FL_End: {
+        int lineIndex = -1;
+        moveCursor(visualLineEndForPosition(insertPos_, &lineIndex), shift, lineIndex);
         preferredX_ = -1;
         return true;
+    }
     case FL_Up:
     case FL_Down: {
         ensureLayout();
@@ -1925,7 +2000,7 @@ bool HtmlEditorTextArea::handleKeyEvent() {
         if (targetLine < 0 || targetLine >= static_cast<int>(lines_.size())) return true;
         int targetX = (preferredX_ >= 0) ? preferredX_ : caret.x;
         preferredX_ = targetX;
-        moveCursor(positionForLineX(targetLine, targetX), shift);
+        moveCursor(positionForLineX(targetLine, targetX), shift, targetLine);
         return true;
     }
     default:
@@ -2268,7 +2343,7 @@ HtmlEditorTextArea::CaretInfo HtmlEditorTextArea::caretInfoForPosition(int pos) 
     if (lines_.empty()) return {};
 
     pos = clampPosition(pos);
-    int lineIndex = lineIndexForPosition(pos);
+    int lineIndex = lineIndexForCaretPosition(pos);
     const VisualLine& line = lines_[static_cast<size_t>(lineIndex)];
 
     CaretInfo caret;
@@ -2340,6 +2415,40 @@ int HtmlEditorTextArea::lineIndexForPosition(int pos) const {
         }
     }
     return static_cast<int>(lines_.size() - 1);
+}
+
+int HtmlEditorTextArea::lineIndexForCaretPosition(int pos) const {
+    ensureLayout();
+    if (lines_.empty()) return 0;
+
+    int lineIndex = lineIndexForPosition(pos);
+    if (caretLineHint_ >= 0 && caretLineHint_ < static_cast<int>(lines_.size())) {
+        const VisualLine& hintedLine = lines_[static_cast<size_t>(caretLineHint_)];
+        if (pos >= hintedLine.start && pos <= hintedLine.end) {
+            lineIndex = caretLineHint_;
+        }
+    }
+    return std::clamp(lineIndex, 0, static_cast<int>(lines_.size()) - 1);
+}
+
+int HtmlEditorTextArea::visualLineStartForPosition(int pos, int* lineIndexOut) const {
+    ensureLayout();
+    if (lineIndexOut) *lineIndexOut = -1;
+    if (lines_.empty()) return clampPosition(0);
+
+    int lineIndex = lineIndexForCaretPosition(pos);
+    if (lineIndexOut) *lineIndexOut = lineIndex;
+    return lines_[static_cast<size_t>(lineIndex)].start;
+}
+
+int HtmlEditorTextArea::visualLineEndForPosition(int pos, int* lineIndexOut) const {
+    ensureLayout();
+    if (lineIndexOut) *lineIndexOut = -1;
+    if (lines_.empty()) return clampPosition(0);
+
+    int lineIndex = lineIndexForCaretPosition(pos);
+    if (lineIndexOut) *lineIndexOut = lineIndex;
+    return lines_[static_cast<size_t>(lineIndex)].end;
 }
 
 int HtmlEditorTextArea::positionForPoint(int px, int py) const {
