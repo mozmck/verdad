@@ -358,6 +358,11 @@ public:
     };
     static VerseRef parseVerseRef(const std::string& ref);
 
+    /// Return true when a reference has a recognized Bible book and valid
+    /// chapter/verse in the requested versification (KJV by default).
+    static bool isValidVerseRef(const std::string& ref,
+                                const std::string& versificationName = "");
+
     /// Convert a verse reference into SWORD short form (e.g. "Genesis 1:1" -> "Gen 1:1").
     /// Uses module versification when available.
     std::string getShortReference(const std::string& moduleName,

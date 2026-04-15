@@ -6358,6 +6358,47 @@ SwordManager::VerseRef SwordManager::parseVerseRef(const std::string& ref) {
     return result;
 }
 
+bool SwordManager::isValidVerseRef(const std::string& ref,
+                                   const std::string& versificationName) {
+    VerseRef parsed;
+    try {
+        parsed = parseVerseRef(trimCopy(ref));
+    } catch (...) {
+        return false;
+    }
+    if (parsed.book.empty() || parsed.chapter <= 0 || parsed.verse <= 0) {
+        return false;
+    }
+
+    const auto* system = versificationSystemForName(versificationName);
+    if (!system) return false;
+
+    int bookNumber = resolveBookNumberExact(parsed.book, system);
+    if (bookNumber <= 0) {
+        std::string overrideBook = linkedVerseBookOverride(parsed.book);
+        if (!overrideBook.empty()) {
+            bookNumber = resolveBookNumberExact(overrideBook, system);
+        }
+    }
+    if (bookNumber <= 0) {
+        bookNumber = resolveBookNumberByPrefix(parsed.book, parsed.chapter, system);
+    }
+    if (bookNumber <= 0) return false;
+
+    const sword::VersificationMgr::Book* book =
+        system->getBook(bookNumber - 1);
+    if (!book || parsed.chapter > book->getChapterMax()) return false;
+
+    const int verseMax = book->getVerseMax(parsed.chapter);
+    if (parsed.verse > verseMax) return false;
+    if (parsed.verseEnd > 0 &&
+        (parsed.verseEnd < parsed.verse || parsed.verseEnd > verseMax)) {
+        return false;
+    }
+
+    return true;
+}
+
 std::string SwordManager::getShortReference(const std::string& moduleName,
                                             const std::string& reference) const {
     std::string ref = trimCopy(reference);
