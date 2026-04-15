@@ -12,14 +12,15 @@
 #include <FL/Fl.H>
 #include <FL/Fl_Box.H>
 #include <FL/Fl_Button.H>
-#include <FL/Fl_Check_Browser.H>
 #include <FL/Fl_Choice.H>
 #include <FL/Fl_File_Chooser.H>
 #include <FL/Fl_Hold_Browser.H>
 #include <FL/Fl_Input.H>
+#include <FL/Fl_Table_Row.H>
 #include <FL/Fl_Tooltip.H>
 #include <FL/Fl_Tree.H>
 #include <FL/fl_ask.H>
+#include <FL/fl_draw.H>
 
 #include <installmgr.h>
 #include <markupfiltmgr.h>
@@ -51,11 +52,17 @@ constexpr int kBottomBarHeight = 42;
 constexpr int kStatusBoxHeight = 26;
 constexpr int kInstallButtonWidth = 120;
 constexpr int kCloseButtonWidth = 80;
-constexpr long kDefaultInstallTimeoutMillis = 40000;
+constexpr int kTimeoutButtonWidth = 110;
+constexpr int kDefaultInstallTimeoutMillis = 180000;
+constexpr int kMinInstallTimeoutMillis = 10000;
+constexpr int kMaxInstallTimeoutMillis = 900000;
 constexpr int kFilterLabelWidth = 82;
 constexpr int kFilterFieldGap = 6;
 constexpr int kFilterGroupGap = 14;
 constexpr int kCompactLabelWidth = 54;
+constexpr int kSourceManagerButtonWidth = 112;
+constexpr int kSourceManagerCheckboxWidth = 46;
+constexpr int kSourceManagerRefreshWidth = 92;
 
 std::string trimCopy(const std::string& s) {
     size_t start = 0;
@@ -189,6 +196,40 @@ std::string truncateWithEllipsis(const std::string& text, size_t maxLen) {
     return text.substr(0, maxLen - 3) + "...";
 }
 
+std::string stripTrailingSlashCopy(std::string text) {
+    while (text.size() > 1 &&
+           (text.back() == '/' || text.back() == '\\')) {
+        text.pop_back();
+    }
+    return text;
+}
+
+std::string sourceSchemeFromType(const std::string& type) {
+    const std::string normalized = lowerCopy(trimCopy(type));
+    if (normalized == "ftp" ||
+        normalized == "http" ||
+        normalized == "https" ||
+        normalized == "sftp") {
+        return normalized;
+    }
+    return "https";
+}
+
+bool isSupportedRemoteScheme(const std::string& scheme) {
+    return scheme == "ftp" ||
+           scheme == "http" ||
+           scheme == "https" ||
+           scheme == "sftp";
+}
+
+std::string fallbackSourceCaptionFromPath(const std::string& path) {
+    std::filesystem::path fsPath(path);
+    std::string label = fsPath.filename().string();
+    if (label.empty()) label = fsPath.parent_path().filename().string();
+    if (label.empty()) label = path;
+    return trimCopy(label);
+}
+
 bool ensureDir(const std::string& path) {
     if (path.empty()) return false;
     std::error_code ec;
@@ -216,6 +257,43 @@ bool ensureUserSwordDataDirs() {
            ensureDir(root) &&
            ensureDir(root + "/mods.d") &&
            ensureDir(root + "/modules");
+}
+
+int clampInstallTimeoutMillis(int timeoutMillis) {
+    return std::clamp(timeoutMillis,
+                      kMinInstallTimeoutMillis,
+                      kMaxInstallTimeoutMillis);
+}
+
+std::string formatInstallTimeoutButtonLabel(int timeoutMillis) {
+    const int seconds = std::max(1, timeoutMillis / 1000);
+    if (seconds >= 60 && (seconds % 60) == 0) {
+        return "Timeout " + std::to_string(seconds / 60) + "m";
+    }
+    return "Timeout " + std::to_string(seconds) + "s";
+}
+
+std::string formatInstallTimeoutDescription(int timeoutMillis) {
+    const int seconds = std::max(1, timeoutMillis / 1000);
+    if (seconds >= 60 && (seconds % 60) == 0) {
+        const int minutes = seconds / 60;
+        return std::to_string(minutes) + " minute" +
+               (minutes == 1 ? "" : "s");
+    }
+    return std::to_string(seconds) + " second" +
+           (seconds == 1 ? "" : "s");
+}
+
+void persistInstallMgrTimeoutMillis(const std::string& installMgrPath,
+                                    int timeoutMillis) {
+    if (installMgrPath.empty()) return;
+
+    const std::string confFile = installMgrPath + "/InstallMgr.conf";
+    sword::SWConfig conf(confFile.c_str());
+    const std::string value =
+        std::to_string(clampInstallTimeoutMillis(timeoutMillis));
+    conf["General"]["TimeoutMillis"] = value.c_str();
+    conf.save();
 }
 
 std::string versionOfModule(sword::SWModule* mod) {
@@ -684,142 +762,670 @@ private:
     TooltipProvider tooltipProvider_;
 };
 
-class SourceSelectionDialog : public Fl_Double_Window {
+} // namespace
+
+class SourceCellEditor : public Fl_Input {
 public:
-    struct Row {
-        std::string caption;
-        bool checked = false;
-    };
+    SourceCellEditor(int X, int Y, int W, int H)
+        : Fl_Input(X, Y, W, H) {}
 
-    SourceSelectionDialog(int W = 420, int H = 460)
-        : Fl_Double_Window(W, H, "Visible Sources") {
-        begin();
-
-        filterInput_ = new Fl_Input(80, 12, W - 92, 26, "Filter:");
-        filterInput_->when(FL_WHEN_CHANGED | FL_WHEN_ENTER_KEY_ALWAYS);
-        filterInput_->callback(onFilterChanged, this);
-
-        browser_ = new Fl_Check_Browser(12, 48, W - 24, H - 102);
-        browser_->callback(onBrowserChanged, this);
-        browser_->when(FL_WHEN_CHANGED);
-
-        selectAllButton_ = new Fl_Button(12, H - 42, 70, 30, "All");
-        selectAllButton_->callback(onSelectAll, this);
-
-        selectNoneButton_ = new Fl_Button(88, H - 42, 70, 30, "None");
-        selectNoneButton_->callback(onSelectNone, this);
-
-        cancelButton_ = new Fl_Button(W - 168, H - 42, 70, 30, "Cancel");
-        cancelButton_->callback(onCancel, this);
-
-        okButton_ = new Fl_Button(W - 88, H - 42, 70, 30, "OK");
-        okButton_->callback(onOk, this);
-
-        end();
-        size_range(340, 280);
-        resizable(browser_);
+    void setCancelCallback(std::function<void()> callback) {
+        cancelCallback_ = std::move(callback);
     }
 
-    void setRows(const std::vector<Row>& rows) {
-        rows_ = rows;
-        filterInput_->value("");
-        refreshBrowser();
-    }
-
-    bool openModal() {
-        accepted_ = false;
-        set_modal();
-        show();
-        while (shown()) Fl::wait();
-        return accepted_;
-    }
-
-    std::vector<std::string> selectedCaptions() const {
-        std::vector<std::string> captions;
-        for (const auto& row : rows_) {
-            if (row.checked) captions.push_back(row.caption);
+    int handle(int event) override {
+        if ((event == FL_KEYDOWN || event == FL_SHORTCUT) &&
+            Fl::event_key() == FL_Escape) {
+            if (cancelCallback_) cancelCallback_();
+            return 1;
         }
-        return captions;
+        return Fl_Input::handle(event);
     }
 
 private:
-    std::vector<Row> rows_;
-    std::vector<int> visibleRows_;
-    Fl_Input* filterInput_ = nullptr;
-    Fl_Check_Browser* browser_ = nullptr;
-    Fl_Button* selectAllButton_ = nullptr;
-    Fl_Button* selectNoneButton_ = nullptr;
-    Fl_Button* cancelButton_ = nullptr;
-    Fl_Button* okButton_ = nullptr;
-    bool accepted_ = false;
-
-    void syncChecksFromBrowser() {
-        if (!browser_) return;
-        for (size_t i = 0; i < visibleRows_.size(); ++i) {
-            const int line = static_cast<int>(i) + 1;
-            const int rowIndex = visibleRows_[i];
-            if (rowIndex < 0 || rowIndex >= static_cast<int>(rows_.size())) continue;
-            rows_[static_cast<size_t>(rowIndex)].checked = browser_->checked(line) != 0;
-        }
-    }
-
-    void refreshBrowser() {
-        syncChecksFromBrowser();
-
-        const std::string filter = trimCopy(
-            filterInput_ && filterInput_->value() ? filterInput_->value() : "");
-
-        visibleRows_.clear();
-        browser_->clear();
-        for (size_t i = 0; i < rows_.size(); ++i) {
-            const auto& row = rows_[i];
-            if (!filter.empty() && !containsNoCase(row.caption, filter)) continue;
-            visibleRows_.push_back(static_cast<int>(i));
-            browser_->add(row.caption.c_str(), row.checked ? 1 : 0);
-        }
-    }
-
-    static void onFilterChanged(Fl_Widget*, void* data) {
-        auto* self = static_cast<SourceSelectionDialog*>(data);
-        if (!self) return;
-        self->refreshBrowser();
-    }
-
-    static void onBrowserChanged(Fl_Widget*, void* data) {
-        auto* self = static_cast<SourceSelectionDialog*>(data);
-        if (!self) return;
-        self->syncChecksFromBrowser();
-    }
-
-    static void onSelectAll(Fl_Widget*, void* data) {
-        auto* self = static_cast<SourceSelectionDialog*>(data);
-        if (!self) return;
-        for (auto& row : self->rows_) row.checked = true;
-        self->refreshBrowser();
-    }
-
-    static void onSelectNone(Fl_Widget*, void* data) {
-        auto* self = static_cast<SourceSelectionDialog*>(data);
-        if (!self) return;
-        for (auto& row : self->rows_) row.checked = false;
-        self->refreshBrowser();
-    }
-
-    static void onCancel(Fl_Widget*, void* data) {
-        auto* self = static_cast<SourceSelectionDialog*>(data);
-        if (!self) return;
-        self->accepted_ = false;
-        self->hide();
-    }
-
-    static void onOk(Fl_Widget*, void* data) {
-        auto* self = static_cast<SourceSelectionDialog*>(data);
-        if (!self) return;
-        self->syncChecksFromBrowser();
-        self->accepted_ = true;
-        self->hide();
-    }
+    std::function<void()> cancelCallback_;
 };
+
+class SourceManagerTable;
+
+class SourceManagerDialog : public Fl_Double_Window {
+public:
+    explicit SourceManagerDialog(ModuleManagerDialog* owner,
+                                 int W = 860,
+                                 int H = 430);
+
+    void openModal();
+    void refreshFromOwner(const std::string& preferredCaption = "");
+    bool applyCellEdit(int row, int col, const std::string& text);
+    void toggleFilter(int row);
+    void activateRowRefresh(int row);
+    void activateRemove();
+    void activateAddRemote();
+    void activateAddLocal();
+    void activateRefreshAll();
+    void activateTimeout();
+    void activateClose();
+    int rowIndexForCaption(const std::string& caption) const;
+    void setSelectedCaption(const std::string& caption);
+    void updateButtons();
+    void updateTimeoutButton();
+    const ModuleManagerDialog::SourceRow* rowAt(int row) const;
+    std::string cellText(int row, int col) const;
+    bool rowChecked(int row) const;
+
+private:
+    void resize(int X, int Y, int W, int H) override;
+    void layoutControls();
+
+    static void onAddRemote(Fl_Widget*, void* data);
+    static void onAddLocal(Fl_Widget*, void* data);
+    static void onRemove(Fl_Widget*, void* data);
+    static void onRefreshAll(Fl_Widget*, void* data);
+    static void onTimeout(Fl_Widget*, void* data);
+    static void onClose(Fl_Widget*, void* data);
+
+    ModuleManagerDialog* owner_ = nullptr;
+    Fl_Button* addRemoteButton_ = nullptr;
+    Fl_Button* addLocalButton_ = nullptr;
+    Fl_Button* removeButton_ = nullptr;
+    Fl_Button* refreshAllButton_ = nullptr;
+    Fl_Button* timeoutButton_ = nullptr;
+    SourceManagerTable* table_ = nullptr;
+    Fl_Box* hintBox_ = nullptr;
+    Fl_Button* closeButton_ = nullptr;
+    std::string selectedCaption_;
+
+    friend class SourceManagerTable;
+};
+
+class SourceManagerTable : public Fl_Table_Row {
+public:
+    SourceManagerTable(SourceManagerDialog* dialog, int X, int Y, int W, int H)
+        : Fl_Table_Row(X, Y, W, H)
+        , dialog_(dialog) {
+        callback(onTableEvent, this);
+        when(FL_WHEN_NOT_CHANGED | when());
+        col_header(1);
+        col_header_height(28);
+        row_header(0);
+        cols(4);
+        rows(0);
+        type(SELECT_SINGLE);
+        row_resize(0);
+        col_resize(1);
+        row_height_all(28);
+        col_width(0, kSourceManagerCheckboxWidth);
+        col_width(1, 220);
+        col_width(2, std::max(220, W - 220 - kSourceManagerCheckboxWidth -
+                                       kSourceManagerRefreshWidth - 24));
+        col_width(3, kSourceManagerRefreshWidth);
+
+        editor_ = new SourceCellEditor(X, Y, 0, 0);
+        editor_->hide();
+        editor_->box(FL_BORDER_BOX);
+        editor_->when(FL_WHEN_ENTER_KEY_ALWAYS);
+        editor_->callback(onEditorCommit, this);
+        editor_->setCancelCallback(
+            [this]() {
+                finishEditing(false);
+            });
+        end();
+    }
+
+    void reload() {
+        if (editorVisible() && !committingEdit_) finishEditing(true);
+        rows(dialog_ && dialog_->owner_
+                 ? static_cast<int>(dialog_->owner_->sources_.size())
+                 : 0);
+        redraw();
+    }
+
+    void selectRow(int row) {
+        select_all_rows(0);
+        if (row >= 0 && row < rows()) {
+            select_row(row, 1);
+            row_position(row);
+        }
+        redraw();
+    }
+
+    int selectedRow() const {
+        const int rowCount = const_cast<SourceManagerTable*>(this)->rows();
+        for (int row = 0; row < rowCount; ++row) {
+            if (const_cast<SourceManagerTable*>(this)->row_selected(row)) {
+                return row;
+            }
+        }
+        return -1;
+    }
+
+    void beginEditing(int row, int col) {
+        if (!dialog_ || col < 1 || col > 2) return;
+        if (!finishEditing(true)) return;
+
+        editRow_ = row;
+        editCol_ = col;
+        editValue_ = dialog_->cellText(row, col);
+
+        int X = 0;
+        int Y = 0;
+        int W = 0;
+        int H = 0;
+        if (find_cell(CONTEXT_CELL, row, col, X, Y, W, H) != 0) return;
+        editor_->resize(X + 1, Y + 1, std::max(10, W - 2), std::max(10, H - 2));
+        editor_->value(editValue_.c_str());
+        editor_->insert_position(0, static_cast<int>(editValue_.size()));
+        editor_->show();
+        editor_->take_focus();
+    }
+
+    bool finishEditing(bool commit) {
+        if (!editorVisible()) return true;
+        if (commit && dialog_) {
+            const std::string value = safeText(editor_->value());
+            committingEdit_ = true;
+            const bool applied = dialog_->applyCellEdit(editRow_, editCol_, value);
+            committingEdit_ = false;
+            if (!applied) {
+                editor_->take_focus();
+                return false;
+            }
+        }
+
+        editor_->hide();
+        editRow_ = -1;
+        editCol_ = -1;
+        editValue_.clear();
+        return true;
+    }
+
+protected:
+    void draw_cell(TableContext context,
+                   int R = 0,
+                   int C = 0,
+                   int X = 0,
+                   int Y = 0,
+                   int W = 0,
+                   int H = 0) override {
+        switch (context) {
+        case CONTEXT_STARTPAGE:
+            if (editorVisible()) syncEditorBounds();
+            return;
+
+        case CONTEXT_COL_HEADER:
+            drawHeaderCell(C, X, Y, W, H);
+            return;
+
+        case CONTEXT_CELL:
+            if (editorVisible() && R == editRow_ && C == editCol_) return;
+            drawBodyCell(R, C, X, Y, W, H);
+            return;
+
+        case CONTEXT_RC_RESIZE:
+            if (editorVisible()) syncEditorBounds();
+            return;
+
+        default:
+            return;
+        }
+    }
+
+private:
+    bool editorVisible() const {
+        return editor_ && editor_->visible();
+    }
+
+    void drawHeaderCell(int col, int X, int Y, int W, int H) {
+        static const char* kHeaders[] = {"Show", "Name", "URL", "Refresh"};
+        fl_push_clip(X, Y, W, H);
+        fl_draw_box(FL_THIN_UP_BOX, X, Y, W, H, col_header_color());
+        fl_color(FL_BLACK);
+        fl_font(FL_HELVETICA | FL_BOLD, 13);
+        fl_draw(kHeaders[col], X + 4, Y, W - 8, H, FL_ALIGN_CENTER);
+        fl_pop_clip();
+    }
+
+    void drawBodyCell(int row, int col, int X, int Y, int W, int H) {
+        const auto* source = dialog_ ? dialog_->rowAt(row) : nullptr;
+        const bool selected = row_selected(row) != 0;
+        const Fl_Color background = selected
+            ? selection_color()
+            : ((row % 2) == 0 ? fl_rgb_color(247, 247, 247) : FL_WHITE);
+
+        fl_push_clip(X, Y, W, H);
+        fl_draw_box(FL_FLAT_BOX, X, Y, W, H, background);
+        fl_color(fl_rgb_color(210, 210, 210));
+        fl_rect(X, Y, W, H);
+
+        if (col == 0) {
+            const int boxSize = std::min(16, H - 8);
+            const int boxX = X + (W - boxSize) / 2;
+            const int boxY = Y + (H - boxSize) / 2;
+            fl_draw_box(FL_DOWN_BOX, boxX, boxY, boxSize, boxSize, FL_WHITE);
+            if (dialog_ && dialog_->rowChecked(row)) {
+                fl_color(FL_DARK_GREEN);
+                fl_font(FL_HELVETICA | FL_BOLD, 13);
+                fl_draw("X", boxX, boxY, boxSize, boxSize, FL_ALIGN_CENTER);
+            }
+            fl_pop_clip();
+            return;
+        }
+
+        if (col == 3) {
+            const bool enabled = source && (!source->isLocal
+                ? !trimCopy(source->source).empty()
+                : !trimCopy(source->directory.empty()
+                                ? source->source
+                                : source->directory).empty());
+            const Fl_Color buttonColor = enabled
+                ? fl_rgb_color(230, 230, 230)
+                : fl_rgb_color(240, 240, 240);
+            fl_draw_box(FL_UP_BOX, X + 6, Y + 4, W - 12, H - 8, buttonColor);
+            fl_color(enabled ? FL_BLACK : fl_rgb_color(140, 140, 140));
+            fl_font(FL_HELVETICA, 12);
+            fl_draw("Refresh", X + 6, Y + 4, W - 12, H - 8, FL_ALIGN_CENTER);
+            fl_pop_clip();
+            return;
+        }
+
+        const std::string text = dialog_ ? dialog_->cellText(row, col) : "";
+        fl_color(FL_BLACK);
+        fl_font(FL_HELVETICA, 13);
+        fl_draw(text.c_str(),
+                X + 6,
+                Y,
+                W - 12,
+                H,
+                FL_ALIGN_LEFT | FL_ALIGN_INSIDE | FL_ALIGN_CLIP);
+        fl_pop_clip();
+    }
+
+    void syncEditorBounds() {
+        if (!editorVisible() || editRow_ < 0 || editCol_ < 0) return;
+        int X = 0;
+        int Y = 0;
+        int W = 0;
+        int H = 0;
+        if (find_cell(CONTEXT_CELL, editRow_, editCol_, X, Y, W, H) != 0) return;
+        editor_->resize(X + 1, Y + 1, std::max(10, W - 2), std::max(10, H - 2));
+    }
+
+    void handleTableEvent() {
+        const int row = callback_row();
+        const int col = callback_col();
+        const TableContext context = callback_context();
+
+        if (context != CONTEXT_CELL) {
+            if (Fl::event() == FL_PUSH) finishEditing(true);
+            return;
+        }
+
+        if (row >= 0 && dialog_ && dialog_->rowAt(row)) {
+            selectRow(row);
+            dialog_->setSelectedCaption(dialog_->rowAt(row)->caption);
+        }
+
+        if (Fl::event() != FL_PUSH) {
+            if (dialog_) dialog_->updateButtons();
+            return;
+        }
+
+        if (col == 0 && dialog_) {
+            finishEditing(true);
+            dialog_->toggleFilter(row);
+            return;
+        }
+
+        if (col == 3 && dialog_) {
+            finishEditing(true);
+            dialog_->activateRowRefresh(row);
+            return;
+        }
+
+        if ((col == 1 || col == 2) && Fl::event_clicks()) {
+            beginEditing(row, col);
+            return;
+        }
+
+        finishEditing(true);
+        if (dialog_) dialog_->updateButtons();
+    }
+
+    static void onTableEvent(Fl_Widget*, void* data) {
+        auto* self = static_cast<SourceManagerTable*>(data);
+        if (!self) return;
+        self->handleTableEvent();
+    }
+
+    static void onEditorCommit(Fl_Widget*, void* data) {
+        auto* self = static_cast<SourceManagerTable*>(data);
+        if (!self) return;
+        self->finishEditing(true);
+    }
+
+    SourceManagerDialog* dialog_ = nullptr;
+    SourceCellEditor* editor_ = nullptr;
+    int editRow_ = -1;
+    int editCol_ = -1;
+    std::string editValue_;
+    bool committingEdit_ = false;
+};
+
+SourceManagerDialog::SourceManagerDialog(ModuleManagerDialog* owner,
+                                         int W,
+                                         int H)
+    : Fl_Double_Window(W, H, "Sources")
+    , owner_(owner) {
+    begin();
+
+    addRemoteButton_ = new Fl_Button(0, 0, 0, 0, "Add Remote");
+    addRemoteButton_->callback(onAddRemote, this);
+
+    addLocalButton_ = new Fl_Button(0, 0, 0, 0, "Add Local");
+    addLocalButton_->callback(onAddLocal, this);
+
+    removeButton_ = new Fl_Button(0, 0, 0, 0, "Remove");
+    removeButton_->callback(onRemove, this);
+
+    refreshAllButton_ = new Fl_Button(0, 0, 0, 0, "Refresh All");
+    refreshAllButton_->callback(onRefreshAll, this);
+
+    timeoutButton_ = new Fl_Button(0, 0, 0, 0, "Timeout 3m");
+    timeoutButton_->callback(onTimeout, this);
+
+    table_ = new SourceManagerTable(this, 0, 0, 0, 0);
+
+    hintBox_ = new Fl_Box(
+        0, 0, 0, 0,
+        "Double-click Name or URL to edit. Click a Refresh cell to reload that source.");
+    hintBox_->box(FL_NO_BOX);
+    hintBox_->align(FL_ALIGN_LEFT | FL_ALIGN_INSIDE);
+
+    closeButton_ = new Fl_Button(0, 0, 0, 0, "Close");
+    closeButton_->callback(onClose, this);
+
+    end();
+
+    size_range(620, 320);
+    resizable(table_);
+    layoutControls();
+}
+
+void SourceManagerDialog::openModal() {
+    if (!owner_) return;
+    ui_font::applyCurrentAppUiFont(this);
+    refreshFromOwner(selectedCaption_);
+    set_modal();
+    show();
+    while (shown()) {
+        Fl::wait();
+    }
+}
+
+void SourceManagerDialog::refreshFromOwner(const std::string& preferredCaption) {
+    if (!preferredCaption.empty()) {
+        selectedCaption_ = preferredCaption;
+    }
+
+    if (table_) {
+        table_->reload();
+        table_->selectRow(rowIndexForCaption(selectedCaption_));
+    }
+
+    updateTimeoutButton();
+    updateButtons();
+}
+
+bool SourceManagerDialog::applyCellEdit(int row,
+                                        int col,
+                                        const std::string& text) {
+    if (!owner_ || row < 0 || row >= static_cast<int>(owner_->sources_.size())) {
+        return true;
+    }
+
+    std::string error;
+    if (col == 1) {
+        const std::string previousCaption = owner_->sources_[static_cast<size_t>(row)].caption;
+        if (!owner_->updateSourceCaption(static_cast<size_t>(row), text, &error)) {
+            fl_alert("%s", error.c_str());
+            return false;
+        }
+        selectedCaption_ = trimCopy(text);
+        if (selectedCaption_.empty()) selectedCaption_ = previousCaption;
+        refreshFromOwner(selectedCaption_);
+        return true;
+    }
+
+    if (col == 2) {
+        const std::string caption = owner_->sources_[static_cast<size_t>(row)].caption;
+        if (!owner_->updateSourceUrl(static_cast<size_t>(row), text, &error)) {
+            fl_alert("%s", error.c_str());
+            return false;
+        }
+        refreshFromOwner(caption);
+        return true;
+    }
+
+    return true;
+}
+
+void SourceManagerDialog::toggleFilter(int row) {
+    if (!owner_) return;
+    const auto* source = rowAt(row);
+    if (!source) return;
+
+    owner_->setSourceSelected(source->caption,
+                              !owner_->sourceCaptionSelected(source->caption));
+    refreshFromOwner(source->caption);
+}
+
+void SourceManagerDialog::activateRowRefresh(int row) {
+    if (!owner_ || !table_) return;
+    if (!table_->finishEditing(true)) return;
+    const auto* source = rowAt(row);
+    if (!source) return;
+    const std::string caption = source->caption;
+    if (owner_->refreshSourceRow(static_cast<size_t>(row))) {
+        refreshFromOwner(caption);
+    }
+}
+
+void SourceManagerDialog::activateRemove() {
+    if (!owner_ || !table_) return;
+    if (!table_->finishEditing(true)) return;
+
+    const int row = table_->selectedRow();
+    if (row < 0) return;
+    if (owner_->removeSourceRow(static_cast<size_t>(row))) {
+        refreshFromOwner();
+    }
+}
+
+void SourceManagerDialog::activateAddRemote() {
+    if (!owner_ || !table_) return;
+    if (!table_->finishEditing(true)) return;
+
+    const std::string caption = owner_->addRemoteSourceRow();
+    if (caption.empty()) return;
+    refreshFromOwner(caption);
+    const int row = rowIndexForCaption(caption);
+    if (row >= 0) table_->beginEditing(row, 2);
+}
+
+void SourceManagerDialog::activateAddLocal() {
+    if (!owner_ || !table_) return;
+    if (!table_->finishEditing(true)) return;
+
+    const std::string caption = owner_->addLocalSourceRow();
+    if (caption.empty()) return;
+    refreshFromOwner(caption);
+}
+
+void SourceManagerDialog::activateRefreshAll() {
+    if (!owner_ || !table_) return;
+    if (!table_->finishEditing(true)) return;
+    if (owner_->refreshAllSources()) {
+        refreshFromOwner(selectedCaption_);
+    }
+}
+
+void SourceManagerDialog::activateTimeout() {
+    if (!owner_ || !table_) return;
+    if (!table_->finishEditing(true)) return;
+    owner_->promptForInstallTimeout();
+    updateTimeoutButton();
+}
+
+void SourceManagerDialog::activateClose() {
+    if (!table_ || table_->finishEditing(true)) hide();
+}
+
+int SourceManagerDialog::rowIndexForCaption(const std::string& caption) const {
+    if (!owner_) return -1;
+    for (size_t i = 0; i < owner_->sources_.size(); ++i) {
+        if (owner_->sources_[i].caption == caption) {
+            return static_cast<int>(i);
+        }
+    }
+    return -1;
+}
+
+void SourceManagerDialog::setSelectedCaption(const std::string& caption) {
+    selectedCaption_ = caption;
+    updateButtons();
+}
+
+void SourceManagerDialog::updateButtons() {
+    if (!removeButton_ || !table_) return;
+    if (table_->selectedRow() >= 0) {
+        removeButton_->activate();
+    } else {
+        removeButton_->deactivate();
+    }
+}
+
+void SourceManagerDialog::updateTimeoutButton() {
+    if (!timeoutButton_ || !owner_) return;
+    timeoutButton_->copy_label(
+        formatInstallTimeoutButtonLabel(owner_->effectiveInstallTimeoutMillis()).c_str());
+}
+
+const ModuleManagerDialog::SourceRow* SourceManagerDialog::rowAt(int row) const {
+    if (!owner_ ||
+        row < 0 ||
+        row >= static_cast<int>(owner_->sources_.size())) {
+        return nullptr;
+    }
+    return &owner_->sources_[static_cast<size_t>(row)];
+}
+
+std::string SourceManagerDialog::cellText(int row, int col) const {
+    const auto* source = rowAt(row);
+    if (!source) return "";
+
+    if (col == 1) return source->caption;
+    if (col == 2) return owner_ ? owner_->sourceUrl(*source) : "";
+    return "";
+}
+
+bool SourceManagerDialog::rowChecked(int row) const {
+    const auto* source = rowAt(row);
+    return source && owner_ && owner_->sourceCaptionSelected(source->caption);
+}
+
+void SourceManagerDialog::resize(int X, int Y, int W, int H) {
+    Fl_Double_Window::resize(X, Y, W, H);
+    layoutControls();
+}
+
+void SourceManagerDialog::layoutControls() {
+    const int margin = 10;
+    const int topY = margin;
+    const int bottomY = h() - kBottomBarHeight;
+    const int right = w() - margin;
+
+    const int timeoutX = right - kTimeoutButtonWidth;
+    const int refreshAllX = timeoutX - 6 - kSourceManagerButtonWidth;
+    const int removeX = refreshAllX - 6 - 90;
+    const int addLocalX = removeX - 6 - 100;
+    const int addRemoteX = addLocalX - 6 - kSourceManagerButtonWidth;
+
+    if (addRemoteButton_) addRemoteButton_->resize(addRemoteX, topY,
+                                                   kSourceManagerButtonWidth,
+                                                   kControlHeight);
+    if (addLocalButton_) addLocalButton_->resize(addLocalX, topY, 100, kControlHeight);
+    if (removeButton_) removeButton_->resize(removeX, topY, 90, kControlHeight);
+    if (refreshAllButton_) refreshAllButton_->resize(refreshAllX,
+                                                     topY,
+                                                     kSourceManagerButtonWidth,
+                                                     kControlHeight);
+    if (timeoutButton_) timeoutButton_->resize(timeoutX,
+                                               topY,
+                                               kTimeoutButtonWidth,
+                                               kControlHeight);
+
+    const int tableY = topY + kControlHeight + kRowSpacing;
+    const int tableH = std::max(120, bottomY - tableY - 8);
+    if (table_) {
+        table_->resize(margin, tableY, w() - (2 * margin), tableH);
+        const int tableWidth = table_->w();
+        const int nameWidth = std::clamp(tableWidth / 4, 170, 260);
+        const int urlWidth = std::max(
+            220,
+            tableWidth - kSourceManagerCheckboxWidth -
+                kSourceManagerRefreshWidth - nameWidth - 4);
+        table_->col_width(0, kSourceManagerCheckboxWidth);
+        table_->col_width(1, nameWidth);
+        table_->col_width(2, urlWidth);
+        table_->col_width(3, kSourceManagerRefreshWidth);
+    }
+
+    if (hintBox_) {
+        hintBox_->resize(margin, bottomY, w() - (2 * margin) - kCloseButtonWidth - 10, 30);
+    }
+    if (closeButton_) {
+        closeButton_->resize(w() - margin - kCloseButtonWidth, bottomY,
+                             kCloseButtonWidth, 30);
+    }
+}
+
+void SourceManagerDialog::onAddRemote(Fl_Widget*, void* data) {
+    auto* self = static_cast<SourceManagerDialog*>(data);
+    if (!self) return;
+    self->activateAddRemote();
+}
+
+void SourceManagerDialog::onAddLocal(Fl_Widget*, void* data) {
+    auto* self = static_cast<SourceManagerDialog*>(data);
+    if (!self) return;
+    self->activateAddLocal();
+}
+
+void SourceManagerDialog::onRemove(Fl_Widget*, void* data) {
+    auto* self = static_cast<SourceManagerDialog*>(data);
+    if (!self) return;
+    self->activateRemove();
+}
+
+void SourceManagerDialog::onRefreshAll(Fl_Widget*, void* data) {
+    auto* self = static_cast<SourceManagerDialog*>(data);
+    if (!self) return;
+    self->activateRefreshAll();
+}
+
+void SourceManagerDialog::onTimeout(Fl_Widget*, void* data) {
+    auto* self = static_cast<SourceManagerDialog*>(data);
+    if (!self) return;
+    self->activateTimeout();
+}
+
+void SourceManagerDialog::onClose(Fl_Widget*, void* data) {
+    auto* self = static_cast<SourceManagerDialog*>(data);
+    if (!self) return;
+    self->activateClose();
+}
+
+namespace {
 
 class DialogInstallStatusReporter : public sword::StatusReporter {
 public:
@@ -1124,15 +1730,6 @@ std::string describeRefreshFailure(const std::string& caption,
     return message.str();
 }
 
-void applyInstallMgrDefaults(VerdadInstallMgr* installMgr) {
-    if (!installMgr) return;
-    if (installMgr->getTimeoutMillis() >= kDefaultInstallTimeoutMillis) {
-        return;
-    }
-
-    installMgr->setTimeoutMillis(kDefaultInstallTimeoutMillis);
-}
-
 } // namespace
 
 ModuleManagerDialog::ModuleManagerDialog(VerdadApp* app, int W, int H)
@@ -1172,23 +1769,12 @@ void ModuleManagerDialog::resize(int X, int Y, int W, int H) {
     const int browserY = row3Y + kControlHeight + kRowSpacing;
     const int contentH = std::max(120, H - contentY - 74);
 
-    const int right = W - kMargin;
-    const int refreshAllX = right - 110;
-    const int refreshX = refreshAllX - 5 - 95;
-    const int removeX = refreshX - 5 - 95;
-    const int addLocalX = removeX - 5 - 100;
-    const int addRemoteX = addLocalX - 5 - 110;
-    const int sourceW = std::max(170, addRemoteX - 5 - 90);
-
     if (warningBox_) {
         warningBox_->resize(kMargin, kMargin, W - (2 * kMargin), kWarningHeight);
     }
-    if (sourceChoice_) sourceChoice_->resize(90, row1Y, sourceW, kControlHeight);
-    if (addRemoteButton_) addRemoteButton_->resize(addRemoteX, row1Y, 110, kControlHeight);
-    if (addLocalButton_) addLocalButton_->resize(addLocalX, row1Y, 100, kControlHeight);
-    if (removeButton_) removeButton_->resize(removeX, row1Y, 95, kControlHeight);
-    if (refreshSourceButton_) refreshSourceButton_->resize(refreshX, row1Y, 95, kControlHeight);
-    if (refreshAllButton_) refreshAllButton_->resize(refreshAllX, row1Y, 110, kControlHeight);
+    if (sourceFilterButton_) {
+        sourceFilterButton_->resize(kMargin, row1Y, 180, kControlHeight);
+    }
 
     if (filterTree_) {
         filterTree_->resize(kMargin, contentY, treeW, contentH);
@@ -1196,14 +1782,9 @@ void ModuleManagerDialog::resize(int X, int Y, int W, int H) {
 
     const int sortX = rightX + rightW - 160;
     const int sortLabelX = sortX - kCompactLabelWidth - kFilterFieldGap;
-    const int sourceButtonX = rightX + 28;
-    const int sourceButtonW = 150;
-    const int languageLabelX = sourceButtonX + sourceButtonW + 18;
+    const int languageLabelX = rightX;
     const int languageX = languageLabelX + kFilterLabelWidth + kFilterFieldGap;
-    const int languageW = std::max(120, sortLabelX - kFilterGroupGap - languageX);
-    if (sourceFilterButton_) {
-        sourceFilterButton_->resize(sourceButtonX, row2Y, sourceButtonW, kControlHeight);
-    }
+    const int languageW = std::max(140, sortLabelX - kFilterGroupGap - languageX);
     if (languageChoiceLabel_) {
         languageChoiceLabel_->resize(languageLabelX,
                                      row2Y,
@@ -1281,23 +1862,8 @@ void ModuleManagerDialog::buildUi() {
     warningBox_->align(FL_ALIGN_LEFT | FL_ALIGN_INSIDE | FL_ALIGN_WRAP);
 
     const int row1Y = kMargin + kWarningHeight + kRowSpacing;
-    sourceChoice_ = new WrappingChoice(90, row1Y, 250, kControlHeight, "Source:");
-    sourceChoice_->callback(onSourceChanged, this);
-
-    addRemoteButton_ = new Fl_Button(350, row1Y, 110, kControlHeight, "Add Remote...");
-    addRemoteButton_->callback(onAddRemote, this);
-
-    addLocalButton_ = new Fl_Button(465, row1Y, 100, kControlHeight, "Add Local...");
-    addLocalButton_->callback(onAddLocal, this);
-
-    removeButton_ = new Fl_Button(570, row1Y, 95, kControlHeight, "Remove");
-    removeButton_->callback(onRemoveSource, this);
-
-    refreshSourceButton_ = new Fl_Button(670, row1Y, 95, kControlHeight, "Refresh");
-    refreshSourceButton_->callback(onRefreshSource, this);
-
-    refreshAllButton_ = new Fl_Button(770, row1Y, 110, kControlHeight, "Refresh All");
-    refreshAllButton_->callback(onRefreshAll, this);
+    sourceFilterButton_ = new Fl_Button(kMargin, row1Y, 180, kControlHeight, "All Sources");
+    sourceFilterButton_->callback(onChooseSources, this);
 
     const int contentY = row1Y + kControlHeight + kRowSpacing;
     filterTree_ = new Fl_Tree(kMargin, contentY, 230, h() - contentY - 74);
@@ -1309,20 +1875,17 @@ void ModuleManagerDialog::buildUi() {
 
     const int rightX = kMargin + 230 + kRowSpacing;
     const int row2Y = contentY;
-    sourceFilterButton_ = new Fl_Button(rightX + 28, row2Y, 150, kControlHeight, "All Sources");
-    sourceFilterButton_->callback(onChooseSources, this);
-
-    languageChoiceLabel_ = new Fl_Box(rightX + 194, row2Y, kFilterLabelWidth, kControlHeight,
+    languageChoiceLabel_ = new Fl_Box(rightX, row2Y, kFilterLabelWidth, kControlHeight,
                                       "Language:");
     languageChoiceLabel_->box(FL_NO_BOX);
     languageChoiceLabel_->align(FL_ALIGN_RIGHT | FL_ALIGN_INSIDE);
 
-    sortChoiceLabel_ = new Fl_Box(rightX + 518, row2Y, kCompactLabelWidth, kControlHeight,
+    sortChoiceLabel_ = new Fl_Box(rightX + 494, row2Y, kCompactLabelWidth, kControlHeight,
                                   "Sort:");
     sortChoiceLabel_->box(FL_NO_BOX);
     sortChoiceLabel_->align(FL_ALIGN_RIGHT | FL_ALIGN_INSIDE);
 
-    sortChoice_ = new WrappingChoice(rightX + 578, row2Y, 160, kControlHeight);
+    sortChoice_ = new WrappingChoice(rightX + 554, row2Y, 160, kControlHeight);
     sortChoice_->add("Module ID");
     sortChoice_->add("Description");
     sortChoice_->add("Language");
@@ -1332,7 +1895,7 @@ void ModuleManagerDialog::buildUi() {
     sortChoice_->value(0);
     sortChoice_->callback(onFilterChanged, this);
 
-    languageChoice_ = new FilterableChoiceWidget(rightX + 282, row2Y, 150, kControlHeight);
+    languageChoice_ = new FilterableChoiceWidget(rightX + 88, row2Y, 330, kControlHeight);
     languageChoice_->setShowAllWhenFilterEmpty(true);
     languageChoice_->setNoMatchesLabel("No language matches");
     languageChoice_->callback(onFilterChanged, this);
@@ -1416,6 +1979,92 @@ void ModuleManagerDialog::buildUi() {
     updateStatusBox();
 }
 
+int ModuleManagerDialog::effectiveInstallTimeoutMillis() const {
+    if (app_) {
+        const int configured = app_->moduleManagerSettings().installTimeoutMillis;
+        if (configured > 0) return clampInstallTimeoutMillis(configured);
+    }
+
+    const int currentTimeout = installMgr_
+        ? clampInstallTimeoutMillis(static_cast<int>(installMgr_->getTimeoutMillis()))
+        : 0;
+    return std::max(currentTimeout, kDefaultInstallTimeoutMillis);
+}
+
+void ModuleManagerDialog::syncInstallMgrTimeout() {
+    if (installMgr_) {
+        installMgr_->setTimeoutMillis(effectiveInstallTimeoutMillis());
+    }
+}
+
+void ModuleManagerDialog::setInstallTimeoutMillis(int timeoutMillis,
+                                                  bool rememberChoice) {
+    const int effectiveTimeout = rememberChoice
+        ? clampInstallTimeoutMillis(timeoutMillis)
+        : kDefaultInstallTimeoutMillis;
+
+    if (app_) {
+        VerdadApp::ModuleManagerSettings settings = app_->moduleManagerSettings();
+        settings.installTimeoutMillis = rememberChoice ? effectiveTimeout : 0;
+        app_->setModuleManagerSettings(settings);
+        app_->savePreferences();
+    }
+
+    if (installMgr_ && installMgr_->installConf) {
+        const std::string value = std::to_string(effectiveTimeout);
+        (*installMgr_->installConf)["General"]["TimeoutMillis"] = value.c_str();
+        installMgr_->saveInstallConf();
+        installMgr_->setTimeoutMillis(effectiveTimeout);
+    } else {
+        persistInstallMgrTimeoutMillis(installMgrPath_, effectiveTimeout);
+    }
+    if (statusBox_) {
+        statusBox_->copy_label(
+            ("Module download timeout set to " +
+             formatInstallTimeoutDescription(effectiveTimeout) + ".").c_str());
+    }
+}
+
+void ModuleManagerDialog::promptForInstallTimeout() {
+    const int currentSeconds = std::max(1, effectiveInstallTimeoutMillis() / 1000);
+    const int defaultSeconds = kDefaultInstallTimeoutMillis / 1000;
+
+    std::ostringstream prompt;
+    prompt << "Download timeout in seconds.\n"
+           << "Leave blank to use the default (" << defaultSeconds << " seconds).";
+
+    const std::string currentValue = std::to_string(currentSeconds);
+    const char* raw = fl_input("%s",
+                               currentValue.c_str(),
+                               prompt.str().c_str());
+    if (!raw) return;
+
+    std::string text = trimCopy(raw);
+    if (text.empty()) {
+        setInstallTimeoutMillis(kDefaultInstallTimeoutMillis, false);
+        return;
+    }
+
+    char* end = nullptr;
+    const long seconds = std::strtol(text.c_str(), &end, 10);
+    while (end && *end != '\0' &&
+           std::isspace(static_cast<unsigned char>(*end))) {
+        ++end;
+    }
+
+    const long minSeconds = kMinInstallTimeoutMillis / 1000;
+    const long maxSeconds = kMaxInstallTimeoutMillis / 1000;
+    if (!end || end == text.c_str() || *end != '\0' ||
+        seconds < minSeconds || seconds > maxSeconds) {
+        fl_alert("Enter a timeout between %ld and %ld seconds.",
+                 minSeconds,
+                 maxSeconds);
+        return;
+    }
+
+    setInstallTimeoutMillis(static_cast<int>(seconds * 1000), true);
+}
+
 void ModuleManagerDialog::initializeInstallMgr() {
     ensureUserSwordDataDirs();
     ensureDir(installMgrPath_);
@@ -1427,7 +2076,7 @@ void ModuleManagerDialog::initializeInstallMgr() {
     // We present our own explicit warning in the UI before remote operations.
     installMgr_->setUserDisclaimerConfirmed(true);
     installMgr_->readInstallConf();
-    applyInstallMgrDefaults(verdadInstallMgr(installMgr_.get()));
+    syncInstallMgrTimeout();
 }
 
 void ModuleManagerDialog::refreshSources(bool refreshRemoteContent) {
@@ -1436,6 +2085,7 @@ void ModuleManagerDialog::refreshSources(bool refreshRemoteContent) {
 
     sources_.clear();
     installMgr_->readInstallConf();
+    syncInstallMgrTimeout();
 
     for (auto it = installMgr_->sources.begin(); it != installMgr_->sources.end(); ++it) {
         sword::InstallSource* src = it->second;
@@ -1445,6 +2095,9 @@ void ModuleManagerDialog::refreshSources(bool refreshRemoteContent) {
         row.type = safeText(src->type);
         row.source = safeText(src->source);
         row.directory = safeText(src->directory);
+        row.username = safeText(src->u);
+        row.password = safeText(src->p);
+        row.uid = safeText(src->uid);
         row.isLocal = false;
         row.remoteSource = src;
         sources_.push_back(std::move(row));
@@ -1465,6 +2118,9 @@ void ModuleManagerDialog::refreshSources(bool refreshRemoteContent) {
             row.type = "DIR";
             row.source = safeText(src.source);
             row.directory = safeText(src.directory);
+            row.username = safeText(src.u);
+            row.password = safeText(src.p);
+            row.uid = safeText(src.uid);
             if (row.directory.empty()) row.directory = row.source;
             if (row.source.empty()) row.source = row.directory;
             row.isLocal = true;
@@ -1480,36 +2136,19 @@ void ModuleManagerDialog::refreshSources(bool refreshRemoteContent) {
 
     if (app_) {
         const auto& settings = app_->moduleManagerSettings();
-        if (activeSourceCaptions_.empty()) {
+        if (activeSourceCaptions_.empty() && !hasExplicitSourceFilter_) {
             activeSourceCaptions_ = settings.selectedSources;
             hasExplicitSourceFilter_ = settings.hasSelectedSources;
         }
     }
 
-    if (!hasExplicitSourceFilter_) {
-        activeSourceCaptions_.clear();
-        for (const auto& source : sources_) {
-            activeSourceCaptions_.push_back(source.caption);
-        }
-    } else {
-        std::vector<std::string> validSelections;
-        for (const auto& caption : activeSourceCaptions_) {
-            auto it = std::find_if(sources_.begin(), sources_.end(),
-                                   [&](const SourceRow& row) {
-                                       return row.caption == caption;
-                                   });
-            if (it != sources_.end()) validSelections.push_back(caption);
-        }
-        activeSourceCaptions_ = std::move(validSelections);
-    }
-
-    repopulateSourceChoice();
+    normalizeActiveSourceCaptions();
     updateSourceFilterButton();
 
     if (refreshRemoteContent) {
         std::vector<std::string> refreshFailures;
         for (const auto& src : sources_) {
-            if (src.isLocal || !src.remoteSource) continue;
+            if (src.isLocal || !src.remoteSource || trimCopy(src.source).empty()) continue;
             statusBox_->copy_label(("Refreshing " + src.caption + "...").c_str());
             Fl::check();
             if (auto* manager = verdadInstallMgr(installMgr_.get())) {
@@ -1709,25 +2348,38 @@ void ModuleManagerDialog::refreshModules() {
     repopulateModuleBrowser();
 }
 
-void ModuleManagerDialog::repopulateSourceChoice() {
-    if (!sourceChoice_) return;
-
-    const std::string selected = selectedChoiceLabel(sourceChoice_);
-    sourceChoice_->clear();
-    sourceChoice_->add("All Sources");
-
-    int selectedIndex = 0;
-    int index = 1;
-    for (const auto& src : sources_) {
-        sourceChoice_->add(escapeChoiceLabel(src.caption).c_str());
-        if (!selected.empty() && src.caption == selected) {
-            selectedIndex = index;
+void ModuleManagerDialog::normalizeActiveSourceCaptions() {
+    std::vector<std::string> validSelections;
+    validSelections.reserve(sources_.size());
+    for (const auto& source : sources_) {
+        if (!hasExplicitSourceFilter_ ||
+            std::find(activeSourceCaptions_.begin(),
+                      activeSourceCaptions_.end(),
+                      source.caption) != activeSourceCaptions_.end()) {
+            validSelections.push_back(source.caption);
         }
-        ++index;
     }
 
-    sourceChoice_->value(selectedIndex);
-    sourceChoice_->redraw();
+    if (!hasExplicitSourceFilter_ ||
+        validSelections.size() == sources_.size()) {
+        hasExplicitSourceFilter_ = false;
+        activeSourceCaptions_.clear();
+        for (const auto& source : sources_) {
+            activeSourceCaptions_.push_back(source.caption);
+        }
+        return;
+    }
+
+    activeSourceCaptions_ = std::move(validSelections);
+}
+
+void ModuleManagerDialog::applySourceFilterSelection() {
+    normalizeActiveSourceCaptions();
+    updateSourceFilterButton();
+    repopulateLanguageChoice();
+    repopulateFilterTree();
+    repopulateModuleBrowser();
+    persistModuleManagerSettings();
 }
 
 void ModuleManagerDialog::updateSourceFilterButton() {
@@ -1760,13 +2412,14 @@ void ModuleManagerDialog::updateSourceFilterButton() {
 
     std::ostringstream tooltip;
     if (selected.empty()) {
-        tooltip << "No sources selected for the module list.";
+        tooltip << "No sources selected for the module list.\n\nManage sources and filtering.";
     } else {
         tooltip << "Visible sources:\n";
         for (size_t i = 0; i < selected.size(); ++i) {
             if (i) tooltip << '\n';
             tooltip << selected[i];
         }
+        tooltip << "\n\nManage sources and filtering.";
     }
     sourceFilterButton_->copy_tooltip(tooltip.str().c_str());
 }
@@ -2273,34 +2926,6 @@ void ModuleManagerDialog::clearFilters() {
     persistModuleManagerSettings();
 }
 
-void ModuleManagerDialog::chooseVisibleSources() {
-    SourceSelectionDialog dialog;
-    std::vector<SourceSelectionDialog::Row> rows;
-    rows.reserve(sources_.size());
-    for (const auto& source : sources_) {
-        rows.push_back({source.caption, sourceCaptionSelected(source.caption)});
-    }
-
-    dialog.setRows(rows);
-    if (!dialog.openModal()) return;
-
-    activeSourceCaptions_ = dialog.selectedCaptions();
-    hasExplicitSourceFilter_ =
-        (activeSourceCaptions_.size() != sources_.size());
-    if (!hasExplicitSourceFilter_) {
-        activeSourceCaptions_.clear();
-        for (const auto& source : sources_) {
-            activeSourceCaptions_.push_back(source.caption);
-        }
-    }
-
-    updateSourceFilterButton();
-    repopulateLanguageChoice();
-    repopulateFilterTree();
-    repopulateModuleBrowser();
-    persistModuleManagerSettings();
-}
-
 void ModuleManagerDialog::persistModuleManagerSettings() {
     if (!app_) return;
 
@@ -2322,6 +2947,11 @@ void ModuleManagerDialog::persistModuleManagerSettings() {
     app_->savePreferences();
 }
 
+void ModuleManagerDialog::openSourceManager() {
+    SourceManagerDialog dialog(this);
+    dialog.openModal();
+}
+
 bool ModuleManagerDialog::confirmRemoteNetworkUse() {
     int answer = fl_choice(
         "Remote module sources can be monitored on the network.\n\n"
@@ -2332,185 +2962,462 @@ bool ModuleManagerDialog::confirmRemoteNetworkUse() {
     return answer == 1;
 }
 
-void ModuleManagerDialog::addRemoteSource() {
-    if (!installMgr_) initializeInstallMgr();
-    if (!installMgr_) return;
-
-    const char* captionRaw = fl_input("Remote source name:", "");
-    if (!captionRaw || !*captionRaw) return;
-    std::string caption = trimCopy(captionRaw);
-    if (caption.empty()) return;
-
-    const char* hostRaw = fl_input("Host (example: ftp.crosswire.org):", "");
-    if (!hostRaw || !*hostRaw) return;
-    std::string host = trimCopy(hostRaw);
-    if (host.empty()) return;
-
-    const char* dirRaw = fl_input("Remote directory (example: /pub/sword/raw):", "/");
-    if (!dirRaw || !*dirRaw) return;
-    std::string dir = trimCopy(dirRaw);
-
-    const char* protoRaw = fl_input("Protocol (FTP/HTTP/HTTPS/SFTP):", "FTP");
-    if (!protoRaw || !*protoRaw) return;
-    std::string proto = upperCopy(trimCopy(protoRaw));
-    if (proto != "FTP" && proto != "HTTP" &&
-        proto != "HTTPS" && proto != "SFTP") {
-        fl_alert("Unsupported protocol.");
-        return;
+std::string ModuleManagerDialog::sourceUrl(const SourceRow& row) const {
+    if (row.isLocal) {
+        return !row.directory.empty() ? row.directory : row.source;
     }
 
-    auto existing = installMgr_->sources.find(caption.c_str());
-    if (existing != installMgr_->sources.end()) {
-        delete existing->second;
-        installMgr_->sources.erase(existing);
+    const std::string host = trimCopy(row.source);
+    if (host.empty()) return "";
+
+    std::string url = sourceSchemeFromType(row.type) + "://" + host;
+    std::string path = trimCopy(row.directory);
+    if (!path.empty()) {
+        if (path.front() != '/') url.push_back('/');
+        url += path;
     }
-
-    sword::InstallSource* src = new sword::InstallSource(proto.c_str());
-    src->caption = caption.c_str();
-    src->source = host.c_str();
-    src->directory = dir.c_str();
-    installMgr_->sources[src->caption] = src;
-    installMgr_->saveInstallConf();
-
-    refreshSources(false);
-    refreshModules();
+    return url;
 }
 
-void ModuleManagerDialog::addLocalSource() {
-    std::string startDir = userHomeDir().empty() ? "." : userHomeDir();
-    const char* dirRaw = fl_dir_chooser("Select local module source directory",
-                                        startDir.c_str());
-    if (!dirRaw || !*dirRaw) return;
-
-    std::string dir = trimCopy(dirRaw);
-    if (dir.empty()) return;
-
-    const char* captionRaw = fl_input("Local source name:", dir.c_str());
-    if (!captionRaw || !*captionRaw) return;
-    std::string caption = trimCopy(captionRaw);
-    if (caption.empty()) return;
-
-    std::string confFile = installMgrPath_ + "/InstallMgr.conf";
-    sword::SWConfig conf(confFile.c_str());
-
-    // Remove any existing local source with same caption.
-    auto& sections = conf.getSections();
-    auto secIt = sections.find("Sources");
-    if (secIt != sections.end()) {
-        for (auto it = secIt->second.begin(); it != secIt->second.end(); ) {
-            if (safeText(it->first).find("DIRSource") != 0) {
-                ++it;
-                continue;
+bool ModuleManagerDialog::applySourceUrl(SourceRow& row,
+                                         const std::string& text,
+                                         std::string* errorMessage) const {
+    const std::string trimmed = trimCopy(text);
+    if (row.isLocal) {
+        if (trimmed.empty()) {
+            if (errorMessage) {
+                *errorMessage = "Local sources need a directory path.";
             }
-            sword::InstallSource src("DIR", it->second.c_str());
-            if (caption == safeText(src.caption)) {
-                it = secIt->second.erase(it);
-            } else {
-                ++it;
-            }
+            return false;
         }
+        row.type = "DIR";
+        row.source = trimmed;
+        row.directory = trimmed;
+        return true;
     }
 
-    sword::InstallSource local("DIR");
-    local.caption = caption.c_str();
-    local.source = dir.c_str();
-    local.directory = dir.c_str();
-    conf["Sources"].insert(
-        std::make_pair(sword::SWBuf("DIRSource"), local.getConfEnt()));
+    if (trimmed.empty()) {
+        row.source.clear();
+        row.directory.clear();
+        if (row.type.empty()) row.type = "HTTPS";
+        return true;
+    }
+
+    const size_t schemePos = trimmed.find("://");
+    if (schemePos == std::string::npos) {
+        if (errorMessage) {
+            *errorMessage =
+                "Remote URLs must include ftp://, http://, https://, or sftp://.";
+        }
+        return false;
+    }
+
+    const std::string scheme = lowerCopy(trimCopy(trimmed.substr(0, schemePos)));
+    if (!isSupportedRemoteScheme(scheme)) {
+        if (errorMessage) {
+            *errorMessage =
+                "Unsupported remote URL scheme. Use ftp://, http://, https://, or sftp://.";
+        }
+        return false;
+    }
+
+    const std::string remainder = trimmed.substr(schemePos + 3);
+    std::string host = remainder;
+    std::string path = "/";
+    const size_t slashPos = remainder.find('/');
+    if (slashPos != std::string::npos) {
+        host = remainder.substr(0, slashPos);
+        path = remainder.substr(slashPos);
+    }
+
+    host = trimCopy(host);
+    if (host.empty()) {
+        if (errorMessage) {
+            *errorMessage = "Remote URLs must include a host name.";
+        }
+        return false;
+    }
+
+    path = trimCopy(path);
+    if (path.empty()) path = "/";
+    if (path.size() > 1) path = stripTrailingSlashCopy(path);
+
+    row.isLocal = false;
+    row.type = upperCopy(scheme);
+    row.source = host;
+    row.directory = path;
+    return true;
+}
+
+bool ModuleManagerDialog::rewriteSourceConfiguration() {
+    if (!installMgr_) initializeInstallMgr();
+    if (!installMgr_) return false;
+
+    installMgr_->readInstallConf();
+    installMgr_->clearSources();
+    syncInstallMgrTimeout();
+
+    for (const auto& row : sources_) {
+        if (row.isLocal) continue;
+
+        auto* source = new sword::InstallSource(
+            (row.type.empty() ? "HTTPS" : row.type).c_str());
+        source->caption = row.caption.c_str();
+        source->source = row.source.c_str();
+        source->directory = row.directory.c_str();
+        source->u = row.username.c_str();
+        source->p = row.password.c_str();
+        source->uid = row.uid.c_str();
+        installMgr_->sources[source->caption] = source;
+    }
+
+    installMgr_->saveInstallConf();
+
+    const std::string confFile = installMgrPath_ + "/InstallMgr.conf";
+    sword::SWConfig conf(confFile.c_str());
+    auto& sourceSection = conf.getSection("Sources");
+    for (const auto& row : sources_) {
+        if (!row.isLocal) continue;
+
+        sword::InstallSource local("DIR");
+        local.caption = row.caption.c_str();
+        local.source = row.source.c_str();
+        local.directory = row.directory.c_str();
+        local.u = row.username.c_str();
+        local.p = row.password.c_str();
+        local.uid = row.uid.c_str();
+        sourceSection.insert(
+            std::make_pair(sword::SWBuf("DIRSource"), local.getConfEnt()));
+    }
     conf.save();
 
     refreshSources(false);
     refreshModules();
+    persistModuleManagerSettings();
+    return true;
 }
 
-void ModuleManagerDialog::removeSelectedSource() {
-    if (!sourceChoice_) return;
-    const std::string caption = selectedChoiceLabel(sourceChoice_);
-    if (caption.empty() || caption == "All Sources") return;
+bool ModuleManagerDialog::updateSourceCaption(size_t index,
+                                              const std::string& text,
+                                              std::string* errorMessage) {
+    if (index >= sources_.size()) return false;
 
-    auto srcIt = std::find_if(sources_.begin(), sources_.end(),
-                              [&](const SourceRow& source) {
-                                  return source.caption == caption;
-                              });
-    if (srcIt == sources_.end()) return;
+    const std::string caption = trimCopy(text);
+    if (caption.empty()) {
+        if (errorMessage) *errorMessage = "Source names cannot be empty.";
+        return false;
+    }
 
+    for (size_t i = 0; i < sources_.size(); ++i) {
+        if (i == index) continue;
+        if (compareNoCase(sources_[i].caption, caption) == 0) {
+            if (errorMessage) *errorMessage = "Source names must be unique.";
+            return false;
+        }
+    }
+
+    const std::vector<SourceRow> previousSources = sources_;
+    const std::vector<std::string> previousSelection = activeSourceCaptions_;
+    const bool previousExplicit = hasExplicitSourceFilter_;
+
+    const std::string oldCaption = sources_[index].caption;
+    sources_[index].caption = caption;
+    replaceSelectedSourceCaption(oldCaption, caption);
+
+    if (!rewriteSourceConfiguration()) {
+        sources_ = previousSources;
+        activeSourceCaptions_ = previousSelection;
+        hasExplicitSourceFilter_ = previousExplicit;
+        if (errorMessage) {
+            *errorMessage = "The updated source list could not be saved.";
+        }
+        return false;
+    }
+    return true;
+}
+
+bool ModuleManagerDialog::updateSourceUrl(size_t index,
+                                          const std::string& text,
+                                          std::string* errorMessage) {
+    if (index >= sources_.size()) return false;
+
+    const std::vector<SourceRow> previousSources = sources_;
+    const std::vector<std::string> previousSelection = activeSourceCaptions_;
+    const bool previousExplicit = hasExplicitSourceFilter_;
+
+    SourceRow updated = sources_[index];
+    if (!applySourceUrl(updated, text, errorMessage)) {
+        return false;
+    }
+
+    sources_[index] = std::move(updated);
+    if (!rewriteSourceConfiguration()) {
+        sources_ = previousSources;
+        activeSourceCaptions_ = previousSelection;
+        hasExplicitSourceFilter_ = previousExplicit;
+        if (errorMessage) {
+            *errorMessage = "The updated source list could not be saved.";
+        }
+        return false;
+    }
+    return true;
+}
+
+void ModuleManagerDialog::setSourceSelected(const std::string& caption, bool selected) {
+    if (caption.empty()) return;
+
+    if (!hasExplicitSourceFilter_) {
+        activeSourceCaptions_.clear();
+        for (const auto& source : sources_) {
+            activeSourceCaptions_.push_back(source.caption);
+        }
+        hasExplicitSourceFilter_ = true;
+    }
+
+    auto it = std::find(activeSourceCaptions_.begin(),
+                        activeSourceCaptions_.end(),
+                        caption);
+    if (selected) {
+        if (it == activeSourceCaptions_.end()) {
+            activeSourceCaptions_.push_back(caption);
+        }
+    } else if (it != activeSourceCaptions_.end()) {
+        activeSourceCaptions_.erase(it);
+    }
+
+    applySourceFilterSelection();
+}
+
+void ModuleManagerDialog::replaceSelectedSourceCaption(const std::string& oldCaption,
+                                                       const std::string& newCaption) {
+    if (!hasExplicitSourceFilter_) return;
+
+    auto it = std::find(activeSourceCaptions_.begin(),
+                        activeSourceCaptions_.end(),
+                        oldCaption);
+    if (it != activeSourceCaptions_.end()) {
+        *it = newCaption;
+    }
+}
+
+std::string ModuleManagerDialog::addRemoteSourceRow() {
+    auto makeUniqueCaption = [&](const std::string& base) {
+        std::string candidate = base;
+        int suffix = 2;
+        while (std::any_of(sources_.begin(), sources_.end(),
+                           [&](const SourceRow& row) {
+                               return compareNoCase(row.caption, candidate) == 0;
+                           })) {
+            candidate = base + " " + std::to_string(suffix++);
+        }
+        return candidate;
+    };
+    auto makeUniqueUid = [&](const std::string& base) {
+        std::string candidate = base;
+        int suffix = 2;
+        while (std::any_of(sources_.begin(), sources_.end(),
+                           [&](const SourceRow& row) {
+                               return row.uid == candidate;
+                           })) {
+            candidate = base + "-" + std::to_string(suffix++);
+        }
+        return candidate;
+    };
+
+    const std::vector<SourceRow> previousSources = sources_;
+    const std::vector<std::string> previousSelection = activeSourceCaptions_;
+    const bool previousExplicit = hasExplicitSourceFilter_;
+
+    SourceRow row;
+    row.caption = makeUniqueCaption("New Source");
+    row.type = "HTTPS";
+    row.directory = "/";
+    row.uid = makeUniqueUid("manual-source");
+    row.isLocal = false;
+    sources_.push_back(row);
+
+    if (hasExplicitSourceFilter_) {
+        activeSourceCaptions_.push_back(row.caption);
+    }
+
+    if (!rewriteSourceConfiguration()) {
+        sources_ = previousSources;
+        activeSourceCaptions_ = previousSelection;
+        hasExplicitSourceFilter_ = previousExplicit;
+        return "";
+    }
+    return row.caption;
+}
+
+std::string ModuleManagerDialog::addLocalSourceRow() {
+    std::string startDir = userHomeDir().empty() ? "." : userHomeDir();
+    const char* dirRaw = fl_dir_chooser("Select local module source directory",
+                                        startDir.c_str());
+    if (!dirRaw || !*dirRaw) return "";
+
+    const std::string dir = trimCopy(dirRaw);
+    if (dir.empty()) return "";
+
+    auto makeUniqueCaption = [&](const std::string& base) {
+        std::string candidate = base;
+        int suffix = 2;
+        while (std::any_of(sources_.begin(), sources_.end(),
+                           [&](const SourceRow& row) {
+                               return compareNoCase(row.caption, candidate) == 0;
+                           })) {
+            candidate = base + " " + std::to_string(suffix++);
+        }
+        return candidate;
+    };
+    auto makeUniqueUid = [&](const std::string& base) {
+        std::string candidate = base;
+        int suffix = 2;
+        while (std::any_of(sources_.begin(), sources_.end(),
+                           [&](const SourceRow& row) {
+                               return row.uid == candidate;
+                           })) {
+            candidate = base + "-" + std::to_string(suffix++);
+        }
+        return candidate;
+    };
+
+    const std::vector<SourceRow> previousSources = sources_;
+    const std::vector<std::string> previousSelection = activeSourceCaptions_;
+    const bool previousExplicit = hasExplicitSourceFilter_;
+
+    SourceRow row;
+    row.caption = makeUniqueCaption(fallbackSourceCaptionFromPath(dir));
+    row.type = "DIR";
+    row.source = dir;
+    row.directory = dir;
+    row.uid = makeUniqueUid("local-source");
+    row.isLocal = true;
+    sources_.push_back(row);
+
+    if (hasExplicitSourceFilter_) {
+        activeSourceCaptions_.push_back(row.caption);
+    }
+
+    if (!rewriteSourceConfiguration()) {
+        sources_ = previousSources;
+        activeSourceCaptions_ = previousSelection;
+        hasExplicitSourceFilter_ = previousExplicit;
+        return "";
+    }
+    return row.caption;
+}
+
+bool ModuleManagerDialog::removeSourceRow(size_t index) {
+    if (index >= sources_.size()) return false;
+
+    const std::string caption = sources_[index].caption;
     const std::string prompt = "Remove source '" + caption + "'?";
     if (fl_choice("%s", "Cancel", "Remove", nullptr, prompt.c_str()) != 1) {
-        return;
+        return false;
     }
 
-    if (srcIt->isLocal) {
-        std::string confFile = installMgrPath_ + "/InstallMgr.conf";
-        sword::SWConfig conf(confFile.c_str());
-        auto& sections = conf.getSections();
-        auto secIt = sections.find("Sources");
-        if (secIt != sections.end()) {
-            for (auto it = secIt->second.begin(); it != secIt->second.end(); ) {
-                if (safeText(it->first).find("DIRSource") != 0) {
-                    ++it;
-                    continue;
-                }
-                sword::InstallSource src("DIR", it->second.c_str());
-                if (caption == safeText(src.caption)) {
-                    it = secIt->second.erase(it);
-                } else {
-                    ++it;
-                }
-            }
-        }
-        conf.save();
-    } else if (installMgr_) {
-        auto it = installMgr_->sources.find(caption.c_str());
-        if (it != installMgr_->sources.end()) {
-            delete it->second;
-            installMgr_->sources.erase(it);
-            installMgr_->saveInstallConf();
-        }
-    }
+    const std::vector<SourceRow> previousSources = sources_;
+    const std::vector<std::string> previousSelection = activeSourceCaptions_;
+    const bool previousExplicit = hasExplicitSourceFilter_;
 
-    refreshSources(false);
-    refreshModules();
+    sources_.erase(sources_.begin() + index);
+    activeSourceCaptions_.erase(
+        std::remove(activeSourceCaptions_.begin(),
+                    activeSourceCaptions_.end(),
+                    caption),
+        activeSourceCaptions_.end());
+
+    if (!rewriteSourceConfiguration()) {
+        sources_ = previousSources;
+        activeSourceCaptions_ = previousSelection;
+        hasExplicitSourceFilter_ = previousExplicit;
+        return false;
+    }
+    return true;
 }
 
-void ModuleManagerDialog::refreshSelectedSource() {
-    if (!sourceChoice_) return;
+bool ModuleManagerDialog::refreshSourceRow(size_t index) {
+    if (!installMgr_) initializeInstallMgr();
+    if (!installMgr_) return false;
+    if (index >= sources_.size()) return false;
 
-    const std::string caption = selectedChoiceLabel(sourceChoice_);
-    if (caption.empty() || caption == "All Sources") {
+    const SourceRow& source = sources_[index];
+    if (source.isLocal) {
         refreshSources(false);
         refreshModules();
-        return;
+        if (statusBox_) statusBox_->copy_label("Sources refreshed.");
+        return true;
     }
 
-    auto srcIt = std::find_if(sources_.begin(), sources_.end(),
-                              [&](const SourceRow& source) {
-                                  return source.caption == caption;
-                              });
-    if (srcIt == sources_.end()) return;
+    if (trimCopy(source.source).empty()) {
+        fl_alert("Enter a remote URL for %s first.", source.caption.c_str());
+        return false;
+    }
 
-    if (!srcIt->isLocal && srcIt->remoteSource) {
-        if (!confirmRemoteNetworkUse()) return;
-        statusBox_->copy_label(("Refreshing " + srcIt->caption + "...").c_str());
-        Fl::check();
+    if (!source.remoteSource) {
+        fl_alert("Remote source is not available for %s yet.", source.caption.c_str());
+        return false;
+    }
+
+    if (!confirmRemoteNetworkUse()) return false;
+    syncInstallMgrTimeout();
+    statusBox_->copy_label(("Refreshing " + source.caption + "...").c_str());
+    Fl::check();
+    if (auto* manager = verdadInstallMgr(installMgr_.get())) {
+        manager->resetLastTransferState();
+    }
+    const int rc = installMgr_->refreshRemoteSource(source.remoteSource);
+    if (rc != 0) {
+        const std::string message =
+            describeRefreshFailure(
+                source.caption,
+                rc,
+                verdadInstallMgr(installMgr_.get()));
+        fl_alert("%s", message.c_str());
+        statusBox_->copy_label(
+            ("Refresh failed: " +
+             refreshErrorBrief(rc, verdadInstallMgr(installMgr_.get()))).c_str());
+        refreshSources(false);
+        refreshModules();
+        return false;
+    }
+
+    statusBox_->copy_label("Sources refreshed.");
+    refreshSources(false);
+    refreshModules();
+    return true;
+}
+
+bool ModuleManagerDialog::refreshAllSources() {
+    if (!installMgr_) initializeInstallMgr();
+    if (!installMgr_) return false;
+    if (!confirmRemoteNetworkUse()) return false;
+    if (installMgr_) {
+        syncInstallMgrTimeout();
         if (auto* manager = verdadInstallMgr(installMgr_.get())) {
             manager->resetLastTransferState();
         }
-        const int rc = installMgr_->refreshRemoteSource(srcIt->remoteSource);
+        const int rc = installMgr_->refreshRemoteSourceConfiguration();
         if (rc != 0) {
             const std::string message =
                 describeRefreshFailure(
-                    srcIt->caption,
+                    "the remote source list",
                     rc,
                     verdadInstallMgr(installMgr_.get()));
             fl_alert("%s", message.c_str());
             statusBox_->copy_label(
                 ("Refresh failed: " +
-                 refreshErrorBrief(rc, verdadInstallMgr(installMgr_.get()))).c_str());
+                 refreshErrorBrief(
+                     rc,
+                     verdadInstallMgr(installMgr_.get()))).c_str());
+            refreshSources(false);
+            refreshModules();
+            return false;
         }
     }
-
-    refreshSources(false);
+    refreshSources(true);
     refreshModules();
+    return true;
 }
 
 void ModuleManagerDialog::installOrUpdateSelectedModules() {
@@ -2567,6 +3474,7 @@ void ModuleManagerDialog::installOrUpdateSelectedModules() {
 
     std::vector<int> successfulRows;
     std::vector<std::string> failureMessages;
+    syncInstallMgrTimeout();
     for (size_t i = 0; i < moduleIndices.size(); ++i) {
         const int moduleIndex = moduleIndices[i];
         if (moduleIndex < 0 ||
@@ -2665,16 +3573,10 @@ void ModuleManagerDialog::installOrUpdateSelectedModules() {
             : "Install completed with errors.");
 }
 
-void ModuleManagerDialog::onSourceChanged(Fl_Widget* /*widget*/, void* data) {
-    auto* self = static_cast<ModuleManagerDialog*>(data);
-    if (!self) return;
-    // TODO: implement source change handling if needed
-}
-
 void ModuleManagerDialog::onChooseSources(Fl_Widget* /*widget*/, void* data) {
     auto* self = static_cast<ModuleManagerDialog*>(data);
     if (!self) return;
-    self->chooseVisibleSources();
+    self->openSourceManager();
 }
 
 void ModuleManagerDialog::onTreeSelectionChanged(Fl_Widget* /*widget*/, void* data) {
@@ -2716,60 +3618,6 @@ void ModuleManagerDialog::onModuleSelectionChanged(Fl_Widget* /*widget*/, void* 
     if (!self) return;
     self->updateStatusBox();
     self->updateInstallButton();
-}
-
-void ModuleManagerDialog::onRefreshSource(Fl_Widget* /*widget*/, void* data) {
-    auto* self = static_cast<ModuleManagerDialog*>(data);
-    if (!self) return;
-    self->refreshSelectedSource();
-}
-
-void ModuleManagerDialog::onRefreshAll(Fl_Widget* /*widget*/, void* data) {
-    auto* self = static_cast<ModuleManagerDialog*>(data);
-    if (!self) return;
-    if (!self->confirmRemoteNetworkUse()) return;
-    if (self->installMgr_) {
-        if (auto* manager = verdadInstallMgr(self->installMgr_.get())) {
-            manager->resetLastTransferState();
-        }
-        const int rc = self->installMgr_->refreshRemoteSourceConfiguration();
-        if (rc != 0) {
-            const std::string message =
-                describeRefreshFailure(
-                    "the remote source list",
-                    rc,
-                    verdadInstallMgr(self->installMgr_.get()));
-            fl_alert("%s", message.c_str());
-            self->statusBox_->copy_label(
-                ("Refresh failed: " +
-                 refreshErrorBrief(
-                     rc,
-                     verdadInstallMgr(self->installMgr_.get()))).c_str());
-            self->refreshSources(false);
-            self->refreshModules();
-            return;
-        }
-    }
-    self->refreshSources(true);
-    self->refreshModules();
-}
-
-void ModuleManagerDialog::onAddRemote(Fl_Widget* /*widget*/, void* data) {
-    auto* self = static_cast<ModuleManagerDialog*>(data);
-    if (!self) return;
-    self->addRemoteSource();
-}
-
-void ModuleManagerDialog::onAddLocal(Fl_Widget* /*widget*/, void* data) {
-    auto* self = static_cast<ModuleManagerDialog*>(data);
-    if (!self) return;
-    self->addLocalSource();
-}
-
-void ModuleManagerDialog::onRemoveSource(Fl_Widget* /*widget*/, void* data) {
-    auto* self = static_cast<ModuleManagerDialog*>(data);
-    if (!self) return;
-    self->removeSelectedSource();
 }
 
 void ModuleManagerDialog::onInstallUpdate(Fl_Widget* /*widget*/, void* data) {

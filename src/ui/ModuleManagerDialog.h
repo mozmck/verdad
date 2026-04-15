@@ -25,6 +25,8 @@ namespace verdad {
 
 class VerdadApp;
 class FilterableChoiceWidget;
+class SourceManagerDialog;
+class SourceManagerTable;
 
 /// Basic SWORD module manager UI (sources + install/update).
 class ModuleManagerDialog : public Fl_Double_Window {
@@ -41,6 +43,9 @@ private:
         std::string type;      // FTP/HTTP/HTTPS/SFTP/DIR
         std::string source;    // host or local dir
         std::string directory; // remote path
+        std::string username;
+        std::string password;
+        std::string uid;
         bool isLocal = false;
         sword::InstallSource* remoteSource = nullptr; // owned by InstallMgr
     };
@@ -87,7 +92,6 @@ private:
     std::unique_ptr<sword::InstallMgr> installMgr_;
 
     Fl_Box* warningBox_ = nullptr;
-    Fl_Choice* sourceChoice_ = nullptr;
     Fl_Button* sourceFilterButton_ = nullptr;
     Fl_Tree* filterTree_ = nullptr;
     Fl_Box* languageChoiceLabel_ = nullptr;
@@ -100,11 +104,6 @@ private:
     Fl_Input* descriptionFilterInput_ = nullptr;
     Fl_Hold_Browser* moduleBrowser_ = nullptr;
     Fl_Box* statusBox_ = nullptr;
-    Fl_Button* addRemoteButton_ = nullptr;
-    Fl_Button* addLocalButton_ = nullptr;
-    Fl_Button* removeButton_ = nullptr;
-    Fl_Button* refreshSourceButton_ = nullptr;
-    Fl_Button* refreshAllButton_ = nullptr;
     Fl_Button* clearFiltersButton_ = nullptr;
     Fl_Button* installButton_ = nullptr;
     Fl_Button* closeButton_ = nullptr;
@@ -126,7 +125,6 @@ private:
     void initializeInstallMgr();
     void refreshSources(bool refreshRemoteContent);
     void refreshModules();
-    void repopulateSourceChoice();
     void repopulateLanguageChoice();
     void repopulateFilterTree();
     void repopulateModuleBrowser();
@@ -142,29 +140,47 @@ private:
     std::string moduleTooltipText(int moduleIndex) const;
     void toggleVisibleModuleChecked(int browserLine);
     bool confirmInstallPlan(const std::vector<int>& moduleIndices) const;
-    void chooseVisibleSources();
+    void openSourceManager();
     void persistModuleManagerSettings();
+    int effectiveInstallTimeoutMillis() const;
+    void syncInstallMgrTimeout();
+    void setInstallTimeoutMillis(int timeoutMillis, bool rememberChoice);
+    void promptForInstallTimeout();
+    void normalizeActiveSourceCaptions();
+    void applySourceFilterSelection();
+    bool rewriteSourceConfiguration();
+    std::string sourceUrl(const SourceRow& row) const;
+    bool applySourceUrl(SourceRow& row,
+                        const std::string& text,
+                        std::string* errorMessage) const;
+    bool updateSourceCaption(size_t index,
+                             const std::string& text,
+                             std::string* errorMessage);
+    bool updateSourceUrl(size_t index,
+                         const std::string& text,
+                         std::string* errorMessage);
+    void setSourceSelected(const std::string& caption, bool selected);
+    void replaceSelectedSourceCaption(const std::string& oldCaption,
+                                      const std::string& newCaption);
+    std::string addRemoteSourceRow();
+    std::string addLocalSourceRow();
+    bool removeSourceRow(size_t index);
+    bool refreshSourceRow(size_t index);
+    bool refreshAllSources();
 
     void clearFilters();
-    void addRemoteSource();
-    void addLocalSource();
-    void removeSelectedSource();
-    void refreshSelectedSource();
     void installOrUpdateSelectedModules();
     bool confirmRemoteNetworkUse();
 
-    static void onSourceChanged(Fl_Widget* w, void* data);
     static void onChooseSources(Fl_Widget* w, void* data);
     static void onTreeSelectionChanged(Fl_Widget* w, void* data);
     static void onFilterChanged(Fl_Widget* w, void* data);
     static void onClearFilters(Fl_Widget* w, void* data);
     static void onModuleSelectionChanged(Fl_Widget* w, void* data);
-    static void onRefreshSource(Fl_Widget* w, void* data);
-    static void onRefreshAll(Fl_Widget* w, void* data);
-    static void onAddRemote(Fl_Widget* w, void* data);
-    static void onAddLocal(Fl_Widget* w, void* data);
-    static void onRemoveSource(Fl_Widget* w, void* data);
     static void onInstallUpdate(Fl_Widget* w, void* data);
+
+    friend class SourceManagerDialog;
+    friend class SourceManagerTable;
 };
 
 } // namespace verdad

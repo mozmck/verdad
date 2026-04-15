@@ -112,6 +112,10 @@ int clampHoverDelayMs(int ms) {
     return std::clamp(ms, 100, 5000);
 }
 
+int clampModuleManagerTimeoutMillis(int ms) {
+    return std::clamp(ms, 10000, 900000);
+}
+
 int clampBrowserLineSpacing(int pixels) {
     return std::clamp(pixels, 0, 16);
 }
@@ -755,6 +759,13 @@ bool VerdadApp::applyPreferencesMap(const PreferenceMap& prefs,
             importedModuleManager.languageFilter = normalizeLanguageCode(languageFilter);
         }
 
+        const int timeoutMillis =
+            parseIntOr(lookup("module_manager_timeout_ms"), 0);
+        importedModuleManager.installTimeoutMillis =
+            timeoutMillis > 0
+                ? clampModuleManagerTimeoutMillis(timeoutMillis)
+                : 0;
+
         auto sourceCountIt = prefs.find("module_manager_source_count");
         importedModuleManager.selectedSources.clear();
         importedModuleManager.hasSelectedSources =
@@ -852,6 +863,10 @@ void VerdadApp::savePreferences() {
         if (!trimCopy(moduleManagerSettings_.languageFilter).empty()) {
             file << "module_manager_language="
                  << moduleManagerSettings_.languageFilter << "\n";
+        }
+        if (moduleManagerSettings_.installTimeoutMillis > 0) {
+            file << "module_manager_timeout_ms="
+                 << moduleManagerSettings_.installTimeoutMillis << "\n";
         }
         if (moduleManagerSettings_.hasSelectedSources) {
             file << "module_manager_source_count="
@@ -1023,6 +1038,10 @@ void VerdadApp::setModuleManagerSettings(
     const ModuleManagerSettings& settings) {
     ModuleManagerSettings normalized = settings;
     normalized.languageFilter = normalizeLanguageCode(normalized.languageFilter);
+    normalized.installTimeoutMillis =
+        normalized.installTimeoutMillis > 0
+            ? clampModuleManagerTimeoutMillis(normalized.installTimeoutMillis)
+            : 0;
 
     std::vector<std::string> cleanedSources;
     cleanedSources.reserve(normalized.selectedSources.size());
