@@ -29,6 +29,17 @@ a.versenum-link:hover {
     text-decoration: none;
 }
 
+a.scripture-link {
+    color: #1a5276;
+    text-decoration: underline;
+    text-decoration-thickness: from-font;
+}
+
+a.scripture-link:hover {
+    color: #154360;
+    text-decoration: underline;
+}
+
 /* Chapter numbers */
 span.chapnum {
     font-size: 1.8em;

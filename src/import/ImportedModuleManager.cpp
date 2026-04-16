@@ -9,8 +9,11 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <regex>
 #include <sstream>
 #include <unordered_set>
+
+#include <versekey.h>
 
 namespace verdad {
 namespace {
@@ -73,6 +76,60 @@ std::string htmlEscape(const std::string& text) {
         }
     }
     return out;
+}
+
+bool looksLikeBibleReference(const std::string& candidate,
+                             std::string* normalizedOut) {
+    if (normalizedOut) normalizedOut->clear();
+    std::string trimmed = trimCopy(candidate);
+    if (trimmed.empty()) return false;
+
+    sword::VerseKey vk;
+    vk.setAutoNormalize(true);
+    vk.setText(trimmed.c_str());
+    if (vk.popError()) return false;
+    if (vk.getChapter() <= 0 || vk.getVerse() <= 0) return false;
+
+    const char* text = vk.getText();
+    std::string normalized = trimCopy(text ? text : "");
+    if (normalized.empty()) return false;
+    if (normalizedOut) *normalizedOut = std::move(normalized);
+    return true;
+}
+
+std::string linkifyVerseReferences(const std::string& text) {
+    static const std::regex kVersePattern(
+        R"((^|[^A-Za-z0-9])(([1-3]\s*)?[A-Za-z][A-Za-z.'-]*(\s+[A-Za-z][A-Za-z.'-]*){0,4}\s+\d+:\d+(-\d+)?))",
+        std::regex::ECMAScript | std::regex::icase);
+
+    std::ostringstream out;
+    size_t pos = 0;
+    auto begin = std::sregex_iterator(text.begin(), text.end(), kVersePattern);
+    auto end = std::sregex_iterator();
+    for (auto it = begin; it != end; ++it) {
+        const std::smatch& match = *it;
+        size_t candidateStart = static_cast<size_t>(match.position(2));
+        size_t candidateLen = static_cast<size_t>(match.length(2));
+        size_t candidateEnd = candidateStart + candidateLen;
+        if (candidateStart > pos) {
+            out << htmlEscape(text.substr(pos, candidateStart - pos));
+        }
+
+        std::string candidate = match.str(2);
+        std::string normalized;
+        if (looksLikeBibleReference(candidate, &normalized)) {
+            out << "<a class=\"scripture-link\" href=\"sword://"
+                << htmlEscape(normalized)
+                << "\">" << htmlEscape(candidate) << "</a>";
+        } else {
+            out << htmlEscape(candidate);
+        }
+        pos = candidateEnd;
+    }
+    if (pos < text.size()) {
+        out << htmlEscape(text.substr(pos));
+    }
+    return out.str();
 }
 
 std::string collapseWhitespace(const std::string& text) {
@@ -178,7 +235,7 @@ std::string textBlockHtml(const std::string& text) {
             if (i > 0) joined << ' ';
             joined << trimCopy(paragraph[i]);
         }
-        html << "<p>" << htmlEscape(joined.str()) << "</p>\n";
+        html << "<p>" << linkifyVerseReferences(joined.str()) << "</p>\n";
         paragraph.clear();
     };
 
@@ -317,7 +374,7 @@ MarkdownParseResult parseMarkdownDocument(const std::string& text) {
                 flushParagraph();
                 closeList();
                 std::string headingText = trimCopy(rawLine.substr(headingCount));
-                html << "<h" << headingCount << ">" << htmlEscape(headingText)
+                html << "<h" << headingCount << ">" << linkifyVerseReferences(headingText)
                      << "</h" << headingCount << ">\n";
                 continue;
             }
@@ -334,7 +391,8 @@ MarkdownParseResult parseMarkdownDocument(const std::string& text) {
                     html << "<ul>\n";
                     inList = true;
                 }
-                html << "<li>" << htmlEscape(trimCopy(trimmed.substr(2))) << "</li>\n";
+                html << "<li>" << linkifyVerseReferences(trimCopy(trimmed.substr(2)))
+                     << "</li>\n";
                 continue;
             }
 
