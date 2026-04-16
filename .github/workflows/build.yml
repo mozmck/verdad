@@ -110,6 +110,79 @@ jobs:
             build/verdad-*.AppImage
 
   # ===========================================================================
+  # macOS
+  # ===========================================================================
+  build-macos:
+    runs-on: macos-latest
+    env:
+      MACOSX_DEPLOYMENT_TARGET: "10.13"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Cache Homebrew downloads
+        uses: actions/cache@v4
+        with:
+          path: ~/Library/Caches/Homebrew
+          key: homebrew-${{ runner.os }}-${{ hashFiles('.github/workflows/build.yml') }}
+          restore-keys: |
+            homebrew-${{ runner.os }}-
+
+      - name: Cache SWORD install
+        id: cache-sword
+        uses: actions/cache@v4
+        with:
+          path: deps/sword
+          key: sword-macos-universal-${{ github.sha }}
+          restore-keys: |
+            sword-macos-universal-
+
+      - name: Install dependencies via Homebrew
+        run: |
+          brew install cmake pkg-config libsword sqlite3 zlib
+
+      - name: Clone SWORD mirror
+        if: steps.cache-sword.outputs.cache-hit != 'true'
+        run: git clone --depth=1 https://github.com/bibletime/crosswire-sword-mirror sword-src
+
+      - name: Build SWORD from source
+        if: steps.cache-sword.outputs.cache-hit != 'true'
+        run: |
+          cmake -S sword-src -B sword-build \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_OSX_DEPLOYMENT_TARGET="${MACOSX_DEPLOYMENT_TARGET}" \
+            -DLIBSWORD_LIBRARY_TYPE=Static \
+            -DSWORD_BUILD_UTILS=No \
+            -DSWORD_BUILD_EXAMPLES=No \
+            -DSWORD_BUILD_TESTS=OFF \
+            -DSWORD_NO_CLUCENE=Yes \
+            -DSWORD_NO_XZ=Yes \
+            -DCMAKE_INSTALL_PREFIX="${GITHUB_WORKSPACE}/deps/sword"
+          cmake --build sword-build -j$(sysctl -n hw.logicalcpu)
+          cmake --install sword-build
+
+      - name: Configure
+        run: |
+          cmake -S . -B build \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_OSX_DEPLOYMENT_TARGET="${MACOSX_DEPLOYMENT_TARGET}" \
+            -DCMAKE_PREFIX_PATH="${GITHUB_WORKSPACE}/deps/sword"
+
+      - name: Build
+        run: cmake --build build -j$(sysctl -n hw.logicalcpu)
+
+      - name: Package (DMG)
+        run: cmake --build build --target dmg
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: verdad-macos-universal
+          path: build/verdad-*.dmg
+
+  # ===========================================================================
   # Windows (x64, MSVC)
   # ===========================================================================
   build-windows:
