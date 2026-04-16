@@ -1,6 +1,10 @@
 name: Build
 
 on:
+  push:
+    branches:
+      - main
+  pull_request:
   workflow_dispatch:
 
 jobs:
@@ -217,7 +221,9 @@ jobs:
           RESOURCES="build/Verdad.app/Contents/Resources/sword"
           if [ -d "$SWORD_SHARE" ]; then
             mkdir -p "$RESOURCES"
-            cp -R "$SWORD_SHARE/locales.d" "$RESOURCES/"
+            if [ -d "$SWORD_SHARE/locales.d" ]; then
+              cp -R "$SWORD_SHARE/locales.d" "$RESOURCES/"
+            fi
             if [ -d "$SWORD_SHARE/mods.d" ]; then
               cp -R "$SWORD_SHARE/mods.d" "$RESOURCES/"
             fi
@@ -340,7 +346,9 @@ jobs:
           RESOURCES="build/Verdad.app/Contents/Resources/sword"
           if [ -d "$SWORD_SHARE" ]; then
             mkdir -p "$RESOURCES"
-            cp -R "$SWORD_SHARE/locales.d" "$RESOURCES/"
+            if [ -d "$SWORD_SHARE/locales.d" ]; then
+              cp -R "$SWORD_SHARE/locales.d" "$RESOURCES/"
+            fi
             if [ -d "$SWORD_SHARE/mods.d" ]; then
               cp -R "$SWORD_SHARE/mods.d" "$RESOURCES/"
             fi
