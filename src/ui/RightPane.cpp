@@ -12,11 +12,13 @@
 #include "ui/MainWindow.h"
 #include "ui/ModuleChoiceUtils.h"
 #include "ui/StyledTabs.h"
+#include "ui/UiFontUtils.h"
 #include "ui/WrappingChoice.h"
 #include "sword/SwordManager.h"
 #include "app/PerfTrace.h"
 
 #include <FL/Fl.H>
+#include <FL/Fl_Menu_Button.H>
 #include <FL/Fl_Native_File_Chooser.H>
 #include <FL/Fl_Input.H>
 #include <FL/Fl_Multiline_Input.H>
@@ -526,6 +528,226 @@ std::string htmlEscape(const std::string& text) {
             break;
         }
     }
+    return out;
+}
+
+bool isReferenceWordChar(unsigned char c) {
+    return std::isalnum(c) || c == '\'' || c == '.';
+}
+
+bool isReferenceStartChar(unsigned char c) {
+    return std::isalpha(c) || (c >= '1' && c <= '3');
+}
+
+bool isReferenceBoundary(const std::string& text, size_t pos) {
+    if (pos == 0) return true;
+    return !isReferenceWordChar(static_cast<unsigned char>(text[pos - 1]));
+}
+
+bool parseUnsignedNumber(const std::string& text, size_t& pos, int& value) {
+    size_t start = pos;
+    value = 0;
+    while (pos < text.size() &&
+           std::isdigit(static_cast<unsigned char>(text[pos])) &&
+           (pos - start) < 3) {
+        value = (value * 10) + (text[pos] - '0');
+        ++pos;
+    }
+    return pos > start;
+}
+
+void skipReferenceSpaces(const std::string& text, size_t& pos) {
+    while (pos < text.size() &&
+           std::isspace(static_cast<unsigned char>(text[pos]))) {
+        ++pos;
+    }
+}
+
+std::string normalizeBibleReferenceCandidate(std::string text) {
+    text = trimCopy(text);
+    if (text.empty()) return "";
+
+    text.erase(std::remove(text.begin(), text.end(), '.'), text.end());
+
+    std::string out;
+    out.reserve(text.size());
+    bool pendingSpace = false;
+    for (char c : text) {
+        unsigned char uc = static_cast<unsigned char>(c);
+        if (std::isspace(uc)) {
+            pendingSpace = !out.empty();
+            continue;
+        }
+        if ((c == ':' || c == '-') && !out.empty() && out.back() == ' ') {
+            out.pop_back();
+        }
+        if (pendingSpace && c != ':' && c != '-') {
+            out.push_back(' ');
+        }
+        pendingSpace = false;
+        out.push_back(c);
+    }
+
+    std::string cleaned;
+    cleaned.reserve(out.size());
+    for (size_t i = 0; i < out.size(); ++i) {
+        char c = out[i];
+        if ((c == ':' || c == '-') && i + 1 < out.size() && out[i + 1] == ' ') {
+            cleaned.push_back(c);
+            ++i;
+            continue;
+        }
+        cleaned.push_back(c);
+    }
+
+    return trimCopy(cleaned);
+}
+
+size_t parseBibleReferenceTail(const std::string& text, size_t chapterPos) {
+    size_t pos = chapterPos;
+    int chapter = 0;
+    if (!parseUnsignedNumber(text, pos, chapter)) return std::string::npos;
+
+    size_t cursor = pos;
+    skipReferenceSpaces(text, cursor);
+    if (cursor >= text.size() || text[cursor] != ':') return std::string::npos;
+    ++cursor;
+    skipReferenceSpaces(text, cursor);
+
+    int verse = 0;
+    if (!parseUnsignedNumber(text, cursor, verse)) return std::string::npos;
+
+    size_t end = cursor;
+    size_t rangeCursor = end;
+    skipReferenceSpaces(text, rangeCursor);
+    if (rangeCursor < text.size() && text[rangeCursor] == '-') {
+        ++rangeCursor;
+        skipReferenceSpaces(text, rangeCursor);
+        size_t afterRange = rangeCursor;
+        int rangeChapter = 0;
+        if (parseUnsignedNumber(text, afterRange, rangeChapter)) {
+            skipReferenceSpaces(text, afterRange);
+            if (afterRange < text.size() && text[afterRange] == ':') {
+                ++afterRange;
+                skipReferenceSpaces(text, afterRange);
+                int rangeVerse = 0;
+                if (parseUnsignedNumber(text, afterRange, rangeVerse)) {
+                    end = afterRange;
+                }
+            } else {
+                end = afterRange;
+            }
+        }
+    }
+
+    return end;
+}
+
+std::vector<std::pair<size_t, size_t>> findBibleReferenceSpans(
+    const std::string& text) {
+    std::vector<std::pair<size_t, size_t>> spans;
+    size_t i = 0;
+    while (i < text.size()) {
+        if (!isReferenceStartChar(static_cast<unsigned char>(text[i])) ||
+            !isReferenceBoundary(text, i)) {
+            ++i;
+            continue;
+        }
+
+        size_t limit = std::min(text.size(), i + 80);
+        bool found = false;
+        for (size_t chapterPos = i; chapterPos < limit; ++chapterPos) {
+            if (!std::isdigit(static_cast<unsigned char>(text[chapterPos]))) continue;
+            if (chapterPos > i &&
+                std::isdigit(static_cast<unsigned char>(text[chapterPos - 1]))) {
+                continue;
+            }
+
+            size_t end = parseBibleReferenceTail(text, chapterPos);
+            if (end == std::string::npos || end <= chapterPos) continue;
+
+            std::string candidate = normalizeBibleReferenceCandidate(
+                text.substr(i, end - i));
+            if (candidate.empty()) continue;
+            if (!SwordManager::isValidVerseRef(candidate)) continue;
+
+            spans.emplace_back(i, end);
+            i = end;
+            found = true;
+            break;
+        }
+
+        if (!found) ++i;
+    }
+
+    return spans;
+}
+
+std::string tagNameFromHtmlTag(const std::string& tag) {
+    if (tag.size() < 3 || tag.front() != '<') return "";
+    size_t pos = 1;
+    if (tag[pos] == '/') ++pos;
+    while (pos < tag.size() &&
+           std::isspace(static_cast<unsigned char>(tag[pos]))) {
+        ++pos;
+    }
+    size_t start = pos;
+    while (pos < tag.size()) {
+        unsigned char c = static_cast<unsigned char>(tag[pos]);
+        if (!std::isalnum(c) && c != '-' && c != '_') break;
+        ++pos;
+    }
+    if (pos <= start) return "";
+    std::string name = tag.substr(start, pos - start);
+    std::transform(name.begin(), name.end(), name.begin(),
+                   [](unsigned char c) {
+                       return static_cast<char>(std::tolower(c));
+                   });
+    return name;
+}
+
+bool suppressBibleReferenceAutoLinking(const std::string& tagName) {
+    return tagName == "a" ||
+           tagName == "script" ||
+           tagName == "style" ||
+           tagName == "code" ||
+           tagName == "pre";
+}
+
+template <typename Validator>
+std::string autoLinkBibleReferencesInText(const std::string& text,
+                                          Validator&& isValidRef) {
+    std::string out;
+    size_t cursor = 0;
+    for (const auto& [start, end] : findBibleReferenceSpans(text)) {
+        if (start < cursor || end <= start) continue;
+
+        std::string display = text.substr(start, end - start);
+        std::string trailing;
+        while (!display.empty()) {
+            char tail = display.back();
+            if (tail == '.' || tail == ',' || tail == ';' || tail == ')' || tail == ']') {
+                trailing.insert(trailing.begin(), tail);
+                display.pop_back();
+                continue;
+            }
+            break;
+        }
+
+        std::string normalized = normalizeBibleReferenceCandidate(display);
+        if (normalized.empty() || !isValidRef(normalized)) continue;
+
+        out.append(text, cursor, start - cursor);
+        out += "<a class=\"scripture-ref\" href=\"sword://";
+        out += htmlEscape(normalized);
+        out += "\">";
+        out += display;
+        out += "</a>";
+        out += trailing;
+        cursor = end;
+    }
+
+    out.append(text, cursor, std::string::npos);
     return out;
 }
 
@@ -1509,6 +1731,12 @@ RightPane::RightPane(VerdadApp* app, int X, int Y, int W, int H)
                                      panelH - choiceH - 6);
     commentaryHtml_->setLinkCallback(
         [this](const std::string& url) { onHtmlLink(url, true); });
+    commentaryHtml_->setContextCallback(
+        [this](const std::string& word, const std::string& href,
+               const std::string& strong, const std::string& morph,
+               const std::string& module, int x, int y) {
+            onHtmlContextMenu(word, href, strong, morph, module, x, y, true);
+        });
     commentaryEditor_ = new HtmlEditorWidget(tileX + 2,
                                              panelY + choiceH + 4,
                                              tileW - 4,
@@ -1554,6 +1782,12 @@ RightPane::RightPane(VerdadApp* app, int X, int Y, int W, int H)
                                       panelH - (choiceH * 2) - 8);
     generalBookHtml_->setLinkCallback(
         [this](const std::string& url) { onHtmlLink(url, false); });
+    generalBookHtml_->setContextCallback(
+        [this](const std::string& word, const std::string& href,
+               const std::string& strong, const std::string& morph,
+               const std::string& module, int x, int y) {
+            onHtmlContextMenu(word, href, strong, morph, module, x, y, false);
+        });
     generalBookTocPanel_ = new Fl_Group(tileX + 10,
                                         panelY + (choiceH * 2) + 14,
                                         std::min(kGeneralBookOverlayMaxW,
@@ -2402,6 +2636,70 @@ std::string RightPane::activeBibleReference() const {
     return ref.str();
 }
 
+std::string RightPane::currentVersePreviewModule() const {
+    if (!app_ || !app_->mainWindow() || !app_->mainWindow()->biblePane()) {
+        return "";
+    }
+    return app_->mainWindow()->biblePane()->currentModule();
+}
+
+std::string RightPane::linkifyBibleReferencesInHtml(const std::string& html,
+                                                    const std::string& defaultKey) const {
+    if (!app_ || html.empty()) return html;
+
+    const std::string verseModule = currentVersePreviewModule();
+    auto isValidRef = [&](const std::string& candidate) {
+        std::vector<std::string> refs = app_->swordManager().verseReferencesFromLink(
+            "sword://" + candidate, defaultKey, verseModule);
+        return !refs.empty();
+    };
+
+    std::string out;
+    out.reserve(html.size() + 64);
+    size_t cursor = 0;
+    int suppressDepth = 0;
+    while (cursor < html.size()) {
+        size_t tagPos = html.find('<', cursor);
+        if (tagPos == std::string::npos) {
+            std::string text = html.substr(cursor);
+            out += suppressDepth > 0
+                ? text
+                : autoLinkBibleReferencesInText(text, isValidRef);
+            break;
+        }
+
+        if (tagPos > cursor) {
+            std::string text = html.substr(cursor, tagPos - cursor);
+            out += suppressDepth > 0
+                ? text
+                : autoLinkBibleReferencesInText(text, isValidRef);
+        }
+
+        size_t tagEnd = html.find('>', tagPos);
+        if (tagEnd == std::string::npos) {
+            out.append(html, tagPos, std::string::npos);
+            break;
+        }
+
+        std::string tag = html.substr(tagPos, tagEnd - tagPos + 1);
+        std::string tagName = tagNameFromHtmlTag(tag);
+        if (!tagName.empty() && suppressBibleReferenceAutoLinking(tagName)) {
+            bool closing = tag.size() >= 2 && tag[1] == '/';
+            bool selfClosing = tag.size() >= 2 && tag[tag.size() - 2] == '/';
+            if (closing) {
+                suppressDepth = std::max(0, suppressDepth - 1);
+            } else if (!selfClosing) {
+                ++suppressDepth;
+            }
+        }
+
+        out += tag;
+        cursor = tagEnd + 1;
+    }
+
+    return out;
+}
+
 void RightPane::applyCommentaryStyleOverride() {
     if (!commentaryHtml_) return;
     commentaryHtml_->setStyleOverrideCss(htmlStyleOverrideCss_);
@@ -2525,7 +2823,9 @@ void RightPane::showGeneralBookEntry(const std::string& moduleName,
         generalBookLoadedEnd_ = -1;
         showGeneralBookTocOverlay(false);
         if (generalBookHtml_) {
-            generalBookHtml_->setHtml(app_->swordManager().getGeneralBookEntry(moduleName, ""));
+            generalBookHtml_->setHtml(linkifyBibleReferencesInHtml(
+                app_->swordManager().getGeneralBookEntry(moduleName, ""),
+                ""));
         }
         updateGeneralBookNavigationChrome();
         return;
@@ -2653,6 +2953,7 @@ std::string RightPane::generalBookSectionHtml(int tocIndex) {
     }
 
     std::string html = app_->swordManager().getGeneralBookEntry(currentGeneralBook_, key);
+    html = linkifyBibleReferencesInHtml(html, key);
     generalBookSectionCache_[cacheKey] = html;
     noteGeneralBookSectionCacheUse(generalBookSectionCacheOrder_, cacheKey);
     evictGeneralBookSectionCache(generalBookSectionCache_,
@@ -5470,6 +5771,77 @@ void RightPane::onHtmlLink(const std::string& url, bool commentarySource) {
         app_->mainWindow()->leftPane()->setPreviewText(
             previewHtml, sourceModule, sourceKey);
         return;
+    }
+}
+
+void RightPane::onHtmlContextMenu(const std::string& /*word*/,
+                                  const std::string& href,
+                                  const std::string& /*strong*/,
+                                  const std::string& /*morph*/,
+                                  const std::string& /*module*/,
+                                  int x,
+                                  int y,
+                                  bool commentarySource) {
+    if (!app_ || !app_->mainWindow() || href.empty()) return;
+
+    std::string sourceModule = commentarySource ? currentCommentary_ : currentGeneralBook_;
+    std::string sourceKey = commentarySource ? currentCommentaryRef_ : currentGeneralBookKey_;
+    std::string previewModule = currentVersePreviewModule();
+    std::vector<std::string> refs = app_->swordManager().verseReferencesFromLink(
+        href, sourceKey, previewModule);
+    if (refs.empty()) return;
+
+    Fl_Menu_Button menu(x, y, 0, 0);
+    ui_font::applyCurrentAppMenuFont(&menu);
+    menu.type(Fl_Menu_Button::POPUP3);
+
+    const bool singleRef = refs.size() == 1;
+    std::string previewLabel = singleRef
+        ? "Preview Linked Verse"
+        : "Preview Linked Verses";
+    menu.add(previewLabel.c_str());
+
+    if (singleRef) {
+        std::string openLabel = "Open in Bible: " + refs.front();
+        std::string tabLabel = "Open in New Study Tab: " + refs.front();
+        menu.add(openLabel.c_str());
+        menu.add(tabLabel.c_str());
+    }
+
+    menu.add("Copy Reference");
+    const Fl_Menu_Item* picked = menu.popup();
+    if (!picked || !picked->label()) return;
+
+    std::string label = picked->label();
+    if (label == previewLabel) {
+        if (app_->mainWindow()->leftPane()) {
+            app_->mainWindow()->leftPane()->showReferenceResults(
+                previewModule, refs, "(linked verses)");
+        }
+        return;
+    }
+
+    if (singleRef && label.rfind("Open in Bible:", 0) == 0) {
+        app_->mainWindow()->navigateTo(refs.front());
+        return;
+    }
+
+    if (singleRef && label.rfind("Open in New Study Tab:", 0) == 0) {
+        app_->mainWindow()->openInNewStudyTab(previewModule, refs.front());
+        return;
+    }
+
+    if (label == "Copy Reference") {
+        std::ostringstream joined;
+        for (size_t i = 0; i < refs.size(); ++i) {
+            if (i) joined << "; ";
+            joined << refs[i];
+        }
+        std::string text = joined.str();
+        if (!text.empty()) {
+            Fl::copy(text.c_str(), static_cast<int>(text.size()), 0);
+            Fl::copy(text.c_str(), static_cast<int>(text.size()), 1);
+        }
     }
 }
 

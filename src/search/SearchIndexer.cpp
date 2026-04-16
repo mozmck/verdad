@@ -14,6 +14,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <filesystem>
 #include <iostream>
 #include <regex>
 #include <sstream>
@@ -786,29 +787,107 @@ std::string buildStrongsSnippet(const std::string& xhtml,
     return buildSnippetMarkup(collapsed.text, collapsed.mask, maxLen);
 }
 
+std::string sanitizeUtf8(const std::string& text) {
+    std::string out;
+    out.reserve(text.size());
+
+    auto appendReplacement = [&]() {
+        if (out.empty() || out.back() != ' ') out.push_back(' ');
+    };
+
+    for (size_t i = 0; i < text.size();) {
+        unsigned char c = static_cast<unsigned char>(text[i]);
+        if (c < 0x80) {
+            if (c == '\0') {
+                appendReplacement();
+            } else {
+                out.push_back(static_cast<char>(c));
+            }
+            ++i;
+            continue;
+        }
+
+        size_t needed = 0;
+        unsigned char minFirst = 0x80;
+        if ((c & 0xE0) == 0xC0) {
+            needed = 2;
+            minFirst = 0xC2;
+        } else if ((c & 0xF0) == 0xE0) {
+            needed = 3;
+        } else if ((c & 0xF8) == 0xF0) {
+            needed = 4;
+            if (c > 0xF4) needed = 0;
+        }
+
+        if (needed == 0 || c < minFirst || i + needed > text.size()) {
+            appendReplacement();
+            ++i;
+            continue;
+        }
+
+        bool valid = true;
+        for (size_t j = 1; j < needed; ++j) {
+            unsigned char cc = static_cast<unsigned char>(text[i + j]);
+            if ((cc & 0xC0) != 0x80) {
+                valid = false;
+                break;
+            }
+        }
+
+        if (valid && needed == 3) {
+            unsigned char c1 = static_cast<unsigned char>(text[i + 1]);
+            if ((c == 0xE0 && c1 < 0xA0) || (c == 0xED && c1 >= 0xA0)) {
+                valid = false;
+            }
+        } else if (valid && needed == 4) {
+            unsigned char c1 = static_cast<unsigned char>(text[i + 1]);
+            if ((c == 0xF0 && c1 < 0x90) || (c == 0xF4 && c1 >= 0x90)) {
+                valid = false;
+            }
+        }
+
+        if (!valid) {
+            appendReplacement();
+            ++i;
+            continue;
+        }
+
+        out.append(text, i, needed);
+        i += needed;
+    }
+
+    return out;
+}
+
+bool isCorruptSQLiteCode(int rc) {
+    return rc == SQLITE_CORRUPT ||
+           rc == SQLITE_NOTADB;
+}
+
+bool databaseIntegrityOk(sqlite3* db) {
+    if (!db) return false;
+
+    sqlite3_stmt* stmt = nullptr;
+    if (sqlite3_prepare_v2(db, "PRAGMA integrity_check;", -1, &stmt, nullptr) != SQLITE_OK) {
+        return false;
+    }
+
+    bool ok = false;
+    if (sqlite3_step(stmt) == SQLITE_ROW) {
+        const char* text = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 0));
+        ok = text && std::string(text) == "ok";
+    }
+    sqlite3_finalize(stmt);
+    return ok;
+}
+
 } // namespace
 
 SearchIndexer::SearchIndexer(const std::string& dbPath,
                              const ImportedModuleManager* importedModuleMgr)
     : dbPath_(dbPath)
     , importedModuleMgr_(importedModuleMgr) {
-    int rc = sqlite3_open_v2(
-        dbPath_.c_str(), &db_,
-        SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_FULLMUTEX,
-        nullptr);
-    if (rc != SQLITE_OK) {
-        std::cerr << "SearchIndexer: unable to open database " << dbPath_
-                  << " (" << sqlite3_errmsg(db_) << ")\n";
-        if (db_) sqlite3_close(db_);
-        db_ = nullptr;
-        return;
-    }
-
-    sqlite3_busy_timeout(db_, 5000);
-    applyPragmas(db_);
-    if (!ensureSchema(db_)) {
-        sqlite3_close(db_);
-        db_ = nullptr;
+    if (!openOrRebuildDatabase()) {
         return;
     }
 
@@ -856,6 +935,52 @@ SearchIndexer::~SearchIndexer() {
         sqlite3_close(db_);
         db_ = nullptr;
     }
+}
+
+bool SearchIndexer::openOrRebuildDatabase() {
+    auto openDatabase = [this]() -> bool {
+        int rc = sqlite3_open_v2(
+            dbPath_.c_str(), &db_,
+            SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_FULLMUTEX,
+            nullptr);
+        if (rc != SQLITE_OK) {
+            std::cerr << "SearchIndexer: unable to open database " << dbPath_
+                      << " (" << (db_ ? sqlite3_errmsg(db_) : "unknown") << ")\n";
+            if (db_) sqlite3_close(db_);
+            db_ = nullptr;
+            return false;
+        }
+
+        sqlite3_busy_timeout(db_, 5000);
+        applyPragmas(db_);
+        return true;
+    };
+
+    auto closeDatabase = [this]() {
+        if (db_) {
+            sqlite3_close(db_);
+            db_ = nullptr;
+        }
+    };
+
+    if (!openDatabase()) return false;
+
+    if (databaseIntegrityOk(db_) && ensureSchema(db_)) {
+        return true;
+    }
+
+    closeDatabase();
+    std::error_code ec;
+    std::filesystem::remove(std::filesystem::path(dbPath_), ec);
+    std::filesystem::remove(std::filesystem::path(dbPath_ + "-wal"), ec);
+    std::filesystem::remove(std::filesystem::path(dbPath_ + "-shm"), ec);
+
+    if (!openDatabase()) return false;
+    if (!ensureSchema(db_)) {
+        closeDatabase();
+        return false;
+    }
+    return true;
 }
 
 void SearchIndexer::applyPragmas(sqlite3* db) {
@@ -2043,15 +2168,19 @@ void SearchIndexer::indexModuleNow(const std::string& moduleName) {
         int insertedEntries = 0;
         for (size_t i = 0; i < importedEntries.size(); ++i) {
             const auto& entry = importedEntries[i];
+            std::string safeTitle = sanitizeUtf8(entry.title);
+            std::string safePlainText = sanitizeUtf8(entry.plainText);
+            std::string safeKey = sanitizeUtf8(entry.key);
             bindText(insertRow, 1, resourceType);
             bindText(insertRow, 2, moduleToken);
             bindText(insertRow, 3, "");
-            bindText(insertRow, 4, entry.title);
-            bindText(insertRow, 5, entry.plainText);
+            bindText(insertRow, 4, safeTitle);
+            bindText(insertRow, 5, safePlainText);
             bindText(insertRow, 6, "");
             bindText(insertRow, 7, moduleName);
-            bindText(insertRow, 8, entry.key);
+            bindText(insertRow, 8, safeKey);
             if (sqlite3_step(insertRow) != SQLITE_DONE) {
+                std::string sqliteError = sqlite3_errmsg(writeDb);
                 sqlite3_reset(insertRow);
                 sqlite3_clear_bindings(insertRow);
                 sqlite3_exec(writeDb, "ROLLBACK;", nullptr, nullptr, nullptr);
@@ -2060,7 +2189,8 @@ void SearchIndexer::indexModuleNow(const std::string& moduleName) {
                 sqlite3_finalize(insertRow);
                 sqlite3_finalize(markIndexed);
                 sqlite3_finalize(deleteError);
-                writeError("Failed to insert imported module index entry.");
+                writeError("Failed to insert imported module index entry: " +
+                           sqliteError);
                 sqlite3_close(writeDb);
                 return;
             }

@@ -441,7 +441,7 @@ private:
             const char* filename = chooser.filename();
             if (filename) addPath(filename);
         } else {
-            for (int i = 1; i <= count; ++i) {
+            for (int i = 0; i < count; ++i) {
                 const char* filename = chooser.filename(i);
                 if (filename) addPath(filename);
             }

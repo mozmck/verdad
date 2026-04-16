@@ -150,6 +150,7 @@ private:
     void indexModuleNow(const std::string& moduleName);
     void resumeBackgroundIndexing();
     void waitForWorkerIdle();
+    bool openOrRebuildDatabase();
 
     static std::string buildFilterFtsQuery(const SearchRequest& request);
     static std::string buildWordFtsQuery(const SearchRequest& request,

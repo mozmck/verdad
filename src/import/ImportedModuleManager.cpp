@@ -95,6 +95,78 @@ std::string collapseWhitespace(const std::string& text) {
     return out.substr(start);
 }
 
+std::string sanitizeUtf8(const std::string& text) {
+    std::string out;
+    out.reserve(text.size());
+
+    auto appendReplacement = [&]() {
+        if (out.empty() || out.back() != ' ') out.push_back(' ');
+    };
+
+    for (size_t i = 0; i < text.size();) {
+        unsigned char c = static_cast<unsigned char>(text[i]);
+        if (c < 0x80) {
+            if (c == '\0') {
+                appendReplacement();
+            } else {
+                out.push_back(static_cast<char>(c));
+            }
+            ++i;
+            continue;
+        }
+
+        size_t needed = 0;
+        unsigned char minFirst = 0x80;
+        if ((c & 0xE0) == 0xC0) {
+            needed = 2;
+            minFirst = 0xC2;
+        } else if ((c & 0xF0) == 0xE0) {
+            needed = 3;
+        } else if ((c & 0xF8) == 0xF0) {
+            needed = 4;
+            if (c > 0xF4) needed = 0;
+        }
+
+        if (needed == 0 || c < minFirst || i + needed > text.size()) {
+            appendReplacement();
+            ++i;
+            continue;
+        }
+
+        bool valid = true;
+        for (size_t j = 1; j < needed; ++j) {
+            unsigned char cc = static_cast<unsigned char>(text[i + j]);
+            if ((cc & 0xC0) != 0x80) {
+                valid = false;
+                break;
+            }
+        }
+
+        if (valid && needed == 3) {
+            unsigned char c1 = static_cast<unsigned char>(text[i + 1]);
+            if ((c == 0xE0 && c1 < 0xA0) || (c == 0xED && c1 >= 0xA0)) {
+                valid = false;
+            }
+        } else if (valid && needed == 4) {
+            unsigned char c1 = static_cast<unsigned char>(text[i + 1]);
+            if ((c == 0xF0 && c1 < 0x90) || (c == 0xF4 && c1 >= 0x90)) {
+                valid = false;
+            }
+        }
+
+        if (!valid) {
+            appendReplacement();
+            ++i;
+            continue;
+        }
+
+        out.append(text, i, needed);
+        i += needed;
+    }
+
+    return out;
+}
+
 std::string readFileText(const std::string& path) {
     std::ifstream in(path, std::ios::binary);
     if (!in) return "";
@@ -165,10 +237,11 @@ std::string sanitizeKeyComponent(const std::string& text) {
 }
 
 std::string textBlockHtml(const std::string& text) {
+    std::string safeText = sanitizeUtf8(text);
     std::ostringstream html;
     html << "<div class=\"general-book imported-document\">\n";
 
-    std::istringstream in(text);
+    std::istringstream in(safeText);
     std::string line;
     std::vector<std::string> paragraph;
     auto flushParagraph = [&]() {
@@ -202,7 +275,8 @@ struct MarkdownParseResult {
 
 MarkdownParseResult parseMarkdownDocument(const std::string& text) {
     MarkdownParseResult result;
-    std::istringstream in(text);
+    std::string safeText = sanitizeUtf8(text);
+    std::istringstream in(safeText);
     std::string line;
     std::vector<std::string> lines;
     while (std::getline(in, line)) {
@@ -401,7 +475,7 @@ bool runPdftotext(const std::string& path,
     }
 
     int rc = pclose(pipe);
-    outText = out.str();
+    outText = sanitizeUtf8(out.str());
     if (rc != 0 || trimCopy(outText).empty()) {
         errorText = "pdftotext is unavailable or produced no text.";
         return false;
@@ -454,8 +528,9 @@ std::vector<ImportedModuleManager::Entry> parsePlainTextDocument(const std::stri
     entry.title = "Document";
     entry.depth = 0;
     entry.orderIndex = 0;
-    entry.plainText = collapseWhitespace(text);
-    entry.html = textBlockHtml(text);
+    std::string safeText = sanitizeUtf8(text);
+    entry.plainText = collapseWhitespace(safeText);
+    entry.html = textBlockHtml(safeText);
     return {std::move(entry)};
 }
 

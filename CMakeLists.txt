@@ -171,6 +171,7 @@ add_executable(verdad ${SOURCES} ${HEADERS})
 add_executable(verdad-bench
     src/bench_main.cpp
     src/app/PlatformPaths.cpp
+    src/import/ImportedModuleManager.cpp
     src/sword/SwordManager.cpp
     src/sword/SwordPaths.cpp
     src/ui/HtmlWidget.cpp
@@ -214,6 +215,7 @@ target_link_libraries(verdad PRIVATE
 target_link_libraries(verdad-bench PRIVATE
     fltk::images
     ${SWORD_LIBRARIES}
+    SQLite::SQLite3
     litehtml
     Threads::Threads
 )

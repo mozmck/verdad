@@ -445,7 +445,18 @@ private:
                                        bool dictionaryRestored);
     void updateCommentarySelection(int verse);
     std::string activeBibleReference() const;
+    std::string currentVersePreviewModule() const;
+    std::string linkifyBibleReferencesInHtml(const std::string& html,
+                                             const std::string& defaultKey) const;
     void onHtmlLink(const std::string& url, bool commentarySource);
+    void onHtmlContextMenu(const std::string& word,
+                           const std::string& href,
+                           const std::string& strong,
+                           const std::string& morph,
+                           const std::string& module,
+                           int x,
+                           int y,
+                           bool commentarySource);
 
     // Callbacks
     static void onCommentaryModuleChange(Fl_Widget* w, void* data);
