@@ -54,15 +54,15 @@ jobs:
         run: |
           set -euo pipefail
           
-          # Get the latest successful Build workflow run
+          # Get the latest successful Build workflow run.
+          # Older gh versions do not support: --conclusion success
           run_id=$(gh run list \
             --repo "$GH_REPO" \
             --workflow build.yml \
             --status completed \
-            --conclusion success \
-            --limit 1 \
-            --json databaseId \
-            --jq '.[0].databaseId')
+            --limit 20 \
+            --json databaseId,conclusion \
+            --jq 'map(select(.conclusion == "success")) | .[0].databaseId // empty')
           
           if [ -z "$run_id" ]; then
             echo "No successful Build workflow run found." >&2
