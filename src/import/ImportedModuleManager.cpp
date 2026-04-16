@@ -78,6 +78,22 @@ std::string htmlEscape(const std::string& text) {
     return out;
 }
 
+FILE* openPipe(const char* command) {
+#if defined(_WIN32)
+    return _popen(command, "r");
+#else
+    return popen(command, "r");
+#endif
+}
+
+int closePipe(FILE* pipe) {
+#if defined(_WIN32)
+    return _pclose(pipe);
+#else
+    return pclose(pipe);
+#endif
+}
+
 bool looksLikeBibleReference(const std::string& candidate,
                              std::string* normalizedOut) {
     if (normalizedOut) normalizedOut->clear();
@@ -442,9 +458,14 @@ MarkdownParseResult parseMarkdownDocument(const std::string& text) {
 bool runPdftotext(const std::string& path,
                   std::string& outText,
                   std::string& errorText) {
+#if defined(_WIN32)
+    std::string command = "pdftotext -layout -enc UTF-8 " +
+                          shellQuote(path) + " - 2>NUL";
+#else
     std::string command = "pdftotext -layout -enc UTF-8 " +
                           shellQuote(path) + " - 2>/dev/null";
-    FILE* pipe = popen(command.c_str(), "r");
+#endif
+    FILE* pipe = openPipe(command.c_str());
     if (!pipe) {
         errorText = "Failed to start pdftotext.";
         return false;
@@ -458,7 +479,7 @@ bool runPdftotext(const std::string& path,
         if (read < buffer.size()) break;
     }
 
-    int rc = pclose(pipe);
+    int rc = closePipe(pipe);
     outText = out.str();
     if (rc != 0 || trimCopy(outText).empty()) {
         errorText = "pdftotext is unavailable or produced no text.";
