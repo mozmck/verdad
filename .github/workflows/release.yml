@@ -7,10 +7,6 @@ on:
         description: Existing git tag to publish, for example v0.5.0
         required: true
         type: string
-      build_run_id:
-        description: Workflow run ID from the Build workflow that produced the artifacts
-        required: true
-        type: string
       title:
         description: Release title; defaults to the tag when left blank
         required: false
@@ -46,19 +42,42 @@ jobs:
     env:
       GH_REPO: ${{ github.repository }}
       GH_TOKEN: ${{ github.token }}
-      BUILD_RUN_ID: ${{ inputs.build_run_id }}
       RELEASE_DRAFT: ${{ inputs.draft }}
       RELEASE_NOTES: ${{ inputs.notes }}
       RELEASE_PRERELEASE: ${{ inputs.prerelease }}
       RELEASE_TAG: ${{ inputs.tag }}
       RELEASE_TITLE: ${{ inputs.title }}
     steps:
+      - name: Find latest Build workflow run
+        id: find-run
+        shell: bash
+        run: |
+          set -euo pipefail
+          
+          # Get the latest successful Build workflow run
+          run_id=$(gh run list \
+            --repo "$GH_REPO" \
+            --workflow build.yml \
+            --status completed \
+            --conclusion success \
+            --limit 1 \
+            --json databaseId \
+            --jq '.[0].databaseId')
+          
+          if [ -z "$run_id" ]; then
+            echo "No successful Build workflow run found." >&2
+            exit 1
+          fi
+          
+          echo "Found build run ID: $run_id"
+          echo "build_run_id=$run_id" >> "$GITHUB_OUTPUT"
+
       - name: Download build artifacts
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p release-assets
-          gh run download "$BUILD_RUN_ID" \
+          gh run download "${{ steps.find-run.outputs.build_run_id }}" \
             --repo "$GH_REPO" \
             --dir release-assets
 
@@ -79,7 +98,7 @@ jobs:
               | sort
           )
           if [ "${#files[@]}" -eq 0 ]; then
-            echo "No release package files were downloaded from build run ${BUILD_RUN_ID}." >&2
+            echo "No release package files were downloaded from build run ${{ steps.find-run.outputs.build_run_id }}." >&2
             exit 1
           fi
 
@@ -135,5 +154,5 @@ jobs:
           {
             echo "Release: $release_url"
             echo
-            echo "Assets uploaded from build run: $BUILD_RUN_ID"
+            echo "Assets uploaded from build run: ${{ steps.find-run.outputs.build_run_id }}"
           } >> "$GITHUB_STEP_SUMMARY"

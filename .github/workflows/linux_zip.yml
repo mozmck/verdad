@@ -1,0 +1,82 @@
+name: Build Linux
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build-linux:
+    runs-on: ubuntu-22.04
+    env:
+      APT_CACHE_DIR: ${{ github.workspace }}/.apt-cache
+      CCACHE_BASEDIR: ${{ github.workspace }}
+      CCACHE_COMPILERCHECK: content
+      CCACHE_DIR: ${{ github.workspace }}/.ccache
+      CCACHE_MAXSIZE: 500M
+      CCACHE_NOHASHDIR: "true"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Cache apt archives
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.APT_CACHE_DIR }}
+          key: apt-linux-ubuntu-22.04-${{ hashFiles('.github/workflows/build-linux.yml') }}
+          restore-keys: |
+            apt-linux-ubuntu-22.04-
+
+      - name: Restore ccache
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.CCACHE_DIR }}
+          key: ccache-linux-${{ hashFiles('CMakeLists.txt', 'cmake/**', '.github/workflows/build-linux.yml') }}-${{ github.sha }}
+          restore-keys: |
+            ccache-linux-${{ hashFiles('CMakeLists.txt', 'cmake/**', '.github/workflows/build-linux.yml') }}-
+            ccache-linux-
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          mkdir -p "${APT_CACHE_DIR}"
+          sudo apt-get -o dir::cache::archives="${APT_CACHE_DIR}" install -y \
+            libsword-dev libsqlite3-dev \
+            libx11-dev libxft-dev libxrender-dev libfontconfig1-dev \
+            libxinerama-dev libxcursor-dev libxfixes-dev \
+            libpng-dev libjpeg-dev zlib1g-dev \
+            ccache cmake g++ pkg-config
+
+      - name: Initialize ccache
+        run: |
+          ccache --set-config=max_size="${CCACHE_MAXSIZE}"
+          ccache --zero-stats
+
+      - name: Configure
+        run: |
+          cmake -S . -B build \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+
+      - name: Build
+        run: cmake --build build -j$(nproc)
+
+      - name: Show ccache stats
+        if: always()
+        run: ccache --show-stats
+
+      - name: Create ZIP archive
+        run: |
+          cd build
+          mkdir -p verdad-linux-x86_64
+          # Copy the executable (adjust 'verdad' to your actual executable name)
+          cp verdad verdad-linux-x86_64/
+          # Create zip file
+          zip -r verdad-linux-x86_64.zip verdad-linux-x86_64/
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: verdad-linux-x86_64
+          path: build/verdad-linux-x86_64.zip
