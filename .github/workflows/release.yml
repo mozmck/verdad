@@ -133,7 +133,7 @@ jobs:
             create_args=(
               --repo "$GH_REPO"
               --title "$title"
-              # --verify-tag
+              --verify-tag
             )
             if [ "$RELEASE_DRAFT" = "true" ]; then
               create_args+=(--draft)
