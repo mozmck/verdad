@@ -7,6 +7,10 @@ on:
         description: Existing git tag to publish, for example v0.5.0
         required: true
         type: string
+      build_run_id:
+        description: Workflow run ID from the Build workflow that produced the artifacts
+        required: true
+        type: string
       title:
         description: Release title; defaults to the tag when left blank
         required: false
