@@ -4470,7 +4470,7 @@ bool SwordManager::initialize() {
             return false;
         }
 
-        for (const auto& path : supplementalUserSwordDataPaths()) {
+        for (const auto& path : allUserSwordDataPaths()) {
             mgr_->augmentModules(path.c_str());
         }
 

@@ -9,6 +9,7 @@ namespace verdad {
 std::string bundledSwordDataPath();
 std::string defaultUserSwordDataPath();
 std::vector<std::string> supplementalUserSwordDataPaths();
+std::vector<std::string> allUserSwordDataPaths();
 
 } // namespace verdad
 

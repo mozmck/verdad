@@ -2288,7 +2288,7 @@ void ModuleManagerDialog::refreshModules() {
     };
 
     sword::SWMgr localMgr(new sword::MarkupFilterMgr(sword::FMT_XHTML));
-    for (const auto& path : supplementalUserSwordDataPaths()) {
+    for (const auto& path : allUserSwordDataPaths()) {
         localMgr.augmentModules(path.c_str());
     }
     std::map<std::string, sword::SWModule*> installed;

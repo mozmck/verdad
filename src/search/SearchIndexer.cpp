@@ -2134,7 +2134,7 @@ void SearchIndexer::indexModuleNow(const std::string& moduleName) {
             new sword::MarkupFilterMgr(sword::FMT_XHTML, sword::ENC_UTF8)));
     }
     if (mgr) {
-        for (const auto& path : supplementalUserSwordDataPaths()) {
+        for (const auto& path : allUserSwordDataPaths()) {
             mgr->augmentModules(path.c_str());
         }
     }

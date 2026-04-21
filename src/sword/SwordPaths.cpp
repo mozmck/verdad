@@ -101,8 +101,8 @@ std::vector<fs::path> candidateUserSwordDataDirs() {
     std::vector<fs::path> dirs;
 
 #if defined(_WIN32)
-    appendUniquePath(dirs, swordDataPathFromBase(envPath("HOME")));
     appendUniquePath(dirs, swordDataPathFromBase(envPath("APPDATA")));
+    appendUniquePath(dirs, swordDataPathFromBase(envPath("HOME")));
     appendUniquePath(dirs, swordDataPathFromBase(envPath("USERPROFILE")));
 #elif defined(__APPLE__)
     const std::string home = envPath("HOME");
@@ -160,15 +160,23 @@ std::vector<std::string> supplementalUserSwordDataPaths() {
     std::vector<std::string> paths;
 
 #if defined(_WIN32)
-    const fs::path homePath = swordDataPathFromBase(envPath("HOME"));
     const fs::path appDataPath = swordDataPathFromBase(envPath("APPDATA"));
+    const fs::path homePath = swordDataPathFromBase(envPath("HOME"));
     const fs::path userProfilePath = swordDataPathFromBase(envPath("USERPROFILE"));
+    const std::string appDataKey = normalizedPathKey(appDataPath);
+    const std::string homeKey = normalizedPathKey(homePath);
+
+    if (!homePath.empty() &&
+        !homeKey.empty() &&
+        homeKey != appDataKey) {
+        paths.push_back(homePath.lexically_normal().string());
+    }
 
     if (!userProfilePath.empty()) {
         const std::string userProfileKey = normalizedPathKey(userProfilePath);
         if (!userProfileKey.empty() &&
-            userProfileKey != normalizedPathKey(homePath) &&
-            userProfileKey != normalizedPathKey(appDataPath)) {
+            userProfileKey != appDataKey &&
+            userProfileKey != homeKey) {
             paths.push_back(userProfilePath.lexically_normal().string());
         }
     }
@@ -185,6 +193,32 @@ std::vector<std::string> supplementalUserSwordDataPaths() {
         paths.push_back(appSupportPath.lexically_normal().string());
     }
 #endif
+
+    return paths;
+}
+
+std::vector<std::string> allUserSwordDataPaths() {
+    std::vector<std::string> paths;
+    const std::string primary = defaultUserSwordDataPath();
+    if (!primary.empty()) {
+        paths.push_back(primary);
+    }
+
+    for (const auto& path : supplementalUserSwordDataPaths()) {
+        if (path.empty()) continue;
+
+        const std::string key = normalizedPathKey(fs::path(path));
+        bool alreadyPresent = false;
+        for (const auto& existing : paths) {
+            if (normalizedPathKey(fs::path(existing)) == key) {
+                alreadyPresent = true;
+                break;
+            }
+        }
+        if (!alreadyPresent) {
+            paths.push_back(path);
+        }
+    }
 
     return paths;
 }
