@@ -117,12 +117,14 @@ private:
     std::unordered_map<std::string, std::string> languageChoiceCodesByLabel_;
     std::vector<std::string> activeSourceCaptions_;
     bool hasExplicitSourceFilter_ = false;
+    bool promptedToLoadInitialSources_ = false;
     std::unordered_map<const Fl_Tree_Item*, TreeFilter> treeFilters_;
     TreeFilter treeFilter_;
 
     void resize(int X, int Y, int W, int H) override;
     void buildUi();
     void initializeInstallMgr();
+    void maybePromptToLoadInitialSources();
     void refreshSources(bool refreshRemoteContent);
     void refreshModules();
     void repopulateLanguageChoice();
@@ -166,7 +168,7 @@ private:
     std::string addLocalSourceRow();
     bool removeSourceRow(size_t index);
     bool refreshSourceRow(size_t index);
-    bool refreshAllSources();
+    bool refreshAllSources(bool skipNetworkConfirmation = false);
 
     void clearFilters();
     void installOrUpdateSelectedModules();

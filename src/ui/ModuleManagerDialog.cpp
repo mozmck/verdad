@@ -1807,6 +1807,70 @@ bool showRemoteNetworkWarningDialog(bool* dontShowAgain) {
     return state.accepted;
 }
 
+bool showInitialSourceSetupDialog() {
+    constexpr int kDialogW = 520;
+    constexpr int kDialogH = 250;
+    constexpr int kDialogPad = 16;
+    constexpr int kMessageBoxH = 154;
+    constexpr int kDialogButtonW = 130;
+    constexpr int kDialogButtonH = 28;
+    constexpr int kDialogButtonGap = 10;
+
+    RemoteNetworkWarningDialogState state;
+    Fl_Double_Window dialog(kDialogW, kDialogH, "Load Standard Sources");
+    dialog.set_modal();
+    dialog.begin();
+
+    auto* messageBox = new Fl_Box(
+        kDialogPad, kDialogPad, kDialogW - (2 * kDialogPad), kMessageBoxH,
+        "No module sources are configured yet.\n\n"
+        "Verdad can download the standard remote source list and refresh those "
+        "sources now so the module manager is ready to use.\n\n"
+        "Remote module sources can be monitored on the network. If you live in "
+        "a persecuted country and do not want to risk detection, use local "
+        "sources only.");
+    messageBox->box(FL_BORDER_BOX);
+    messageBox->align(FL_ALIGN_LEFT | FL_ALIGN_INSIDE | FL_ALIGN_WRAP);
+
+    auto* localOnlyButton = new Fl_Button(
+        kDialogW - (2 * kDialogPad) - (2 * kDialogButtonW) - kDialogButtonGap,
+        kDialogH - kDialogPad - kDialogButtonH,
+        kDialogButtonW,
+        kDialogButtonH,
+        "Use Local Only");
+    localOnlyButton->callback(
+        [](Fl_Widget* widget, void* data) {
+            auto* state = static_cast<RemoteNetworkWarningDialogState*>(data);
+            if (state) state->accepted = false;
+            if (widget && widget->window()) widget->window()->hide();
+        },
+        &state);
+
+    auto* loadButton = new Fl_Button(
+        kDialogW - kDialogPad - kDialogButtonW,
+        kDialogH - kDialogPad - kDialogButtonH,
+        kDialogButtonW,
+        kDialogButtonH,
+        "Load Sources");
+    loadButton->callback(
+        [](Fl_Widget* widget, void* data) {
+            auto* state = static_cast<RemoteNetworkWarningDialogState*>(data);
+            if (state) state->accepted = true;
+            if (widget && widget->window()) widget->window()->hide();
+        },
+        &state);
+
+    dialog.end();
+    ui_font::applyCurrentAppUiFont(&dialog);
+    dialog.show();
+    localOnlyButton->take_focus();
+    while (dialog.shown()) {
+        Fl::wait();
+    }
+
+    return state.accepted;
+}
+
 } // namespace
 
 ModuleManagerDialog::ModuleManagerDialog(VerdadApp* app, int W, int H)
@@ -1828,6 +1892,7 @@ void ModuleManagerDialog::openModal() {
     ui_font::applyCurrentAppUiFont(this);
     set_modal();
     show();
+    maybePromptToLoadInitialSources();
     while (shown()) {
         Fl::wait();
     }
@@ -2156,6 +2221,26 @@ void ModuleManagerDialog::initializeInstallMgr() {
     syncInstallMgrTimeout();
 }
 
+void ModuleManagerDialog::maybePromptToLoadInitialSources() {
+    if (promptedToLoadInitialSources_) return;
+    promptedToLoadInitialSources_ = true;
+
+    if (!sources_.empty()) return;
+
+    if (!showInitialSourceSetupDialog()) {
+        if (statusBox_) {
+            statusBox_->copy_label(
+                "No sources configured. Open All Sources to add a local source or load the standard remote sources.");
+        }
+        return;
+    }
+
+    if (!refreshAllSources(true) && sources_.empty() && statusBox_) {
+        statusBox_->copy_label(
+            "Loading standard remote sources failed. Open All Sources to retry or add a local source.");
+    }
+}
+
 void ModuleManagerDialog::refreshSources(bool refreshRemoteContent) {
     if (!installMgr_) initializeInstallMgr();
     if (!installMgr_) return;
@@ -2464,7 +2549,9 @@ void ModuleManagerDialog::updateSourceFilterButton() {
 
     if (sources_.empty()) {
         sourceFilterButton_->copy_label("No Sources");
-        sourceFilterButton_->tooltip("No sources are available.");
+        sourceFilterButton_->tooltip(
+            "No sources are configured yet.\n\n"
+            "Open this menu to add a local source or load the standard remote sources.");
         return;
     }
 
@@ -2789,6 +2876,18 @@ void ModuleManagerDialog::updateStatusBox() {
         }
         label += " | Continue to install/update or adjust the checked list.";
         statusBox_->copy_label(label.c_str());
+        return;
+    }
+
+    if (sources_.empty()) {
+        statusBox_->copy_label(
+            "No sources configured. Open All Sources to add a local source or load the standard remote sources.");
+        return;
+    }
+
+    if (modules_.empty()) {
+        statusBox_->copy_label(
+            "0 modules listed. Refresh a source to load module metadata.");
         return;
     }
 
@@ -3472,10 +3571,10 @@ bool ModuleManagerDialog::refreshSourceRow(size_t index) {
     return true;
 }
 
-bool ModuleManagerDialog::refreshAllSources() {
+bool ModuleManagerDialog::refreshAllSources(bool skipNetworkConfirmation) {
     if (!installMgr_) initializeInstallMgr();
     if (!installMgr_) return false;
-    if (!confirmRemoteNetworkUse()) return false;
+    if (!skipNetworkConfirmation && !confirmRemoteNetworkUse()) return false;
     if (installMgr_) {
         syncInstallMgrTimeout();
         if (auto* manager = verdadInstallMgr(installMgr_.get())) {
