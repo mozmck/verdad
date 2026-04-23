@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(Verdad VERSION 0.7.4 LANGUAGES CXX)
+project(Verdad VERSION 0.7.5 LANGUAGES CXX)
 
 include(GNUInstallDirs)
 
