@@ -1922,7 +1922,8 @@ void ModuleManagerDialog::resize(int X, int Y, int W, int H) {
         filterTree_->resize(kMargin, contentY, treeW, contentH);
     }
 
-    const int sortX = rightX + rightW - 160;
+    const int reverseW = 84;
+    const int sortX = rightX + rightW - reverseW - 8 - 160;
     const int sortLabelX = sortX - kCompactLabelWidth - kFilterFieldGap;
     const int languageLabelX = rightX;
     const int languageX = languageLabelX + kFilterLabelWidth + kFilterFieldGap;
@@ -1940,6 +1941,9 @@ void ModuleManagerDialog::resize(int X, int Y, int W, int H) {
         sortChoiceLabel_->resize(sortLabelX, row2Y, kCompactLabelWidth, kControlHeight);
     }
     if (sortChoice_) sortChoice_->resize(sortX, row2Y, 160, kControlHeight);
+    if (reverseSortButton_) {
+        reverseSortButton_->resize(sortX + 160 + 8, row2Y, reverseW, kControlHeight);
+    }
 
     const int clearX = rightX + rightW - 85;
     const int moduleLabelX = rightX;
@@ -2037,6 +2041,10 @@ void ModuleManagerDialog::buildUi() {
     sortChoice_->value(0);
     sortChoice_->callback(onFilterChanged, this);
 
+    reverseSortButton_ = new Fl_Check_Button(rightX + 722, row2Y, 84, kControlHeight,
+                                             "Reverse");
+    reverseSortButton_->callback(onFilterChanged, this);
+
     languageChoice_ = new FilterableChoiceWidget(rightX + 88, row2Y, 330, kControlHeight);
     languageChoice_->setShowAllWhenFilterEmpty(true);
     languageChoice_->setNoMatchesLabel("No language matches");
@@ -2097,7 +2105,7 @@ void ModuleManagerDialog::buildUi() {
             return moduleTooltipText(visibleModuleRows_[static_cast<size_t>(index)]);
         });
     updateModuleBrowserColumns();
-    moduleBrowser_->add("@bSel\t@bModule ID\t@bDescription\t@bLanguage\t@bType\t@bSource\t@bInstalled\t@bAvailable\t@bStatus");
+    moduleBrowser_->add("@bSel\t@bStatus\t@bModule ID\t@bDescription\t@bLanguage\t@bType\t@bSource\t@bInstalled\t@bAvailable");
 
     statusBox_ = new Fl_Box(10, h() - 38, w() - 250, 26, "");
     statusBox_->align(FL_ALIGN_LEFT | FL_ALIGN_INSIDE);
@@ -2702,18 +2710,18 @@ void ModuleManagerDialog::updateModuleBrowserColumns() {
     if (!moduleBrowser_) return;
 
     const int tableWidth = std::max(0, moduleBrowser_->w());
-    const int fixedWidth = 36 + 130 + 120 + 130 + 150 + 90 + 90 + 55;
+    const int fixedWidth = 36 + 55 + 130 + 120 + 130 + 150 + 90 + 90;
     const int descriptionWidth = std::max(180, tableWidth - fixedWidth - 30);
 
     moduleBrowserColWidths_[0] = 36;
-    moduleBrowserColWidths_[1] = 130;
-    moduleBrowserColWidths_[2] = descriptionWidth;
-    moduleBrowserColWidths_[3] = 120;
-    moduleBrowserColWidths_[4] = 130;
-    moduleBrowserColWidths_[5] = 150;
-    moduleBrowserColWidths_[6] = 90;
+    moduleBrowserColWidths_[1] = 55;
+    moduleBrowserColWidths_[2] = 130;
+    moduleBrowserColWidths_[3] = descriptionWidth;
+    moduleBrowserColWidths_[4] = 120;
+    moduleBrowserColWidths_[5] = 130;
+    moduleBrowserColWidths_[6] = 150;
     moduleBrowserColWidths_[7] = 90;
-    moduleBrowserColWidths_[8] = 55;
+    moduleBrowserColWidths_[8] = 90;
     moduleBrowserColWidths_[9] = 0;
 
     moduleBrowser_->column_widths(moduleBrowserColWidths_);
@@ -2737,12 +2745,13 @@ void ModuleManagerDialog::repopulateModuleBrowser() {
     moduleBrowser_->clear();
     visibleModuleRows_.clear();
     moduleBrowser_->add(
-        "@bSel\t@bModule ID\t@bDescription\t@bLanguage\t@bType\t@bSource\t@bInstalled\t@bAvailable\t@bStatus");
+        "@bSel\t@bStatus\t@bModule ID\t@bDescription\t@bLanguage\t@bType\t@bSource\t@bInstalled\t@bAvailable");
 
     updateModuleBrowserColumns();
 
     const std::string languageFilter = selectedLanguageCode();
     const std::string sortField = selectedChoiceLabel(sortChoice_);
+    const bool reverseSort = reverseSortButton_ && reverseSortButton_->value() != 0;
     const std::string moduleFilter = trimCopy(
         moduleFilterInput_ && moduleFilterInput_->value()
             ? moduleFilterInput_->value()
@@ -2790,40 +2799,43 @@ void ModuleManagerDialog::repopulateModuleBrowser() {
                          int cmp = 0;
                          if (sortField == "Description") {
                              cmp = compareField(a.shortDescription, b.shortDescription);
-                             if (cmp != 0) return cmp < 0;
-                             cmp = compareField(a.moduleName, b.moduleName);
-                             if (cmp != 0) return cmp < 0;
+                             if (cmp == 0) {
+                                 cmp = compareField(a.moduleName, b.moduleName);
+                             }
                          } else if (sortField == "Language") {
                              cmp = compareField(a.displayLanguage, b.displayLanguage);
-                             if (cmp != 0) return cmp < 0;
-                             cmp = compareField(a.moduleName, b.moduleName);
-                             if (cmp != 0) return cmp < 0;
+                             if (cmp == 0) {
+                                 cmp = compareField(a.moduleName, b.moduleName);
+                             }
                          } else if (sortField == "Module Type") {
                              cmp = compareField(a.moduleType, b.moduleType);
-                             if (cmp != 0) return cmp < 0;
-                             cmp = compareField(a.displayLanguage, b.displayLanguage);
-                             if (cmp != 0) return cmp < 0;
-                             cmp = compareField(a.moduleName, b.moduleName);
-                             if (cmp != 0) return cmp < 0;
+                             if (cmp == 0) {
+                                 cmp = compareField(a.displayLanguage, b.displayLanguage);
+                             }
+                             if (cmp == 0) {
+                                 cmp = compareField(a.moduleName, b.moduleName);
+                             }
                          } else if (sortField == "Source") {
                              cmp = compareField(a.sourceCaption, b.sourceCaption);
-                             if (cmp != 0) return cmp < 0;
-                             cmp = compareField(a.moduleName, b.moduleName);
-                             if (cmp != 0) return cmp < 0;
+                             if (cmp == 0) {
+                                 cmp = compareField(a.moduleName, b.moduleName);
+                             }
                          } else if (sortField == "Status") {
                              if (a.statusSortRank != b.statusSortRank) {
-                                 return a.statusSortRank < b.statusSortRank;
+                                 cmp = (a.statusSortRank < b.statusSortRank) ? -1 : 1;
                              }
-                             cmp = compareField(a.moduleName, b.moduleName);
-                             if (cmp != 0) return cmp < 0;
+                             if (cmp == 0) {
+                                 cmp = compareField(a.moduleName, b.moduleName);
+                             }
                          } else {
                              cmp = compareField(a.moduleName, b.moduleName);
-                             if (cmp != 0) return cmp < 0;
-                             cmp = compareField(a.sourceCaption, b.sourceCaption);
-                             if (cmp != 0) return cmp < 0;
+                             if (cmp == 0) {
+                                 cmp = compareField(a.sourceCaption, b.sourceCaption);
+                             }
                          }
 
-                         return lhs < rhs;
+                         if (cmp == 0) return lhs < rhs;
+                         return reverseSort ? (cmp > 0) : (cmp < 0);
                      });
 
     int selectedLine = 0;
@@ -2836,14 +2848,14 @@ void ModuleManagerDialog::repopulateModuleBrowser() {
             : truncateWithEllipsis(row.shortDescription, 96);
         const std::string line =
                                  std::string(row.checked ? "[x]" : "[ ]") + "\t" +
+                                 row.statusIcon + "\t" +
                                  row.moduleName + "\t" +
                                  description + "\t" +
                                  (row.displayLanguage.empty() ? "-" : row.displayLanguage) + "\t" +
                                  (row.moduleType.empty() ? "-" : row.moduleType) + "\t" +
                                  (row.sourceCaption.empty() ? "-" : row.sourceCaption) + "\t" +
                                  (row.installedVersion.empty() ? "-" : row.installedVersion) + "\t" +
-                                 (row.availableVersion.empty() ? "-" : row.availableVersion) + "\t" +
-                                 row.statusIcon;
+                                 (row.availableVersion.empty() ? "-" : row.availableVersion);
         moduleBrowser_->add(line.c_str());
         visibleModuleRows_.push_back(moduleIndex);
 
