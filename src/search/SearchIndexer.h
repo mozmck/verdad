@@ -84,8 +84,20 @@ public:
     /// Refresh cached searchable-module metadata and prune removed modules.
     void synchronizeModules(const std::vector<ModuleInfo>& modules);
 
+    /// True when the SQLite search backend opened successfully and the FTS schema exists.
+    bool indexBackendAvailable() const { return backendAvailable_.load(); }
+
+    /// Human-readable backend status when the search index backend is unavailable.
+    std::string backendStatusMessage() const;
+
+    /// True if the index currently contains any searchable rows.
+    bool hasAnyIndexedData() const;
+
     /// True if module has a completed index entry.
     bool isModuleIndexed(const std::string& moduleName) const;
+
+    /// True when the current request can be satisfied entirely by indexed data.
+    bool canUseIndexedSearch(const SearchRequest& request) const;
 
     /// True while a background indexing job is currently running.
     bool isIndexing() const { return indexing_.load(); }
@@ -111,6 +123,12 @@ public:
                                          bool exactPhrase = false,
                                          int maxResults = 0) const;
 
+    /// Search module content directly without relying on the SQLite index.
+    std::vector<SearchResult> searchWordDirect(const SearchRequest& request,
+                                               const std::string& query,
+                                               bool exactPhrase = false,
+                                               int maxResults = 0) const;
+
     /// Search for Strong's/Lemma references in indexed XHTML.
     /// maxResults <= 0 means no result limit.
     std::vector<SearchResult> searchStrongs(const SearchRequest& request,
@@ -124,6 +142,13 @@ public:
                                           bool caseSensitive = false,
                                           int maxResults = 0,
                                           RegexProgressCallback progressCallback = {}) const;
+
+    /// Search module content directly with a regex scan and progress reporting.
+    std::vector<SearchResult> searchRegexDirect(const SearchRequest& request,
+                                                const std::string& pattern,
+                                                bool caseSensitive = false,
+                                                int maxResults = 0,
+                                                RegexProgressCallback progressCallback = {}) const;
 
     /// Smart/fuzzy search: expands query with synonyms, phonetic variants,
     /// and edit-distance matching.  Results are ranked by combined relevance.
@@ -150,6 +175,14 @@ private:
     void indexModuleNow(const std::string& moduleName);
     void resumeBackgroundIndexing();
     void waitForWorkerIdle();
+    std::vector<std::string> requestModules(const SearchRequest& request) const;
+    std::vector<SearchResult> searchDirectInternal(
+        const SearchRequest& request,
+        const std::function<bool(const SearchResult&,
+                                 const std::string&,
+                                 std::string&)>& matcher,
+        int maxResults,
+        RegexProgressCallback progressCallback = {}) const;
 
     static std::string buildFilterFtsQuery(const SearchRequest& request);
     static std::string buildWordFtsQuery(const SearchRequest& request,
@@ -164,6 +197,9 @@ private:
     std::string dbPath_;
     sqlite3* db_ = nullptr;
     const ImportedModuleManager* importedModuleMgr_ = nullptr;
+    std::atomic<bool> backendAvailable_{false};
+    mutable std::mutex backendStatusMutex_;
+    std::string backendStatusMessage_;
 
     mutable std::mutex dbMutex_;
 

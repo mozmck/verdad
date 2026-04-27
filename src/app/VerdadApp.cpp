@@ -593,6 +593,18 @@ bool VerdadApp::initialize(int argc, char* argv[]) {
 
     refreshSearchIndexCatalog(true);
 
+    if (mainWindow_ && searchIndexer_) {
+        if (!searchIndexer_->indexBackendAvailable()) {
+            std::string status = searchIndexer_->backendStatusMessage();
+            if (status.empty()) {
+                status = "Search index unavailable; using slower direct scanning.";
+            }
+            mainWindow_->showTransientStatus(status, 4.5);
+        } else if (!searchIndexer_->hasAnyIndexedData()) {
+            mainWindow_->showTransientStatus("Building search index in background.", 3.6);
+        }
+    }
+
     return true;
 }
 

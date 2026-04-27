@@ -977,6 +977,7 @@ void SearchPanel::resetResultView() {
 
 void SearchPanel::finalizeSearchResults(const std::string& moduleName,
                                         bool usedIndexer,
+                                        bool usedDirectFallback,
                                         bool indexingPending,
                                         bool fallbackDeferred) {
     statusResultCountOverride_ = -1;
@@ -989,7 +990,11 @@ void SearchPanel::finalizeSearchResults(const std::string& moduleName,
     rebuildResultBrowserItems();
 
     std::string labelSuffix;
-    if (usedIndexer && indexingPending) {
+    if (usedDirectFallback) {
+        labelSuffix += "(direct scan)";
+    }
+    if (indexingPending) {
+        if (!labelSuffix.empty()) labelSuffix += " ";
         labelSuffix += "(indexing...)";
     }
     if (fallbackDeferred) {
@@ -1013,9 +1018,25 @@ void SearchPanel::finalizeSearchResults(const std::string& moduleName,
     if (app_ && app_->mainWindow()) {
         std::string mod = trimCopy(moduleName);
         if (mod.empty()) mod = "search";
-        app_->mainWindow()->showTransientStatus(
-            "Search (" + mod + "): " + std::to_string(results_.size()) + " result(s)",
-            2.6);
+        if (usedDirectFallback) {
+            SearchIndexer* indexer = app_ ? app_->searchIndexer() : nullptr;
+            std::string notice;
+            if (indexer && !indexer->indexBackendAvailable()) {
+                notice = indexer->backendStatusMessage();
+                if (notice.empty()) notice = "Search index unavailable; using slower direct scan.";
+            } else if (indexingPending) {
+                notice = "Search index still building; using slower direct scan.";
+            } else {
+                notice = "Using slower direct scan for this search.";
+            }
+            app_->mainWindow()->showTransientStatus(
+                notice + " " + std::to_string(results_.size()) + " result(s).",
+                3.6);
+        } else {
+            app_->mainWindow()->showTransientStatus(
+                "Search (" + mod + "): " + std::to_string(results_.size()) + " result(s)",
+                2.6);
+        }
     }
 
     redraw();
@@ -1035,6 +1056,7 @@ void SearchPanel::cancelActiveSearch() {
 void SearchPanel::startAsyncRegexSearch(const SearchIndexer::SearchRequest& request,
                                         const std::string& moduleName,
                                         const std::string& query,
+                                        bool usedDirectFallback,
                                         bool indexingPending,
                                         SearchIndexer* indexer) {
     if (!indexer) return;
@@ -1043,7 +1065,8 @@ void SearchPanel::startAsyncRegexSearch(const SearchIndexer::SearchRequest& requ
         std::lock_guard<std::mutex> lock(asyncSearchMutex_);
         asyncSearchState_ = AsyncSearchState{};
         asyncSearchState_.active = true;
-        asyncSearchState_.usedIndexer = true;
+        asyncSearchState_.usedIndexer = !usedDirectFallback;
+        asyncSearchState_.usedDirectFallback = usedDirectFallback;
         asyncSearchState_.indexingPending = indexingPending;
         asyncSearchState_.moduleName = moduleName;
     }
@@ -1058,25 +1081,29 @@ void SearchPanel::startAsyncRegexSearch(const SearchIndexer::SearchRequest& requ
     }
 
     cancelAsyncSearch_.store(false);
-    searchThread_ = std::thread([this, request, moduleName, query, indexingPending, indexer]() {
-        std::vector<SearchResult> results = indexer->searchRegex(
-            request, query, false, 0,
-            [this](const SearchIndexer::RegexSearchProgress& progress) {
-                if (cancelAsyncSearch_.load()) return false;
+    searchThread_ = std::thread([this, request, moduleName, query,
+                                 usedDirectFallback, indexingPending, indexer]() {
+        auto progressCallback = [this](const SearchIndexer::RegexSearchProgress& progress) {
+            if (cancelAsyncSearch_.load()) return false;
 
-                std::lock_guard<std::mutex> lock(asyncSearchMutex_);
-                if (!asyncSearchState_.active) return false;
-                asyncSearchState_.scanned = progress.scanned;
-                asyncSearchState_.total = progress.total;
-                asyncSearchState_.matches = progress.matches;
-                return !cancelAsyncSearch_.load();
-            });
+            std::lock_guard<std::mutex> lock(asyncSearchMutex_);
+            if (!asyncSearchState_.active) return false;
+            asyncSearchState_.scanned = progress.scanned;
+            asyncSearchState_.total = progress.total;
+            asyncSearchState_.matches = progress.matches;
+            return !cancelAsyncSearch_.load();
+        };
+
+        std::vector<SearchResult> results = usedDirectFallback
+            ? indexer->searchRegexDirect(request, query, false, 0, progressCallback)
+            : indexer->searchRegex(request, query, false, 0, progressCallback);
 
         std::lock_guard<std::mutex> lock(asyncSearchMutex_);
         asyncSearchState_.active = false;
         asyncSearchState_.completed = true;
         asyncSearchState_.cancelled = cancelAsyncSearch_.load();
-        asyncSearchState_.usedIndexer = true;
+        asyncSearchState_.usedIndexer = !usedDirectFallback;
+        asyncSearchState_.usedDirectFallback = usedDirectFallback;
         asyncSearchState_.indexingPending = indexingPending;
         asyncSearchState_.fallbackDeferred = false;
         asyncSearchState_.moduleName = moduleName;
@@ -1157,6 +1184,7 @@ void SearchPanel::applyCompletedAsyncSearch() {
     results_ = std::move(completed.results);
     finalizeSearchResults(completed.moduleName,
                           completed.usedIndexer,
+                          completed.usedDirectFallback,
                           completed.indexingPending,
                           completed.fallbackDeferred);
 }
@@ -1266,16 +1294,28 @@ void SearchPanel::search(const std::string& query,
 
     bool indexingPending = false;
     bool usedIndexer = false;
+    bool usedDirectFallback = false;
     bool fallbackDeferred = false;
     SearchIndexer* indexer = app_->searchIndexer();
+    std::vector<std::string> relevantModules;
+    std::vector<std::string> bibleFallbackModules;
     if (indexer) {
-        std::vector<std::string> relevantModules;
         if (!moduleName.empty()) {
             relevantModules.push_back(moduleName);
+            for (const auto& module : searchableModules_) {
+                if (module.name == moduleName &&
+                    searchResourceTypeTokenForModuleType(module.type) == "bible") {
+                    bibleFallbackModules.push_back(moduleName);
+                    break;
+                }
+            }
         } else {
             for (const auto& module : searchableModules_) {
                 std::string resourceType =
                     searchResourceTypeTokenForModuleType(module.type);
+                if (resourceType == "bible") {
+                    bibleFallbackModules.push_back(module.name);
+                }
                 if (!resourceTypes.empty() &&
                     std::find(resourceTypes.begin(), resourceTypes.end(), resourceType) ==
                         resourceTypes.end()) {
@@ -1291,20 +1331,24 @@ void SearchPanel::search(const std::string& query,
         }
     }
 
+    const bool indexedSearchReady = indexer && indexer->canUseIndexedSearch(request);
+    if (indexer && !indexedSearchReady) {
+        usedDirectFallback = true;
+    }
+
     if (indexer && regexSearch && !isStrongs) {
         stopIndexingIndicator();
-        startAsyncRegexSearch(request, moduleName, trimmedQuery, indexingPending, indexer);
+        startAsyncRegexSearch(request, moduleName, trimmedQuery,
+                              usedDirectFallback, indexingPending, indexer);
         redraw();
         return;
     }
 
     // Prefer indexed searches when the index exists.
-    if (indexer) {
+    if (indexer && indexedSearchReady) {
         usedIndexer = true;
         if (isStrongs) {
             results_ = indexer->searchStrongs(request, strongsQuery);
-        } else if (regexSearch) {
-            fallbackDeferred = true;
         } else if (smartSearch) {
             std::string smartLang = detectSmartSearchLanguage(
                 moduleName, resourceTypes, searchableModules_);
@@ -1317,8 +1361,10 @@ void SearchPanel::search(const std::string& query,
     bool runSwordFallback = false;
     int swordSearchType = -1;
     std::string swordQuery = isStrongs ? strongsQuery : trimmedQuery;
-    const bool canRunSwordFallback = !moduleName.empty() &&
-                                     (resourceTypes.size() == 1 && resourceTypes.front() == "bible");
+    const bool canRunSwordFallback = isStrongs
+        ? !bibleFallbackModules.empty()
+        : ((resourceTypes.size() == 1 && resourceTypes.front() == "bible") &&
+           !relevantModules.empty());
     if (!indexer && canRunSwordFallback) {
         if (isStrongs) {
             runSwordFallback = true;
@@ -1329,42 +1375,59 @@ void SearchPanel::search(const std::string& query,
             runSwordFallback = true;
             swordSearchType = exactPhrase ? 1 : -1;
         }
-    } else if (isStrongs && results_.empty() && indexingPending && canRunSwordFallback) {
-        // Allow immediate Strong's lookups before initial module indexing finishes.
+    } else if (isStrongs && results_.empty() &&
+               (usedDirectFallback || indexingPending) &&
+               canRunSwordFallback) {
+        // Allow immediate Strong's lookups before module indexing is ready.
         runSwordFallback = true;
     }
 
-    if (runSwordFallback && !swordQuery.empty()) {
+    if (usedDirectFallback && !isStrongs && !regexSearch && indexer) {
+        if (smartSearch) {
+            results_ = indexer->searchWordDirect(request, trimmedQuery, false);
+        } else {
+            results_ = indexer->searchWordDirect(request, trimmedQuery, exactPhrase);
+        }
+    } else if (runSwordFallback && !swordQuery.empty()) {
         swordSearchInProgress_ = true;
         setResultCountLabel("(searching...)");
         Fl::flush();
 
-        std::string scope;
-        switch (request.bibleScope) {
-        case SearchIndexer::SearchRequest::BibleScope::OldTestament:
-            scope = "Genesis-Malachi";
-            break;
-        case SearchIndexer::SearchRequest::BibleScope::NewTestament:
-            scope = "Matthew-Revelation";
-            break;
-        case SearchIndexer::SearchRequest::BibleScope::CurrentBook:
-            scope = request.currentBook;
-            break;
-        case SearchIndexer::SearchRequest::BibleScope::All:
-            break;
-        }
+        const std::vector<std::string>& swordModules =
+            isStrongs ? bibleFallbackModules : relevantModules;
+        for (const auto& targetModule : swordModules) {
+            std::string scope;
+            switch (request.bibleScope) {
+            case SearchIndexer::SearchRequest::BibleScope::OldTestament:
+                scope = "Genesis-Malachi";
+                break;
+            case SearchIndexer::SearchRequest::BibleScope::NewTestament:
+                scope = "Matthew-Revelation";
+                break;
+            case SearchIndexer::SearchRequest::BibleScope::CurrentBook:
+                scope = request.currentBook;
+                break;
+            case SearchIndexer::SearchRequest::BibleScope::All:
+                break;
+            }
 
-        if (isStrongs) {
-            results_ = app_->swordManager().searchStrongs(moduleName, swordQuery);
-        } else {
-            results_ = app_->swordManager().search(
-                moduleName, swordQuery, swordSearchType, scope,
-                [this](float progress) {
-                    int pct = static_cast<int>(
-                        std::clamp(progress, 0.0f, 1.0f) * 100.0f);
-                    setResultCountLabel("(searching " + std::to_string(pct) + "%)");
-                    Fl::flush();
-                });
+            std::vector<SearchResult> moduleResults;
+            if (isStrongs) {
+                moduleResults = app_->swordManager().searchStrongs(targetModule, swordQuery);
+            } else {
+                moduleResults = app_->swordManager().search(
+                    targetModule, swordQuery, swordSearchType, scope,
+                    [this](float progress) {
+                        int pct = static_cast<int>(
+                            std::clamp(progress, 0.0f, 1.0f) * 100.0f);
+                        setResultCountLabel("(searching " + std::to_string(pct) + "%)");
+                        Fl::flush();
+                    });
+            }
+
+            results_.insert(results_.end(),
+                            std::make_move_iterator(moduleResults.begin()),
+                            std::make_move_iterator(moduleResults.end()));
         }
 
         swordSearchInProgress_ = false;
@@ -1373,7 +1436,9 @@ void SearchPanel::search(const std::string& query,
         updateIndexingIndicator();
     }
 
-    if (!isStrongs && runSwordFallback && !results_.empty()) {
+    if (!isStrongs &&
+        (runSwordFallback || usedDirectFallback) &&
+        !results_.empty()) {
         const std::regex* regexPattern = highlightRegexValid_
                                              ? &highlightRegex_
                                              : nullptr;
@@ -1387,7 +1452,8 @@ void SearchPanel::search(const std::string& query,
             if (result.resourceType.empty()) result.resourceType = "bible";
         }
     }
-    finalizeSearchResults(moduleName, usedIndexer, indexingPending, fallbackDeferred);
+    finalizeSearchResults(moduleName, usedIndexer, usedDirectFallback,
+                          indexingPending, fallbackDeferred);
 }
 
 void SearchPanel::showReferenceResults(const std::string& moduleName,
@@ -2010,6 +2076,13 @@ void SearchPanel::updateIndexingIndicator() {
     SearchIndexer* indexer = app_ ? app_->searchIndexer() : nullptr;
     if (!indexer) {
         setResultCountLabel();
+        return;
+    }
+    if (!indexer->indexBackendAvailable()) {
+        std::string status = indexer->backendStatusMessage();
+        if (status.empty()) status = "search index unavailable";
+        if (status.size() > 64) status = status.substr(0, 64) + "...";
+        setResultCountLabel("(index unavailable: " + status + ")");
         return;
     }
 

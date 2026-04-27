@@ -406,7 +406,7 @@ jobs:
 
       - name: Install vcpkg dependencies
         run: |
-          vcpkg install sqlite3:x64-windows-static curl:x64-windows-static zlib:x64-windows-static bzip2:x64-windows-static
+          vcpkg install sqlite3[fts5]:x64-windows-static curl:x64-windows-static zlib:x64-windows-static bzip2:x64-windows-static
 
       - name: Get SWORD mirror commit SHA
         id: sword-sha

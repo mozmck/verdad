@@ -84,6 +84,7 @@ private:
         bool completed = false;
         bool cancelled = false;
         bool usedIndexer = false;
+        bool usedDirectFallback = false;
         bool indexingPending = false;
         bool fallbackDeferred = false;
         std::string moduleName;
@@ -168,12 +169,14 @@ private:
     void resetResultView();
     void finalizeSearchResults(const std::string& moduleName,
                                bool usedIndexer,
+                               bool usedDirectFallback,
                                bool indexingPending,
                                bool fallbackDeferred);
     void cancelActiveSearch();
     void startAsyncRegexSearch(const SearchIndexer::SearchRequest& request,
                                const std::string& moduleName,
                                const std::string& query,
+                               bool usedDirectFallback,
                                bool indexingPending,
                                SearchIndexer* indexer);
     bool updateSearchProgressUi();

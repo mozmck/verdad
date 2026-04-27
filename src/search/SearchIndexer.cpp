@@ -15,6 +15,7 @@
 #include <algorithm>
 #include <cctype>
 #include <iostream>
+#include <memory>
 #include <regex>
 #include <sstream>
 #include <string_view>
@@ -25,6 +26,27 @@ namespace {
 
 constexpr int kSmartSearchMinCandidateLimit = 200;
 constexpr int kSmartSearchMaxCandidateLimit = 2000;
+
+struct CatalogSnapshot {
+    ModuleInfo info;
+    std::string resourceType;
+    std::string moduleToken;
+    std::string moduleSignature;
+};
+
+struct ModuleScanSource {
+    std::string moduleName;
+    std::string resourceType;
+    std::string moduleToken;
+    std::string moduleSignature;
+    bool imported = false;
+    std::vector<ImportedModuleManager::Entry> importedEntries;
+    std::vector<std::string> keyedEntries;
+    std::unordered_map<std::string, std::string> entryTitles;
+    std::unique_ptr<sword::SWConfig> bundledSysConfig;
+    std::unique_ptr<sword::SWMgr> mgr;
+    sword::SWModule* mod = nullptr;
+};
 
 std::string trimCopy(const std::string& text) {
     size_t start = 0;
@@ -46,6 +68,40 @@ std::string lowerCopy(std::string text) {
     std::transform(text.begin(), text.end(), text.begin(),
                    [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
     return text;
+}
+
+std::string collapseWhitespace(const std::string& text) {
+    std::string out;
+    out.reserve(text.size());
+
+    bool lastWasSpace = true;
+    for (unsigned char c : text) {
+        if (std::isspace(c)) {
+            if (!lastWasSpace) {
+                out.push_back(' ');
+                lastWasSpace = true;
+            }
+            continue;
+        }
+
+        out.push_back(static_cast<char>(c));
+        lastWasSpace = false;
+    }
+
+    while (!out.empty() && out.back() == ' ') {
+        out.pop_back();
+    }
+    return out;
+}
+
+std::string truncateSnippet(const std::string& text, size_t maxLen = 200) {
+    std::string collapsed = collapseWhitespace(text);
+    if (collapsed.size() <= maxLen) return collapsed;
+    return collapsed.substr(0, maxLen) + "...";
+}
+
+std::string normalizeDirectSearchText(const std::string& text) {
+    return lowerCopy(smart_search::stripDiacritics(text));
 }
 
 bool isAsciiText(std::string_view text) {
@@ -392,6 +448,196 @@ void appendGeneralBookTocEntries(sword::TreeKey* treeKey,
             treeKey->parent();
         }
     } while (treeKey->nextSibling());
+}
+
+std::unique_ptr<sword::SWMgr> createIsolatedSwordManager(
+    std::unique_ptr<sword::SWConfig>& bundledSysConfigOut) {
+    const std::string bundlePath = bundledSwordDataPath();
+    if (!bundlePath.empty()) {
+        bundledSysConfigOut = std::make_unique<sword::SWConfig>();
+        bundledSysConfigOut->setValue("Install", "DataPath", bundlePath.c_str());
+
+        auto& install = bundledSysConfigOut->getSection("Install");
+#if defined(__APPLE__)
+        if (bundlePath != "/usr/local/share/sword") {
+            install.insert({sword::SWBuf("AugmentPath"),
+                            sword::SWBuf("/usr/local/share/sword")});
+        }
+        if (bundlePath != "/opt/homebrew/share/sword") {
+            install.insert({sword::SWBuf("AugmentPath"),
+                            sword::SWBuf("/opt/homebrew/share/sword")});
+        }
+#elif !defined(_WIN32)
+        if (bundlePath != "/usr/share/sword") {
+            install.insert({sword::SWBuf("AugmentPath"),
+                            sword::SWBuf("/usr/share/sword")});
+        }
+        if (bundlePath != "/usr/local/share/sword") {
+            install.insert({sword::SWBuf("AugmentPath"),
+                            sword::SWBuf("/usr/local/share/sword")});
+        }
+#endif
+
+        return std::unique_ptr<sword::SWMgr>(new sword::SWMgr(
+            nullptr, bundledSysConfigOut.get(), true,
+            new sword::MarkupFilterMgr(sword::FMT_XHTML, sword::ENC_UTF8)));
+    }
+
+    return std::unique_ptr<sword::SWMgr>(new sword::SWMgr(
+        nullptr, nullptr, true,
+        new sword::MarkupFilterMgr(sword::FMT_XHTML, sword::ENC_UTF8)));
+}
+
+void collectSequentialKeys(sword::SWModule* target,
+                           std::vector<std::string>& keysOut,
+                           std::unordered_map<std::string, std::string>& titlesOut) {
+    if (!target) return;
+
+    std::unique_ptr<sword::SWKey> restoreKey(
+        target->getKey() ? target->getKey()->clone() : nullptr);
+    const bool hadSkipConsecutiveLinks = target->isSkipConsecutiveLinks();
+    target->setSkipConsecutiveLinks(true);
+    target->setPosition(sword::TOP);
+    if (!target->popError()) {
+        std::string lastKey;
+        for (size_t count = 0; count < 500000; ++count) {
+            std::string key = trimCopy(target->getKeyText());
+            if (!key.empty() && key != lastKey) {
+                keysOut.push_back(key);
+                titlesOut.emplace(key, key);
+                lastKey = key;
+            }
+            (*target)++;
+            if (target->popError()) break;
+        }
+    }
+    target->setSkipConsecutiveLinks(hadSkipConsecutiveLinks);
+    if (restoreKey) {
+        target->setKey(*restoreKey);
+        target->popError();
+    }
+}
+
+bool prepareModuleScanSource(const std::string& moduleName,
+                             const CatalogSnapshot& catalog,
+                             const ImportedModuleManager* importedModuleMgr,
+                             std::string& errorOut,
+                             ModuleScanSource& out) {
+    out = ModuleScanSource{};
+    out.moduleName = moduleName;
+
+    if (importedModuleMgr && importedModuleMgr->hasModule(moduleName)) {
+        out.imported = true;
+        out.resourceType = "general_book";
+        out.moduleToken = !catalog.moduleToken.empty()
+            ? catalog.moduleToken
+            : normalizeFilterToken(moduleName);
+        out.moduleSignature = !catalog.moduleSignature.empty()
+            ? catalog.moduleSignature
+            : buildModuleSignature(importedModuleMgr->moduleInfo(moduleName),
+                                   out.resourceType,
+                                   out.moduleToken);
+        out.importedEntries = importedModuleMgr->indexEntries(moduleName);
+        if (out.importedEntries.empty()) {
+            errorOut = "Imported module has no extracted entries.";
+            return false;
+        }
+        return true;
+    }
+
+    out.bundledSysConfig.reset();
+    out.mgr = createIsolatedSwordManager(out.bundledSysConfig);
+    if (out.mgr) {
+        for (const auto& path : allUserSwordDataPaths()) {
+            out.mgr->augmentModules(path.c_str());
+        }
+    }
+    out.mod = out.mgr ? out.mgr->getModule(moduleName.c_str()) : nullptr;
+    if (!out.mod) {
+        errorOut = "Module not found while rebuilding index.";
+        return false;
+    }
+
+    out.resourceType = !catalog.resourceType.empty()
+                           ? catalog.resourceType
+                           : searchResourceTypeTokenForModuleType(
+                                 out.mod->getType() ? out.mod->getType() : "");
+    if (!isSearchableResourceTypeToken(out.resourceType)) {
+        errorOut = "Unsupported searchable module type.";
+        return false;
+    }
+
+    out.moduleToken = !catalog.moduleToken.empty()
+                          ? catalog.moduleToken
+                          : normalizeFilterToken(moduleName);
+    out.moduleSignature = !catalog.moduleSignature.empty()
+                              ? catalog.moduleSignature
+                              : buildModuleSignature(
+                                    ModuleInfo{moduleName, "",
+                                               out.mod->getType() ? out.mod->getType() : ""},
+                                    out.resourceType,
+                                    out.moduleToken);
+
+    out.mgr->setGlobalOption("Strong's Numbers", "On");
+    out.mgr->setGlobalOption("Morphological Tags", "On");
+    out.mgr->setGlobalOption("Footnotes", "On");
+    out.mgr->setGlobalOption("Cross-references", "On");
+    out.mgr->setGlobalOption("Headings", "On");
+
+    std::unique_ptr<sword::SWKey> createdKey(out.mod->createKey());
+    if (out.resourceType == "general_book") {
+        if (auto* treeKey = dynamic_cast<sword::TreeKey*>(createdKey.get())) {
+            std::vector<GeneralBookTocEntry> toc;
+            treeKey->root();
+            if (treeKey->hasChildren() && treeKey->firstChild()) {
+                appendGeneralBookTocEntries(treeKey, 0, toc);
+            }
+            for (const auto& entry : toc) {
+                std::string key = trimCopy(entry.key);
+                if (key.empty()) continue;
+                out.keyedEntries.push_back(key);
+                std::string label = trimCopy(entry.label);
+                out.entryTitles.emplace(key, label.empty() ? key : label);
+            }
+        } else {
+            collectSequentialKeys(out.mod, out.keyedEntries, out.entryTitles);
+        }
+    } else {
+        collectSequentialKeys(out.mod, out.keyedEntries, out.entryTitles);
+    }
+
+    if (out.keyedEntries.empty()) {
+        errorOut = out.resourceType == "bible"
+                       ? "Bible module has no traversable entries."
+                       : "Module has no traversable entries to index.";
+        return false;
+    }
+
+    return true;
+}
+
+bool matchesBibleScope(const SearchIndexer::SearchRequest& request,
+                       sword::SWModule* mod) {
+    if (!mod || request.bibleScope == SearchIndexer::SearchRequest::BibleScope::All) {
+        return true;
+    }
+
+    auto* verseKey = dynamic_cast<sword::VerseKey*>(mod->getKey());
+    if (!verseKey) return true;
+
+    switch (request.bibleScope) {
+    case SearchIndexer::SearchRequest::BibleScope::All:
+        return true;
+    case SearchIndexer::SearchRequest::BibleScope::OldTestament:
+        return verseKey->getTestament() != 2;
+    case SearchIndexer::SearchRequest::BibleScope::NewTestament:
+        return verseKey->getTestament() == 2;
+    case SearchIndexer::SearchRequest::BibleScope::CurrentBook:
+        return normalizeFilterToken(verseKey->getBookName() ? verseKey->getBookName() : "") ==
+               normalizeFilterToken(request.currentBook);
+    }
+
+    return true;
 }
 
 bool bindText(sqlite3_stmt* stmt, int index, const std::string& value) {
@@ -797,8 +1043,13 @@ SearchIndexer::SearchIndexer(const std::string& dbPath,
         SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_FULLMUTEX,
         nullptr);
     if (rc != SQLITE_OK) {
+        {
+            std::lock_guard<std::mutex> statusLock(backendStatusMutex_);
+            backendStatusMessage_ = std::string("Unable to open SQLite search database: ") +
+                                    (db_ ? sqlite3_errmsg(db_) : "unknown error");
+        }
         std::cerr << "SearchIndexer: unable to open database " << dbPath_
-                  << " (" << sqlite3_errmsg(db_) << ")\n";
+                  << " (" << (db_ ? sqlite3_errmsg(db_) : "unknown error") << ")\n";
         if (db_) sqlite3_close(db_);
         db_ = nullptr;
         return;
@@ -807,9 +1058,19 @@ SearchIndexer::SearchIndexer(const std::string& dbPath,
     sqlite3_busy_timeout(db_, 5000);
     applyPragmas(db_);
     if (!ensureSchema(db_)) {
+        if (backendStatusMessage().empty()) {
+            std::lock_guard<std::mutex> statusLock(backendStatusMutex_);
+            backendStatusMessage_ = "Unable to initialize SQLite search schema.";
+        }
         sqlite3_close(db_);
         db_ = nullptr;
         return;
+    }
+
+    backendAvailable_.store(true);
+    {
+        std::lock_guard<std::mutex> statusLock(backendStatusMutex_);
+        backendStatusMessage_.clear();
     }
 
     workerThread_ = std::thread(&SearchIndexer::workerLoop, this);
@@ -887,7 +1148,7 @@ bool SearchIndexer::ensureSchema(sqlite3* db) {
         sqlite3_exec(db, "DROP TABLE IF EXISTS module_index_errors;", nullptr, nullptr, nullptr);
     }
 
-    const char* sql = R"SQL(
+    const char* tableSql = R"SQL(
         CREATE TABLE IF NOT EXISTS indexed_modules (
             module_name TEXT PRIMARY KEY,
             resource_type TEXT NOT NULL,
@@ -901,7 +1162,19 @@ bool SearchIndexer::ensureSchema(sqlite3* db) {
             last_error TEXT NOT NULL,
             updated_at TEXT DEFAULT (datetime('now'))
         );
+    )SQL";
 
+    char* err = nullptr;
+    int rc = sqlite3_exec(db, tableSql, nullptr, nullptr, &err);
+    if (rc != SQLITE_OK) {
+        std::cerr << "SearchIndexer schema error: "
+                  << (err ? err : "unknown") << "\n";
+        if (err) sqlite3_free(err);
+        return false;
+    }
+    if (err) sqlite3_free(err);
+
+    const char* preferredFtsSql = R"SQL(
         CREATE VIRTUAL TABLE IF NOT EXISTS library_index USING fts5(
             resource_type,
             module_token,
@@ -914,19 +1187,66 @@ bool SearchIndexer::ensureSchema(sqlite3* db) {
             tokenize='unicode61 remove_diacritics 2'
         );
     )SQL";
+    const char* fallbackFtsSql = R"SQL(
+        CREATE VIRTUAL TABLE IF NOT EXISTS library_index USING fts5(
+            resource_type,
+            module_token,
+            scope_token,
+            title,
+            content,
+            strongs_text,
+            module_name UNINDEXED,
+            key_text UNINDEXED
+        );
+    )SQL";
 
-    char* err = nullptr;
-    int rc = sqlite3_exec(db, sql, nullptr, nullptr, &err);
+    err = nullptr;
+    rc = sqlite3_exec(db, preferredFtsSql, nullptr, nullptr, &err);
     if (rc != SQLITE_OK) {
-        std::cerr << "SearchIndexer schema error: "
-                  << (err ? err : "unknown") << "\n";
-        if (err) sqlite3_free(err);
-        return false;
+        std::string preferredError = err ? err : "unknown";
+        if (err) {
+            sqlite3_free(err);
+            err = nullptr;
+        }
+
+        std::cerr << "SearchIndexer preferred FTS tokenizer unavailable, "
+                  << "retrying with default tokenizer: "
+                  << preferredError << "\n";
+        sqlite3_exec(db, "DROP TABLE IF EXISTS library_index;", nullptr, nullptr, nullptr);
+
+        rc = sqlite3_exec(db, fallbackFtsSql, nullptr, nullptr, &err);
+        if (rc != SQLITE_OK) {
+            std::cerr << "SearchIndexer schema error: "
+                      << (err ? err : preferredError.c_str()) << "\n";
+            if (err) sqlite3_free(err);
+            return false;
+        }
     }
     if (err) sqlite3_free(err);
 
     sqlite3_exec(db, "PRAGMA user_version = 4;", nullptr, nullptr, nullptr);
     return true;
+}
+
+std::string SearchIndexer::backendStatusMessage() const {
+    std::lock_guard<std::mutex> lock(backendStatusMutex_);
+    return backendStatusMessage_;
+}
+
+bool SearchIndexer::hasAnyIndexedData() const {
+    if (!backendAvailable_.load() || !db_) return false;
+
+    std::lock_guard<std::mutex> lock(dbMutex_);
+    sqlite3_stmt* stmt = nullptr;
+    if (sqlite3_prepare_v2(db_,
+                           "SELECT 1 FROM indexed_modules LIMIT 1",
+                           -1, &stmt, nullptr) != SQLITE_OK) {
+        return false;
+    }
+
+    const bool hasData = sqlite3_step(stmt) == SQLITE_ROW;
+    sqlite3_finalize(stmt);
+    return hasData;
 }
 
 void SearchIndexer::queueModuleIndex(const std::string& moduleName, bool force) {
@@ -1046,6 +1366,37 @@ void SearchIndexer::synchronizeModules(const std::vector<ModuleInfo>& modules) {
     sqlite3_exec(db_, "COMMIT;", nullptr, nullptr, nullptr);
 }
 
+std::vector<std::string> SearchIndexer::requestModules(
+    const SearchRequest& request) const {
+    std::vector<std::pair<std::string, std::string>> modules;
+    {
+        std::lock_guard<std::mutex> lock(catalogMutex_);
+        modules.reserve(moduleCatalog_.size());
+        for (const auto& [name, entry] : moduleCatalog_) {
+            if (!request.moduleName.empty() && name != request.moduleName) continue;
+            if (!request.resourceTypes.empty() &&
+                std::find(request.resourceTypes.begin(),
+                          request.resourceTypes.end(),
+                          entry.resourceType) == request.resourceTypes.end()) {
+                continue;
+            }
+            modules.emplace_back(name, entry.info.name);
+        }
+    }
+
+    std::sort(modules.begin(), modules.end(),
+              [](const auto& lhs, const auto& rhs) {
+                  return lhs.second < rhs.second;
+              });
+
+    std::vector<std::string> names;
+    names.reserve(modules.size());
+    for (const auto& module : modules) {
+        names.push_back(module.first);
+    }
+    return names;
+}
+
 bool SearchIndexer::isModuleIndexed(const std::string& moduleName) const {
     if (!db_ || moduleName.empty()) return false;
 
@@ -1077,6 +1428,18 @@ bool SearchIndexer::isModuleIndexed(const std::string& moduleName) const {
     }
     sqlite3_finalize(stmt);
     return indexed;
+}
+
+bool SearchIndexer::canUseIndexedSearch(const SearchRequest& request) const {
+    if (!backendAvailable_.load() || !db_) return false;
+
+    const std::vector<std::string> modules = requestModules(request);
+    if (modules.empty()) return false;
+
+    return std::all_of(modules.begin(), modules.end(),
+                       [this](const std::string& moduleName) {
+                           return isModuleIndexed(moduleName);
+                       });
 }
 
 int SearchIndexer::moduleIndexProgress(const std::string& moduleName) const {
@@ -1308,6 +1671,166 @@ std::string SearchIndexer::buildStrongsFtsQuery(const SearchRequest& request,
     return filterQuery + " AND " + contentClause;
 }
 
+std::vector<SearchResult> SearchIndexer::searchDirectInternal(
+    const SearchRequest& request,
+    const std::function<bool(const SearchResult&,
+                             const std::string&,
+                             std::string&)>& matcher,
+    int maxResults,
+    RegexProgressCallback progressCallback) const {
+
+    std::vector<SearchResult> results;
+    if (!matcher) return results;
+
+    const int limit = (maxResults > 0) ? maxResults : request.maxResults;
+    const std::vector<std::string> moduleNames = requestModules(request);
+    if (moduleNames.empty()) return results;
+
+    std::vector<ModuleScanSource> sources;
+    sources.reserve(moduleNames.size());
+    int total = 0;
+
+    for (const auto& moduleName : moduleNames) {
+        CatalogSnapshot catalog;
+        {
+            std::lock_guard<std::mutex> lock(catalogMutex_);
+            auto it = moduleCatalog_.find(moduleName);
+            if (it != moduleCatalog_.end()) {
+                catalog.info = it->second.info;
+                catalog.resourceType = it->second.resourceType;
+                catalog.moduleToken = it->second.moduleToken;
+                catalog.moduleSignature = it->second.signature;
+            }
+        }
+
+        ModuleScanSource source;
+        std::string error;
+        if (!prepareModuleScanSource(moduleName, catalog, importedModuleMgr_, error, source)) {
+            continue;
+        }
+
+        total += static_cast<int>(source.imported
+                                      ? source.importedEntries.size()
+                                      : source.keyedEntries.size());
+        sources.push_back(std::move(source));
+    }
+
+    auto reportProgress = [&](int scanned, int matches) -> bool {
+        if (!progressCallback) return true;
+        RegexSearchProgress progress;
+        progress.scanned = scanned;
+        progress.total = total;
+        progress.matches = matches;
+        return progressCallback(progress);
+    };
+
+    if (!reportProgress(0, 0)) {
+        return results;
+    }
+
+    int scanned = 0;
+    for (auto& source : sources) {
+        if (source.imported) {
+            for (const auto& entry : source.importedEntries) {
+                ++scanned;
+
+                SearchResult result;
+                result.resourceType = source.resourceType;
+                result.module = source.moduleName;
+                result.key = entry.key;
+                result.title = entry.title.empty() ? entry.key : entry.title;
+
+                std::string snippet;
+                if (matcher(result, entry.plainText, snippet)) {
+                    result.text = snippet.empty()
+                                      ? truncateSnippet(entry.plainText.empty()
+                                                            ? result.title
+                                                            : entry.plainText)
+                                      : snippet;
+                    results.push_back(std::move(result));
+                    if (limit > 0 && static_cast<int>(results.size()) >= limit) {
+                        reportProgress(scanned,
+                                       static_cast<int>(results.size()));
+                        return results;
+                    }
+                }
+
+                if ((scanned % 128) == 0 &&
+                    !reportProgress(scanned, static_cast<int>(results.size()))) {
+                    return results;
+                }
+            }
+            continue;
+        }
+
+        for (const auto& key : source.keyedEntries) {
+            ++scanned;
+
+            source.mod->setKey(key.c_str());
+            if (source.mod->popError()) {
+                if ((scanned % 128) == 0 &&
+                    !reportProgress(scanned, static_cast<int>(results.size()))) {
+                    return results;
+                }
+                continue;
+            }
+
+            if (source.resourceType == "bible" &&
+                !matchesBibleScope(request, source.mod)) {
+                if ((scanned % 128) == 0 &&
+                    !reportProgress(scanned, static_cast<int>(results.size()))) {
+                    return results;
+                }
+                continue;
+            }
+
+            const char* plainRaw = source.mod->stripText();
+            std::string plain = trimCopy(plainRaw ? plainRaw : "");
+
+            std::string keyText = trimCopy(source.mod->getKeyText()
+                                               ? source.mod->getKeyText()
+                                               : "");
+            if (keyText.empty()) keyText = key;
+
+            std::string title = keyText;
+            auto titleIt = source.entryTitles.find(key);
+            if (titleIt != source.entryTitles.end() &&
+                !trimCopy(titleIt->second).empty()) {
+                title = titleIt->second;
+            }
+
+            SearchResult result;
+            result.resourceType = source.resourceType;
+            result.module = source.moduleName;
+            result.key = keyText;
+            result.title = title.empty() ? keyText : title;
+
+            std::string snippet;
+            if (matcher(result, plain, snippet)) {
+                result.text = snippet.empty()
+                                  ? truncateSnippet(plain.empty()
+                                                        ? result.title
+                                                        : plain)
+                                  : snippet;
+                results.push_back(std::move(result));
+                if (limit > 0 && static_cast<int>(results.size()) >= limit) {
+                    reportProgress(scanned,
+                                   static_cast<int>(results.size()));
+                    return results;
+                }
+            }
+
+            if ((scanned % 128) == 0 &&
+                !reportProgress(scanned, static_cast<int>(results.size()))) {
+                return results;
+            }
+        }
+    }
+
+    reportProgress(scanned, static_cast<int>(results.size()));
+    return results;
+}
+
 std::vector<SearchResult> SearchIndexer::searchWord(
     const SearchRequest& request,
     const std::string& query,
@@ -1363,6 +1886,66 @@ std::vector<SearchResult> SearchIndexer::searchWord(
 
     sqlite3_finalize(stmt);
     return results;
+}
+
+std::vector<SearchResult> SearchIndexer::searchWordDirect(
+    const SearchRequest& request,
+    const std::string& query,
+    bool exactPhrase,
+    int maxResults) const {
+
+    if (query.empty()) return {};
+
+    if (exactPhrase) {
+        const std::string normalizedPhrase =
+            normalizeDirectSearchText(trimCopy(query));
+        if (normalizedPhrase.empty()) return {};
+
+        return searchDirectInternal(
+            request,
+            [normalizedPhrase](const SearchResult& result,
+                               const std::string& plainText,
+                               std::string& snippetOut) {
+                const std::string searchable = normalizeDirectSearchText(
+                    result.title.empty() ? plainText : (result.title + " " + plainText));
+                if (searchable.find(normalizedPhrase) == std::string::npos) {
+                    return false;
+                }
+                snippetOut = truncateSnippet(plainText.empty() ? result.title : plainText);
+                return true;
+            },
+            maxResults);
+    }
+
+    std::vector<std::string> tokens = tokenizeWords(query);
+    if (tokens.empty()) return {};
+
+    std::vector<std::string> normalizedTokens;
+    normalizedTokens.reserve(tokens.size());
+    for (const auto& token : tokens) {
+        std::string normalized = normalizeDirectSearchText(token);
+        if (!normalized.empty()) normalizedTokens.push_back(std::move(normalized));
+    }
+    if (normalizedTokens.empty()) return {};
+
+    return searchDirectInternal(
+        request,
+        [normalizedTokens = std::move(normalizedTokens)](
+            const SearchResult& result,
+            const std::string& plainText,
+            std::string& snippetOut) {
+            const std::string searchable = normalizeDirectSearchText(
+                result.title.empty() ? plainText : (result.title + " " + plainText));
+            const bool matched = std::all_of(
+                normalizedTokens.begin(), normalizedTokens.end(),
+                [&searchable](const std::string& token) {
+                    return searchable.find(token) != std::string::npos;
+                });
+            if (!matched) return false;
+            snippetOut = truncateSnippet(plainText.empty() ? result.title : plainText);
+            return true;
+        },
+        maxResults);
 }
 
 std::vector<SearchResult> SearchIndexer::searchStrongs(
@@ -1580,6 +2163,61 @@ std::vector<SearchResult> SearchIndexer::searchRegex(
     }
     sqlite3_close(readDb);
     return results;
+}
+
+std::vector<SearchResult> SearchIndexer::searchRegexDirect(
+    const SearchRequest& request,
+    const std::string& pattern,
+    bool caseSensitive,
+    int maxResults,
+    RegexProgressCallback progressCallback) const {
+
+    if (pattern.empty()) return {};
+
+    std::regex re;
+    try {
+        std::regex::flag_type flags = std::regex::ECMAScript;
+        if (!caseSensitive) flags |= std::regex::icase;
+        re = std::regex(pattern, flags);
+    } catch (const std::regex_error&) {
+        return {};
+    }
+
+    std::string literalPrefilter = extractRegexLiteralPrefilter(pattern);
+    if (!caseSensitive && !isAsciiText(literalPrefilter)) {
+        literalPrefilter.clear();
+    }
+
+    return searchDirectInternal(
+        request,
+        [re, literalPrefilter = std::move(literalPrefilter), caseSensitive](
+            const SearchResult& result,
+            const std::string& plainText,
+            std::string& snippetOut) {
+            const std::string searchableText = result.title.empty()
+                                                   ? plainText
+                                                   : (result.title + " " + plainText);
+
+            if (!literalPrefilter.empty()) {
+                const bool literalMatch = caseSensitive
+                                              ? (searchableText.find(literalPrefilter) !=
+                                                 std::string::npos)
+                                              : containsCaseInsensitiveAscii(
+                                                    searchableText, literalPrefilter);
+                if (!literalMatch) return false;
+            }
+
+            std::smatch match;
+            if (searchableText.empty() ||
+                !std::regex_search(searchableText, match, re)) {
+                return false;
+            }
+
+            snippetOut = buildRegexSnippet(searchableText, match, re);
+            return true;
+        },
+        maxResults,
+        std::move(progressCallback));
 }
 
 std::vector<SearchResult> SearchIndexer::searchSmart(
@@ -1947,8 +2585,20 @@ void SearchIndexer::indexModuleNow(const std::string& moduleName) {
     sqlite3_busy_timeout(writeDb, 5000);
     applyPragmas(writeDb);
     if (!ensureSchema(writeDb)) {
+        backendAvailable_.store(false);
+        {
+            std::lock_guard<std::mutex> statusLock(backendStatusMutex_);
+            if (backendStatusMessage_.empty()) {
+                backendStatusMessage_ = "Unable to initialize SQLite search schema.";
+            }
+        }
         sqlite3_close(writeDb);
         return;
+    }
+    backendAvailable_.store(true);
+    {
+        std::lock_guard<std::mutex> statusLock(backendStatusMutex_);
+        backendStatusMessage_.clear();
     }
     auto writeError = [&](const std::string& errorText) {
         sqlite3_stmt* stmt = nullptr;
@@ -1972,268 +2622,23 @@ void SearchIndexer::indexModuleNow(const std::string& moduleName) {
             catalogEntry = it->second;
         }
     }
+    CatalogSnapshot catalog;
+    catalog.info = catalogEntry.info;
+    catalog.resourceType = catalogEntry.resourceType;
+    catalog.moduleToken = catalogEntry.moduleToken;
+    catalog.moduleSignature = catalogEntry.signature;
 
-    if (importedModuleMgr_ && importedModuleMgr_->hasModule(moduleName)) {
-        auto importedEntries = importedModuleMgr_->indexEntries(moduleName);
-        if (importedEntries.empty()) {
-            writeError("Imported module has no extracted entries.");
-            sqlite3_close(writeDb);
-            return;
-        }
-
-        const std::string resourceType = "general_book";
-        const std::string moduleToken = !catalogEntry.moduleToken.empty()
-            ? catalogEntry.moduleToken
-            : normalizeFilterToken(moduleName);
-        const std::string moduleSignature = !catalogEntry.signature.empty()
-            ? catalogEntry.signature
-            : buildModuleSignature(
-                importedModuleMgr_->moduleInfo(moduleName),
-                resourceType,
-                moduleToken);
-
-        sqlite3_exec(writeDb, "BEGIN IMMEDIATE TRANSACTION;", nullptr, nullptr, nullptr);
-
-        sqlite3_stmt* deleteIndex = nullptr;
-        sqlite3_stmt* deleteStatus = nullptr;
-        sqlite3_stmt* insertRow = nullptr;
-        sqlite3_stmt* markIndexed = nullptr;
-        sqlite3_stmt* deleteError = nullptr;
-
-        sqlite3_prepare_v2(
-            writeDb,
-            "DELETE FROM library_index WHERE module_name = ?",
-            -1, &deleteIndex, nullptr);
-        sqlite3_prepare_v2(
-            writeDb,
-            "DELETE FROM indexed_modules WHERE module_name = ?",
-            -1, &deleteStatus, nullptr);
-        sqlite3_prepare_v2(
-            writeDb,
-            "INSERT INTO library_index(resource_type, module_token, scope_token, title, content, strongs_text, module_name, key_text) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-            -1, &insertRow, nullptr);
-        sqlite3_prepare_v2(
-            writeDb,
-            "INSERT OR REPLACE INTO indexed_modules(module_name, resource_type, module_signature, entry_count, indexed_at) "
-            "VALUES (?, ?, ?, ?, datetime('now'))",
-            -1, &markIndexed, nullptr);
-        sqlite3_prepare_v2(
-            writeDb,
-            "DELETE FROM module_index_errors WHERE module_name = ?",
-            -1, &deleteError, nullptr);
-
-        if (!deleteIndex || !deleteStatus || !insertRow || !markIndexed || !deleteError) {
-            if (deleteIndex) sqlite3_finalize(deleteIndex);
-            if (deleteStatus) sqlite3_finalize(deleteStatus);
-            if (insertRow) sqlite3_finalize(insertRow);
-            if (markIndexed) sqlite3_finalize(markIndexed);
-            if (deleteError) sqlite3_finalize(deleteError);
-            sqlite3_exec(writeDb, "ROLLBACK;", nullptr, nullptr, nullptr);
-            writeError("Failed to prepare imported-module index statements.");
-            sqlite3_close(writeDb);
-            return;
-        }
-
-        bindText(deleteIndex, 1, moduleName);
-        sqlite3_step(deleteIndex);
-        bindText(deleteStatus, 1, moduleName);
-        sqlite3_step(deleteStatus);
-
-        int insertedEntries = 0;
-        for (size_t i = 0; i < importedEntries.size(); ++i) {
-            const auto& entry = importedEntries[i];
-            bindText(insertRow, 1, resourceType);
-            bindText(insertRow, 2, moduleToken);
-            bindText(insertRow, 3, "");
-            bindText(insertRow, 4, entry.title);
-            bindText(insertRow, 5, entry.plainText);
-            bindText(insertRow, 6, "");
-            bindText(insertRow, 7, moduleName);
-            bindText(insertRow, 8, entry.key);
-            if (sqlite3_step(insertRow) != SQLITE_DONE) {
-                sqlite3_reset(insertRow);
-                sqlite3_clear_bindings(insertRow);
-                sqlite3_exec(writeDb, "ROLLBACK;", nullptr, nullptr, nullptr);
-                sqlite3_finalize(deleteIndex);
-                sqlite3_finalize(deleteStatus);
-                sqlite3_finalize(insertRow);
-                sqlite3_finalize(markIndexed);
-                sqlite3_finalize(deleteError);
-                writeError("Failed to insert imported module index entry.");
-                sqlite3_close(writeDb);
-                return;
-            }
-            ++insertedEntries;
-            sqlite3_reset(insertRow);
-            sqlite3_clear_bindings(insertRow);
-            setProgress(static_cast<int>(((i + 1) * 100) /
-                                         std::max<size_t>(importedEntries.size(), 1)));
-        }
-
-        bindText(markIndexed, 1, moduleName);
-        bindText(markIndexed, 2, resourceType);
-        bindText(markIndexed, 3, moduleSignature);
-        sqlite3_bind_int(markIndexed, 4, insertedEntries);
-        bool marked = sqlite3_step(markIndexed) == SQLITE_DONE;
-
-        bindText(deleteError, 1, moduleName);
-        sqlite3_step(deleteError);
-
-        sqlite3_finalize(deleteIndex);
-        sqlite3_finalize(deleteStatus);
-        sqlite3_finalize(insertRow);
-        sqlite3_finalize(markIndexed);
-        sqlite3_finalize(deleteError);
-
-        if (marked) {
-            sqlite3_exec(writeDb, "COMMIT;", nullptr, nullptr, nullptr);
-            setProgress(100);
-        } else {
-            sqlite3_exec(writeDb, "ROLLBACK;", nullptr, nullptr, nullptr);
-            writeError("Failed to finalize imported module index metadata.");
-        }
+    ModuleScanSource source;
+    std::string sourceError;
+    if (!prepareModuleScanSource(moduleName, catalog, importedModuleMgr_, sourceError, source)) {
+        writeError(sourceError);
         sqlite3_close(writeDb);
         return;
     }
 
-    std::unique_ptr<sword::SWConfig> bundledSysConfig;
-    std::unique_ptr<sword::SWMgr> mgr;
-    const std::string bundlePath = bundledSwordDataPath();
-    if (!bundlePath.empty()) {
-        bundledSysConfig = std::make_unique<sword::SWConfig>();
-        bundledSysConfig->setValue("Install", "DataPath", bundlePath.c_str());
-
-        auto& install = bundledSysConfig->getSection("Install");
-#if defined(__APPLE__)
-        if (bundlePath != "/usr/local/share/sword") {
-            install.insert({sword::SWBuf("AugmentPath"),
-                            sword::SWBuf("/usr/local/share/sword")});
-        }
-        if (bundlePath != "/opt/homebrew/share/sword") {
-            install.insert({sword::SWBuf("AugmentPath"),
-                            sword::SWBuf("/opt/homebrew/share/sword")});
-        }
-#elif !defined(_WIN32)
-        if (bundlePath != "/usr/share/sword") {
-            install.insert({sword::SWBuf("AugmentPath"),
-                            sword::SWBuf("/usr/share/sword")});
-        }
-        if (bundlePath != "/usr/local/share/sword") {
-            install.insert({sword::SWBuf("AugmentPath"),
-                            sword::SWBuf("/usr/local/share/sword")});
-        }
-#endif
-
-        mgr = std::unique_ptr<sword::SWMgr>(new sword::SWMgr(
-            nullptr, bundledSysConfig.get(), true,
-            new sword::MarkupFilterMgr(sword::FMT_XHTML, sword::ENC_UTF8)));
-    } else {
-        mgr = std::unique_ptr<sword::SWMgr>(new sword::SWMgr(
-            nullptr, nullptr, true,
-            new sword::MarkupFilterMgr(sword::FMT_XHTML, sword::ENC_UTF8)));
-    }
-    if (mgr) {
-        for (const auto& path : allUserSwordDataPaths()) {
-            mgr->augmentModules(path.c_str());
-        }
-    }
-    sword::SWModule* mod = mgr ? mgr->getModule(moduleName.c_str()) : nullptr;
-    if (!mod) {
-        writeError("Module not found while rebuilding index.");
-        sqlite3_close(writeDb);
-        return;
-    }
-
-    std::string resourceType = !catalogEntry.resourceType.empty()
-                                   ? catalogEntry.resourceType
-                                   : searchResourceTypeTokenForModuleType(
-                                         mod->getType() ? mod->getType() : "");
-    if (!isSearchableResourceTypeToken(resourceType)) {
-        writeError("Unsupported searchable module type.");
-        sqlite3_close(writeDb);
-        return;
-    }
-
-    std::string moduleToken = !catalogEntry.moduleToken.empty()
-                                  ? catalogEntry.moduleToken
-                                  : normalizeFilterToken(moduleName);
-    std::string moduleSignature = !catalogEntry.signature.empty()
-                                      ? catalogEntry.signature
-                                      : buildModuleSignature(
-                                            ModuleInfo{moduleName, "", mod->getType() ? mod->getType() : ""},
-                                            resourceType,
-                                            moduleToken);
-
-    mgr->setGlobalOption("Strong's Numbers", "On");
-    mgr->setGlobalOption("Morphological Tags", "On");
-    mgr->setGlobalOption("Footnotes", "On");
-    mgr->setGlobalOption("Cross-references", "On");
-    mgr->setGlobalOption("Headings", "On");
-
-    auto collectSequentialKeys = [](sword::SWModule* target,
-                                    std::vector<std::string>& keysOut,
-                                    std::unordered_map<std::string, std::string>& titlesOut) {
-        if (!target) return;
-        std::unique_ptr<sword::SWKey> restoreKey(
-            target->getKey() ? target->getKey()->clone() : nullptr);
-        const bool hadSkipConsecutiveLinks = target->isSkipConsecutiveLinks();
-        target->setSkipConsecutiveLinks(true);
-        target->setPosition(sword::TOP);
-        if (!target->popError()) {
-            std::string lastKey;
-            for (size_t count = 0; count < 500000; ++count) {
-                std::string key = trimCopy(target->getKeyText());
-                if (!key.empty() && key != lastKey) {
-                    keysOut.push_back(key);
-                    titlesOut.emplace(key, key);
-                    lastKey = key;
-                }
-                (*target)++;
-                if (target->popError()) break;
-            }
-        }
-        target->setSkipConsecutiveLinks(hadSkipConsecutiveLinks);
-        if (restoreKey) {
-            target->setKey(*restoreKey);
-            target->popError();
-        }
-    };
-
-    std::vector<std::string> keyedEntries;
-    std::unordered_map<std::string, std::string> entryTitles;
-
-    std::unique_ptr<sword::SWKey> createdKey(mod->createKey());
-    if (resourceType == "general_book") {
-        if (auto* treeKey = dynamic_cast<sword::TreeKey*>(createdKey.get())) {
-            std::vector<GeneralBookTocEntry> toc;
-            treeKey->root();
-            if (treeKey->hasChildren() && treeKey->firstChild()) {
-                appendGeneralBookTocEntries(treeKey, 0, toc);
-            }
-            for (const auto& entry : toc) {
-                std::string key = trimCopy(entry.key);
-                if (key.empty()) continue;
-                keyedEntries.push_back(key);
-                std::string label = trimCopy(entry.label);
-                entryTitles.emplace(key, label.empty() ? key : label);
-            }
-        } else {
-            collectSequentialKeys(mod, keyedEntries, entryTitles);
-        }
-    } else {
-        collectSequentialKeys(mod, keyedEntries, entryTitles);
-    }
-
-    if (keyedEntries.empty()) {
-        writeError(resourceType == "bible"
-                       ? "Bible module has no traversable entries."
-                       : "Module has no traversable entries to index.");
-        sqlite3_close(writeDb);
-        return;
-    }
-
-    int totalEntries = static_cast<int>(keyedEntries.size());
+    int totalEntries = static_cast<int>(source.imported
+                                            ? source.importedEntries.size()
+                                            : source.keyedEntries.size());
     if (totalEntries <= 0) totalEntries = 1;
 
     int processedEntries = 0;
@@ -2305,8 +2710,8 @@ void SearchIndexer::indexModuleNow(const std::string& moduleName) {
                                 const std::string& content,
                                 const std::string& strongsText,
                                 const std::string& keyText) -> bool {
-        bindText(insertRow, 1, resourceType);
-        bindText(insertRow, 2, moduleToken);
+        bindText(insertRow, 1, source.resourceType);
+        bindText(insertRow, 2, source.moduleToken);
         bindText(insertRow, 3, scopeToken);
         bindText(insertRow, 4, title);
         bindText(insertRow, 5, content);
@@ -2324,38 +2729,53 @@ void SearchIndexer::indexModuleNow(const std::string& moduleName) {
     bool failed = false;
     std::string failureMessage;
 
-    if (resourceType == "bible") {
+    if (source.imported) {
+        for (size_t i = 0; i < source.importedEntries.size(); ++i) {
+            const auto& entry = source.importedEntries[i];
+            if (!insertCurrentRow("",
+                                  entry.title.empty() ? entry.key : entry.title,
+                                  entry.plainText,
+                                  "",
+                                  entry.key)) {
+                failed = true;
+                failureMessage = "Failed to insert imported module index entry.";
+                break;
+            }
+            setProgress(static_cast<int>(((i + 1) * 100) /
+                                         std::max<size_t>(source.importedEntries.size(), 1)));
+        }
+    } else if (source.resourceType == "bible") {
         // First pass: collect plain text with options off
-        mgr->setGlobalOption("Strong's Numbers", "Off");
-        mgr->setGlobalOption("Morphological Tags", "Off");
-        mgr->setGlobalOption("Footnotes", "Off");
-        mgr->setGlobalOption("Cross-references", "Off");
-        mgr->setGlobalOption("Headings", "Off");
+        source.mgr->setGlobalOption("Strong's Numbers", "Off");
+        source.mgr->setGlobalOption("Morphological Tags", "Off");
+        source.mgr->setGlobalOption("Footnotes", "Off");
+        source.mgr->setGlobalOption("Cross-references", "Off");
+        source.mgr->setGlobalOption("Headings", "Off");
 
         std::vector<std::string> plainTexts;
-        plainTexts.reserve(keyedEntries.size());
-        for (const auto& key : keyedEntries) {
+        plainTexts.reserve(source.keyedEntries.size());
+        for (const auto& key : source.keyedEntries) {
             if (stopRequested_.load()) {
                 cancelled = true;
                 break;
             }
-            mod->setKey(key.c_str());
-            if (mod->popError()) {
+            source.mod->setKey(key.c_str());
+            if (source.mod->popError()) {
                 plainTexts.emplace_back();
                 continue;
             }
-            const char* plainRaw = mod->stripText();
+            const char* plainRaw = source.mod->stripText();
             plainTexts.push_back(trimCopy(plainRaw ? plainRaw : ""));
         }
 
         // Second pass: collect XHTML with options on, then insert
-        mgr->setGlobalOption("Strong's Numbers", "On");
-        mgr->setGlobalOption("Morphological Tags", "On");
-        mgr->setGlobalOption("Footnotes", "On");
-        mgr->setGlobalOption("Cross-references", "On");
-        mgr->setGlobalOption("Headings", "On");
+        source.mgr->setGlobalOption("Strong's Numbers", "On");
+        source.mgr->setGlobalOption("Morphological Tags", "On");
+        source.mgr->setGlobalOption("Footnotes", "On");
+        source.mgr->setGlobalOption("Cross-references", "On");
+        source.mgr->setGlobalOption("Headings", "On");
 
-        for (size_t ki = 0; ki < keyedEntries.size() && !cancelled; ++ki) {
+        for (size_t ki = 0; ki < source.keyedEntries.size() && !cancelled; ++ki) {
             if (stopRequested_.load()) {
                 cancelled = true;
                 break;
@@ -2364,19 +2784,21 @@ void SearchIndexer::indexModuleNow(const std::string& moduleName) {
             ++processedEntries;
             if ((processedEntries % 128) == 0) bumpProgress();
 
-            const auto& key = keyedEntries[ki];
-            mod->setKey(key.c_str());
-            if (mod->popError()) continue;
+            const auto& key = source.keyedEntries[ki];
+            source.mod->setKey(key.c_str());
+            if (source.mod->popError()) continue;
 
             std::string plain = ki < plainTexts.size() ? plainTexts[ki] : "";
-            std::string xhtml = std::string(mod->renderText().c_str());
+            std::string xhtml = std::string(source.mod->renderText().c_str());
 
-            std::string keyText = trimCopy(mod->getKeyText() ? mod->getKeyText() : "");
+            std::string keyText = trimCopy(source.mod->getKeyText()
+                                               ? source.mod->getKeyText()
+                                               : "");
             if (keyText.empty()) keyText = key;
 
             std::string title = keyText;
             std::string scopeToken;
-            if (auto* vk = dynamic_cast<sword::VerseKey*>(mod->getKey())) {
+            if (auto* vk = dynamic_cast<sword::VerseKey*>(source.mod->getKey())) {
                 const char* bookName = vk->getBookName();
                 scopeToken = makeBibleScopeToken(
                     vk->getTestament(), bookName ? bookName : "");
@@ -2388,7 +2810,7 @@ void SearchIndexer::indexModuleNow(const std::string& moduleName) {
             }
         }
     } else {
-        for (const auto& key : keyedEntries) {
+        for (const auto& key : source.keyedEntries) {
             if (stopRequested_.load()) {
                 cancelled = true;
                 break;
@@ -2397,14 +2819,14 @@ void SearchIndexer::indexModuleNow(const std::string& moduleName) {
             ++processedEntries;
             if ((processedEntries % 64) == 0) bumpProgress();
 
-            mod->setKey(key.c_str());
-            if (mod->popError()) continue;
+            source.mod->setKey(key.c_str());
+            if (source.mod->popError()) continue;
 
-            const char* plainRaw = mod->stripText();
+            const char* plainRaw = source.mod->stripText();
             std::string plain = trimCopy(plainRaw ? plainRaw : "");
             std::string title = key;
-            auto titleIt = entryTitles.find(key);
-            if (titleIt != entryTitles.end() && !trimCopy(titleIt->second).empty()) {
+            auto titleIt = source.entryTitles.find(key);
+            if (titleIt != source.entryTitles.end() && !trimCopy(titleIt->second).empty()) {
                 title = titleIt->second;
             }
 
@@ -2419,8 +2841,8 @@ void SearchIndexer::indexModuleNow(const std::string& moduleName) {
 
     if (!cancelled && !failed) {
         bindText(markIndexed, 1, moduleName);
-        bindText(markIndexed, 2, resourceType);
-        bindText(markIndexed, 3, moduleSignature);
+        bindText(markIndexed, 2, source.resourceType);
+        bindText(markIndexed, 3, source.moduleSignature);
         sqlite3_bind_int(markIndexed, 4, insertedEntries);
         const bool marked = (sqlite3_step(markIndexed) == SQLITE_DONE);
         sqlite3_reset(markIndexed);
