@@ -158,6 +158,8 @@ public:
                                    bool activateTab = false);
     DailyWorkspaceState currentDailyWorkspaceState() const;
     void setDailyWorkspaceState(const DailyWorkspaceState& state);
+    /// Move Daily workspace dates to today's devotional and completion-aware plan day.
+    void refreshDailyDatesForToday();
     std::string selectedDailyReadingPlanLabel() const;
     std::string selectedDailyReadingPlanSummaryHtml(const std::string& dateIso,
                                                     bool includePlanLabel = true) const;

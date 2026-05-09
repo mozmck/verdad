@@ -251,6 +251,8 @@ private:
 
     bool tabCacheEvictionScheduled_ = false;
     bool statusPollScheduled_ = false;
+    bool dailyDateCheckScheduled_ = false;
+    std::string lastDailyDateIso_;
     std::string lastStatusBarText_;
     std::string transientStatusText_;
     std::chrono::steady_clock::time_point transientStatusUntil_{};
@@ -304,6 +306,10 @@ private:
 
     /// Periodic status poll callback.
     static void onStatusPoll(void* data);
+
+    /// Refresh daily devotional/plan dates when the local date changes.
+    void checkDailyDateRollover();
+    static void onDailyDateCheck(void* data);
 
     /// Schedule eviction of old tab render buffers after the current UI work.
     void scheduleTabSnapshotEviction();

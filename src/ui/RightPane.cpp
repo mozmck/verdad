@@ -3201,6 +3201,15 @@ void RightPane::setDailyWorkspaceState(const DailyWorkspaceState& state) {
     refreshDailyWorkspace(true);
 }
 
+void RightPane::refreshDailyDatesForToday() {
+    const std::string todayIso = reading::formatIsoDate(reading::today());
+
+    dailyWorkspaceState_.selectedDateIso = todayIso;
+    dailyWorkspaceState_.readingPlanSelectedDateIso.clear();
+    ensureDailyWorkspaceDates();
+    refreshDailyWorkspace(true);
+}
+
 std::string RightPane::selectedDailyReadingPlanLabel() const {
     if (!app_) return "";
 
@@ -4139,6 +4148,15 @@ std::string RightPane::defaultEditableReadingPlanDateIso(int planId) const {
                   return lhs->sequenceNumber < rhs->sequenceNumber;
               });
 
+    bool sawCompletedThroughToday = false;
+    for (const ReadingPlanDay* day : sortedDays) {
+        if (day->dateIso > todayIso) break;
+        if (day->completed) {
+            sawCompletedThroughToday = true;
+        } else if (sawCompletedThroughToday) {
+            return day->dateIso;
+        }
+    }
     for (const ReadingPlanDay* day : sortedDays) {
         if (!day->completed && day->dateIso >= todayIso) {
             return day->dateIso;
@@ -4159,6 +4177,18 @@ std::string RightPane::defaultSwordReadingPlanDateIso(const std::string& moduleN
     const auto& days = swordReadingPlanTemplateDays(moduleName);
     if (days.empty()) return todayIso;
 
+    bool sawCompletedThroughToday = false;
+    for (const auto& day : days) {
+        const std::string dateIso =
+            app_->readingPlanManager().swordScheduledDateForDay(moduleName,
+                                                                day.sequenceNumber);
+        if (!reading::isIsoDateInRange(dateIso) || dateIso > todayIso) continue;
+        if (app_->readingPlanManager().swordDayCompleted(moduleName, dateIso)) {
+            sawCompletedThroughToday = true;
+        } else if (sawCompletedThroughToday) {
+            return dateIso;
+        }
+    }
     for (const auto& day : days) {
         const std::string dateIso =
             app_->readingPlanManager().swordScheduledDateForDay(moduleName,

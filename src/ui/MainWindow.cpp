@@ -11,6 +11,7 @@
 #include "ui/StyledTabs.h"
 #include "ui/UiFontUtils.h"
 #include "ui/WrappingChoice.h"
+#include "reading/DateUtils.h"
 #include "sword/SwordManager.h"
 #include "search/SearchIndexer.h"
 #include "app/PerfTrace.h"
@@ -55,6 +56,7 @@ namespace {
 namespace fs = std::filesystem;
 constexpr const char* kVerdadProjectUrl = "https://github.com/mozmck/verdad";
 constexpr int kDefaultMaxCachedTabDocs = 4;
+constexpr double kDailyDateCheckSeconds = 60.0 * 60.0;
 
 std::string trimCopy(const std::string& s) {
     size_t start = 0;
@@ -952,6 +954,9 @@ MainWindow::MainWindow(VerdadApp* app, int W, int H, const char* title)
     updateStatusBar();
     Fl::add_timeout(0.25, onStatusPoll, this);
     statusPollScheduled_ = true;
+    lastDailyDateIso_ = reading::formatIsoDate(reading::today());
+    Fl::add_timeout(kDailyDateCheckSeconds, onDailyDateCheck, this);
+    dailyDateCheckScheduled_ = true;
 }
 
 MainWindow::~MainWindow() {
@@ -970,6 +975,10 @@ MainWindow::~MainWindow() {
     if (statusPollScheduled_) {
         Fl::remove_timeout(onStatusPoll, this);
         statusPollScheduled_ = false;
+    }
+    if (dailyDateCheckScheduled_) {
+        Fl::remove_timeout(onDailyDateCheck, this);
+        dailyDateCheckScheduled_ = false;
     }
     if (searchHelpWindow_) {
         searchHelpWindow_->hide();
@@ -2416,6 +2425,30 @@ void MainWindow::onStatusPoll(void* data) {
     self->updateStatusBar();
     Fl::repeat_timeout(0.25, onStatusPoll, self);
     self->statusPollScheduled_ = true;
+}
+
+void MainWindow::checkDailyDateRollover() {
+    const std::string todayIso = reading::formatIsoDate(reading::today());
+    if (lastDailyDateIso_.empty()) {
+        lastDailyDateIso_ = todayIso;
+        return;
+    }
+    if (todayIso == lastDailyDateIso_) return;
+
+    lastDailyDateIso_ = todayIso;
+    if (rightPane_) {
+        rightPane_->refreshDailyDatesForToday();
+    }
+}
+
+void MainWindow::onDailyDateCheck(void* data) {
+    auto* self = static_cast<MainWindow*>(data);
+    if (!self) return;
+
+    self->dailyDateCheckScheduled_ = false;
+    self->checkDailyDateRollover();
+    Fl::repeat_timeout(kDailyDateCheckSeconds, onDailyDateCheck, self);
+    self->dailyDateCheckScheduled_ = true;
 }
 
 void MainWindow::scheduleTabSnapshotEviction() {
