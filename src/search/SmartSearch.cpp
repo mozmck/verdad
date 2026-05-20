@@ -322,6 +322,7 @@ const std::vector<SynonymGroup>& englishSynonyms() {
         {{"seed", "grain", "wheat", "barley", "harvest", "crop"}},
 
         // Time
+        {{"today", "to day", "to-day"}},
         {{"day", "morning", "dawn", "daybreak", "sunrise"}},
         {{"night", "evening", "dusk", "sunset", "twilight"}},
         {{"sabbath", "rest", "seventh day"}},
