@@ -1183,6 +1183,9 @@ void MainWindow::activateStudyTab(int index) {
     perf::ScopeTimer timer("MainWindow::activateStudyTab");
     if (index < 0 || index >= static_cast<int>(studyTabs_.size())) return;
     Fl_Widget* targetGroup = studyTabs_[index].tabGroup;
+    if (studyTabsWidget_ && targetGroup && studyTabsWidget_->value() != targetGroup) {
+        studyTabsWidget_->value(targetGroup);
+    }
     if (activeStudyTab_ == index && appliedStudyTabGroup_ == targetGroup) {
         syncBibleHistoryUi();
         updateActiveStudyTabLabel();
@@ -1192,13 +1195,13 @@ void MainWindow::activateStudyTab(int index) {
 
     perf::StepTimer step;
     int from = activeStudyTab_;
-    captureActiveTabState();
+    captureStudyTabState(from);
     perf::logf("activateStudyTab from=%d to=%d captureActiveTabState: %.3f ms",
                from, index, step.elapsedMs());
     step.reset();
     const bool cacheDocs = configuredMaxCachedTabDocs() > 0;
     if (cacheDocs) {
-        captureActiveTabDisplayBuffers();
+        captureStudyTabDisplayBuffers(from);
         scheduleTabSnapshotEviction();
     } else {
         evictOldTabSnapshots();
@@ -1404,6 +1407,7 @@ void MainWindow::syncBibleHistoryUi() {
 
 void MainWindow::onBibleStudyContextChanged() {
     if (activeStudyTab_ < 0 || activeStudyTab_ >= static_cast<int>(studyTabs_.size())) return;
+    if (applyingTabState_) return;
 
     captureActiveTabState();
     if (!suppressHistoryRecording_) {
@@ -1486,11 +1490,11 @@ void MainWindow::updateActiveStudyTabLabel() {
     studyTabsWidget_->redraw();
 }
 
-void MainWindow::captureActiveTabState() {
+void MainWindow::captureStudyTabState(int index) {
     if (applyingTabState_) return;
-    if (activeStudyTab_ < 0 || activeStudyTab_ >= static_cast<int>(studyTabs_.size())) return;
+    if (index < 0 || index >= static_cast<int>(studyTabs_.size())) return;
 
-    StudyContext& ctx = studyTabs_[activeStudyTab_];
+    StudyContext& ctx = studyTabs_[index];
     if (biblePane_) {
         ctx.state.module = biblePane_->currentModule();
         ctx.state.book = biblePane_->currentBook();
@@ -1516,12 +1520,16 @@ void MainWindow::captureActiveTabState() {
     }
 }
 
-void MainWindow::captureActiveTabDisplayBuffers() {
+void MainWindow::captureActiveTabState() {
+    captureStudyTabState(activeStudyTab_);
+}
+
+void MainWindow::captureStudyTabDisplayBuffers(int index) {
     perf::ScopeTimer timer("MainWindow::captureActiveTabDisplayBuffers");
     if (applyingTabState_) return;
-    if (activeStudyTab_ < 0 || activeStudyTab_ >= static_cast<int>(studyTabs_.size())) return;
+    if (index < 0 || index >= static_cast<int>(studyTabs_.size())) return;
 
-    StudyContext& ctx = studyTabs_[activeStudyTab_];
+    StudyContext& ctx = studyTabs_[index];
     perf::StepTimer step;
     if (biblePane_) {
         BiblePane::DisplayBuffer b = biblePane_->takeDisplayBuffer();
@@ -1536,7 +1544,7 @@ void MainWindow::captureActiveTabDisplayBuffers() {
         ctx.bibleBuffer.valid = b.valid;
         ctx.hasBibleBuffer = b.valid;
         perf::logf("captureActiveTabDisplayBuffers tab=%d biblePane_->takeDisplayBuffer: %.3f ms (valid=%d)",
-                   activeStudyTab_, step.elapsedMs(), b.valid ? 1 : 0);
+                   index, step.elapsedMs(), b.valid ? 1 : 0);
         step.reset();
     }
     if (rightPane_) {
@@ -1563,11 +1571,15 @@ void MainWindow::captureActiveTabDisplayBuffers() {
         ctx.hasRightBuffer = ctx.rightBuffer.commentary.valid ||
                              ctx.rightBuffer.dictionary.valid;
         perf::logf("captureActiveTabDisplayBuffers tab=%d rightPane_->takeDisplayBuffer: %.3f ms (c=%d d=%d)",
-                   activeStudyTab_,
+                   index,
                    step.elapsedMs(),
                    ctx.rightBuffer.commentary.valid ? 1 : 0,
                    ctx.rightBuffer.dictionary.valid ? 1 : 0);
     }
+}
+
+void MainWindow::captureActiveTabDisplayBuffers() {
+    captureStudyTabDisplayBuffers(activeStudyTab_);
 }
 
 void MainWindow::evictOldTabSnapshots() {
@@ -2511,7 +2523,8 @@ int MainWindow::handle(int event) {
 
     int handled = Fl_Double_Window::handle(event);
 
-    if ((event == FL_RELEASE || event == FL_KEYDOWN || event == FL_SHORTCUT) &&
+    if ((event == FL_PUSH || event == FL_RELEASE ||
+         event == FL_KEYDOWN || event == FL_SHORTCUT) &&
         !applyingTabState_) {
         syncStudyTabSelection();
     }

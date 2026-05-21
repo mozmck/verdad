@@ -289,10 +289,16 @@ private:
     void syncBibleHistoryUi();
     void navigateToHistoryIndex(int index);
 
+    /// Capture current shared pane state into the given tab context.
+    void captureStudyTabState(int index);
+
     /// Capture current shared pane state into the active tab context.
     void captureActiveTabState();
 
-    /// Move rendered pane buffers out of the active tab for fast tab restore.
+    /// Move current rendered pane buffers into the given tab context for fast restore.
+    void captureStudyTabDisplayBuffers(int index);
+
+    /// Move current rendered pane buffers into the active tab context for fast restore.
     void captureActiveTabDisplayBuffers();
 
     /// Evict litehtml doc from least-recently-used tabs to limit memory.

@@ -87,7 +87,8 @@ int StyledTabs::handle(int event) {
 
     if (handled &&
         selectionCb_ &&
-        (event == FL_RELEASE || event == FL_KEYBOARD || event == FL_SHORTCUT)) {
+        (event == FL_PUSH || event == FL_RELEASE ||
+         event == FL_KEYBOARD || event == FL_SHORTCUT)) {
         Fl_Widget* afterSelected = value();
         if (afterSelected && afterSelected != beforeSelected) {
             selectionCb_(afterSelected);
