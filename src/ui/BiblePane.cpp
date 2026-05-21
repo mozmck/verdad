@@ -1105,6 +1105,7 @@ void BiblePane::setHtmlStyleOverride(const std::string& css) {
             canUpdateVerseSelectionInPlace()) {
             syncVerseSelectionInPlace(htmlStoredSelectedVerse_, currentVerse_);
         }
+        ensureCurrentVerseSelectionStyle();
     }
 }
 
@@ -1493,6 +1494,7 @@ void BiblePane::restoreDisplayBuffer(const DisplayBuffer& buffer) {
         canUpdateVerseSelectionInPlace()) {
         syncVerseSelectionInPlace(htmlStoredSelectedVerse_, currentVerse_);
     }
+    ensureCurrentVerseSelectionStyle();
 }
 
 void BiblePane::restoreDisplayBuffer(DisplayBuffer&& buffer) {
@@ -1514,6 +1516,7 @@ void BiblePane::restoreDisplayBuffer(DisplayBuffer&& buffer) {
         canUpdateVerseSelectionInPlace()) {
         syncVerseSelectionInPlace(htmlStoredSelectedVerse_, currentVerse_);
     }
+    ensureCurrentVerseSelectionStyle();
 }
 
 void BiblePane::buildNavBar() {
@@ -1753,6 +1756,7 @@ void BiblePane::updateDisplay() {
 
     htmlWidget_->setHtml(html);
     htmlStoredSelectedVerse_ = hasVerseMarkup ? currentVerse_ : 0;
+    ensureCurrentVerseSelectionStyle();
     perf::logf("BiblePane::updateDisplay htmlWidget_->setHtml: %.3f ms", step.elapsedMs());
     step.reset();
     if (currentVerse_ > 0) {
@@ -1784,6 +1788,15 @@ void BiblePane::syncVerseSelectionInPlace(int oldVerse, int newVerse) {
     htmlWidget_->updateElementTreeStyleSnippetById(
         verseElementId(oldVerse),
         verseElementId(newVerse),
+        selectedVerseInlineStyleSnippet(),
+        false);
+}
+
+void BiblePane::ensureCurrentVerseSelectionStyle() {
+    if (!htmlWidget_ || currentVerse_ <= 0) return;
+    htmlWidget_->updateElementTreeStyleSnippetById(
+        "",
+        verseElementId(currentVerse_),
         selectedVerseInlineStyleSnippet(),
         false);
 }

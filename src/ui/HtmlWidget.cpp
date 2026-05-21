@@ -1716,8 +1716,8 @@ void HtmlWidget::updateElementTreeStyleSnippetById(const std::string& removeId,
     int oldScroll = scrollY_;
     int oldContentWidth = contentWidth_;
     int oldContentHeight = contentHeight_;
+    renderDocument();
     if (relayout) {
-        renderDocument();
         if (contentWidth_ != oldContentWidth || contentHeight_ != oldContentHeight) {
             updateScrollbar(true);
         }
