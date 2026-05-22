@@ -237,6 +237,89 @@ std::string normalizeBookLookupKey(const std::string& text) {
     return out;
 }
 
+std::string ordinalBookLookupKey(const std::string& text) {
+    std::string trimmed = module_choice::trimCopy(text);
+    if (trimmed.empty()) return "";
+
+    auto skipSeparators = [&trimmed](size_t pos) {
+        while (pos < trimmed.size()) {
+            unsigned char c = static_cast<unsigned char>(trimmed[pos]);
+            if (std::isalnum(c)) break;
+            ++pos;
+        }
+        return pos;
+    };
+
+    unsigned char first = static_cast<unsigned char>(trimmed.front());
+    if (first >= '1' && first <= '3') {
+        size_t restPos = skipSeparators(1);
+        std::string rest = normalizeBookLookupKey(trimmed.substr(restPos));
+        if (rest.empty()) return "";
+
+        const char* roman = first == '1' ? "i" : (first == '2' ? "ii" : "iii");
+        return std::string(roman) + rest;
+    }
+
+    size_t romanLen = 0;
+    while (romanLen < trimmed.size() && romanLen < 3) {
+        char c = static_cast<char>(
+            std::tolower(static_cast<unsigned char>(trimmed[romanLen])));
+        if (c != 'i') break;
+        ++romanLen;
+    }
+    if (romanLen == 0) return "";
+
+    size_t afterRoman = romanLen;
+    if (afterRoman < trimmed.size() &&
+        std::isalnum(static_cast<unsigned char>(trimmed[afterRoman]))) {
+        return "";
+    }
+    if (romanLen > 3) return "";
+
+    size_t restPos = skipSeparators(afterRoman);
+    std::string rest = normalizeBookLookupKey(trimmed.substr(restPos));
+    if (rest.empty()) return "";
+
+    return std::to_string(static_cast<int>(romanLen)) + rest;
+}
+
+std::vector<std::string> bookLookupKeys(const std::string& text) {
+    std::vector<std::string> keys;
+    std::string normalized = normalizeBookLookupKey(text);
+    if (!normalized.empty()) keys.push_back(normalized);
+
+    std::string ordinal = ordinalBookLookupKey(text);
+    if (!ordinal.empty() &&
+        std::find(keys.begin(), keys.end(), ordinal) == keys.end()) {
+        keys.push_back(std::move(ordinal));
+    }
+    return keys;
+}
+
+bool anyBookKeyEquals(const std::vector<std::string>& lhs,
+                      const std::vector<std::string>& rhs) {
+    for (const auto& left : lhs) {
+        for (const auto& right : rhs) {
+            if (left == right) return true;
+        }
+    }
+    return false;
+}
+
+bool anyBookKeyPrefixMatches(const std::vector<std::string>& queryKeys,
+                             const std::vector<std::string>& candidateKeys) {
+    for (const auto& query : queryKeys) {
+        for (const auto& candidate : candidateKeys) {
+            if (query.empty() || candidate.empty()) continue;
+            if (candidate.rfind(query, 0) == 0 ||
+                query.rfind(candidate, 0) == 0) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
 std::string canonicalBookLabelForModule(VerdadApp* app,
                                         const std::string& moduleName,
                                         const std::string& book) {
@@ -245,33 +328,29 @@ std::string canonicalBookLabelForModule(VerdadApp* app,
         return trimmedBook;
     }
 
-    const std::string wanted = normalizeBookLookupKey(trimmedBook);
-    if (wanted.empty()) return trimmedBook;
+    const std::vector<std::string> wantedKeys = bookLookupKeys(trimmedBook);
+    if (wantedKeys.empty()) return trimmedBook;
 
     std::vector<std::string> books = app->swordManager().getBookNames(moduleName);
     std::string uniquePrefixMatch;
     int prefixMatches = 0;
 
     for (const auto& candidate : books) {
-        const std::string normalizedCandidate = normalizeBookLookupKey(candidate);
-        if (normalizedCandidate == wanted) {
+        std::vector<std::string> candidateKeys = bookLookupKeys(candidate);
+        if (anyBookKeyEquals(wantedKeys, candidateKeys)) {
             return candidate;
         }
 
         std::string shortRef = app->swordManager().getShortReference(moduleName,
                                                                      candidate + " 1:1");
         SwordManager::VerseRef shortParsed = SwordManager::parseVerseRef(shortRef);
-        const std::string normalizedShortBook = normalizeBookLookupKey(shortParsed.book);
-        if (!normalizedShortBook.empty() && normalizedShortBook == wanted) {
+        std::vector<std::string> shortKeys = bookLookupKeys(shortParsed.book);
+        if (anyBookKeyEquals(wantedKeys, shortKeys)) {
             return candidate;
         }
 
-        const bool prefixMatch =
-            (!normalizedCandidate.empty() &&
-             normalizedCandidate.rfind(wanted, 0) == 0) ||
-            (!normalizedShortBook.empty() &&
-             normalizedShortBook.rfind(wanted, 0) == 0);
-        if (prefixMatch) {
+        if (anyBookKeyPrefixMatches(wantedKeys, candidateKeys) ||
+            anyBookKeyPrefixMatches(wantedKeys, shortKeys)) {
             uniquePrefixMatch = candidate;
             ++prefixMatches;
         }
@@ -2123,7 +2202,11 @@ void BiblePane::onDailyReadingBarLink(const std::string& url) {
     if (url.rfind("verdad-plan://open", 0) == 0) {
         const std::string ref = firstReadingListItem(extractQueryValue(url, "ref"));
         if (!ref.empty()) {
-            navigateToReference(ref);
+            if (app_ && app_->mainWindow()) {
+                app_->mainWindow()->navigateTo(ref);
+            } else {
+                navigateToReference(ref);
+            }
         }
         return;
     }
