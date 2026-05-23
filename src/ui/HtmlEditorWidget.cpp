@@ -3,7 +3,7 @@
 #include "app/VerdadApp.h"
 #include "ui/WrappingChoice.h"
 #include "ui/UiFontUtils.h"
-#include "sword/SwordManager.h"
+#include "sword/ScriptureReference.h"
 
 #include <FL/Fl.H>
 #include <FL/Fl_Button.H>
@@ -22,7 +22,6 @@
 #include <cstdlib>
 #include <cstring>
 #include <limits>
-#include <regex>
 #include <sstream>
 #include <string_view>
 
@@ -806,97 +805,13 @@ void parseHtmlToEditorContent(const std::string& html,
     }
 }
 
-struct VerseReferenceRange {
-    int start = 0;
-    int end = 0;
-};
-
-bool findValidVerseReferenceSuffix(const std::string& candidate,
-                                   int basePos,
-                                   VerseReferenceRange& rangeOut) {
-    for (size_t start = 0; start < candidate.size(); ++start) {
-        if (start > 0 &&
-            !std::isspace(static_cast<unsigned char>(candidate[start - 1]))) {
-            continue;
-        }
-
-        size_t textStart = start;
-        while (textStart < candidate.size() &&
-               std::isspace(static_cast<unsigned char>(candidate[textStart]))) {
-            ++textStart;
-        }
-
-        std::string suffix = candidate.substr(textStart);
-        if (suffix.empty() || !SwordManager::isValidVerseRef(suffix)) continue;
-
-        rangeOut.start = basePos + static_cast<int>(textStart);
-        rangeOut.end = basePos + static_cast<int>(candidate.size());
-        return true;
-    }
-    return false;
-}
-
-std::vector<std::pair<int, int>> verseReferenceRanges(const std::string& text) {
-    static const std::regex refRe(
-        R"(((?:[1-3]\s+)?[A-Za-z]+(?:\s+[A-Za-z]+)*\s+\d+:\d+(?:-\d+)?))");
-
-    std::vector<std::pair<int, int>> ranges;
-    auto begin = std::sregex_iterator(text.begin(), text.end(), refRe);
-    auto end = std::sregex_iterator();
-    for (auto it = begin; it != end; ++it) {
-        std::string candidate = (*it)[1].str();
-        VerseReferenceRange range;
-        if (findValidVerseReferenceSuffix(candidate,
-                                          static_cast<int>((*it).position(1)),
-                                          range)) {
-            ranges.emplace_back(range.start, range.end);
-        }
-    }
-    return ranges;
-}
-
-std::string verseReferenceAtPosition(const std::string& text,
-                                     int pos,
-                                     int* startOut = nullptr,
-                                     int* endOut = nullptr) {
-    if (startOut) *startOut = 0;
-    if (endOut) *endOut = 0;
-    if (text.empty()) return "";
-
-    pos = std::clamp(pos, 0, static_cast<int>(text.size()));
-    for (const auto& range : verseReferenceRanges(text)) {
-        bool inside = (pos >= range.first && pos < range.second);
-        bool onRightEdge = (pos > 0 && (pos - 1) >= range.first && (pos - 1) < range.second);
-        if (!inside && !onRightEdge) continue;
-        if (startOut) *startOut = range.first;
-        if (endOut) *endOut = range.second;
-        return text.substr(static_cast<size_t>(range.first),
-                           static_cast<size_t>(range.second - range.first));
-    }
-    return "";
-}
-
 std::string escapeAndAutoLink(const std::string& text) {
-    static const std::regex refRe(
-        R"(((?:[1-3]\s+)?[A-Za-z]+(?:\s+[A-Za-z]+)*\s+\d+:\d+(?:-\d+)?))");
-
     std::string out;
     size_t cursor = 0;
-    auto begin = std::sregex_iterator(text.begin(), text.end(), refRe);
-    auto end = std::sregex_iterator();
-    for (auto it = begin; it != end; ++it) {
-        std::string candidate = (*it)[1].str();
-        VerseReferenceRange range;
-        if (!findValidVerseReferenceSuffix(
-                candidate,
-                static_cast<int>((*it).position(1)),
-                range)) {
-            continue;
-        }
-
-        size_t pos = static_cast<size_t>(range.start);
-        size_t len = static_cast<size_t>(range.end - range.start);
-        candidate = text.substr(pos, len);
+    for (const auto& range : scripture::verseReferenceRanges(text)) {
+        size_t pos = static_cast<size_t>(range.first);
+        size_t len = static_cast<size_t>(range.second - range.first);
+        std::string candidate = text.substr(pos, len);
 
         out += escapeHtml(text.substr(cursor, pos - cursor));
         out += "<a href=\"sword://" + escapeHtml(candidate) + "\">" +
@@ -1798,7 +1713,8 @@ void HtmlEditorTextArea::showContextMenuForPosition(int pos, int screenX, int sc
     std::string text = currentText();
     int refStart = 0;
     int refEnd = 0;
-    std::string verseRef = verseReferenceAtPosition(text, pos, &refStart, &refEnd);
+    std::string verseRef =
+        scripture::verseReferenceAtPosition(text, pos, &refStart, &refEnd);
     bool canInsertVerse = !verseRef.empty() && static_cast<bool>(owner_->verseTextProvider_);
 
     Fl_Menu_Button menu(screenX, screenY, 0, 0);
@@ -2067,7 +1983,7 @@ void HtmlEditorTextArea::rebuildLayout(int contentWidth) const {
 
     const std::string& text = cachedText_;
     std::vector<bool> linkFlags(text.size(), false);
-    for (const auto& range : verseReferenceRanges(text)) {
+    for (const auto& range : scripture::verseReferenceRanges(text)) {
         for (int i = std::max(0, range.first);
              i < range.second && i < static_cast<int>(linkFlags.size()); ++i) {
             linkFlags[static_cast<size_t>(i)] = true;

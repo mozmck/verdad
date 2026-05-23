@@ -98,6 +98,8 @@ set(SOURCES
     src/app/VerdadApp.cpp
     src/app/PlatformPaths.cpp
     src/import/ImportedModuleManager.cpp
+    src/sword/ScriptureLink.cpp
+    src/sword/ScriptureReference.cpp
     src/sword/SwordManager.cpp
     src/sword/SwordPaths.cpp
     src/search/SearchIndexer.cpp
@@ -131,6 +133,8 @@ set(HEADERS
     src/app/PerfTrace.h
     src/app/PlatformPaths.h
     src/import/ImportedModuleManager.h
+    src/sword/ScriptureLink.h
+    src/sword/ScriptureReference.h
     src/sword/SwordManager.h
     src/sword/SwordPaths.h
     src/search/SearchIndexer.h
@@ -172,6 +176,8 @@ add_executable(verdad-bench
     src/bench_main.cpp
     src/app/PlatformPaths.cpp
     src/import/ImportedModuleManager.cpp
+    src/sword/ScriptureLink.cpp
+    src/sword/ScriptureReference.cpp
     src/sword/SwordManager.cpp
     src/sword/SwordPaths.cpp
     src/ui/HtmlWidget.cpp

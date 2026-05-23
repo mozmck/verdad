@@ -15,6 +15,7 @@
 #include "ui/UiFontUtils.h"
 #include "ui/StyledTabs.h"
 #include "ui/WrappingChoice.h"
+#include "sword/ScriptureLink.h"
 #include "sword/SwordManager.h"
 #include "app/PerfTrace.h"
 
@@ -33,7 +34,6 @@
 #include <cctype>
 #include <cstdio>
 #include <cstring>
-#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <functional>
@@ -673,74 +673,6 @@ std::string htmlEscape(const std::string& text) {
     return out;
 }
 
-std::string urlEncode(const std::string& text) {
-    static const char* kHex = "0123456789ABCDEF";
-    std::string out;
-    out.reserve(text.size() + 8);
-    for (unsigned char c : text) {
-        if (std::isalnum(c) || c == '-' || c == '_' || c == '.' || c == '~') {
-            out.push_back(static_cast<char>(c));
-        } else {
-            out.push_back('%');
-            out.push_back(kHex[(c >> 4) & 0x0F]);
-            out.push_back(kHex[c & 0x0F]);
-        }
-    }
-    return out;
-}
-
-std::string urlDecode(const std::string& text) {
-    auto hexValue = [](char c) -> int {
-        if (c >= '0' && c <= '9') return c - '0';
-        if (c >= 'a' && c <= 'f') return 10 + (c - 'a');
-        if (c >= 'A' && c <= 'F') return 10 + (c - 'A');
-        return -1;
-    };
-
-    std::string out;
-    out.reserve(text.size());
-    for (size_t i = 0; i < text.size(); ++i) {
-        if (text[i] == '%' && i + 2 < text.size()) {
-            int hi = hexValue(text[i + 1]);
-            int lo = hexValue(text[i + 2]);
-            if (hi >= 0 && lo >= 0) {
-                out.push_back(static_cast<char>((hi << 4) | lo));
-                i += 2;
-                continue;
-            }
-        }
-        if (text[i] == '+') {
-            out.push_back(' ');
-        } else {
-            out.push_back(text[i]);
-        }
-    }
-    return out;
-}
-
-std::string extractQueryValue(const std::string& url, const char* key) {
-    if (!key || !*key) return "";
-    const std::string marker = std::string(key) + "=";
-    size_t queryPos = url.find('?');
-    if (queryPos == std::string::npos) return "";
-    size_t pos = url.find(marker, queryPos + 1);
-    if (pos == std::string::npos) return "";
-    pos += marker.size();
-    size_t end = url.find('&', pos);
-    return urlDecode(url.substr(pos, end == std::string::npos ? std::string::npos : end - pos));
-}
-
-std::string firstReadingListItem(const std::string& reference) {
-    std::string ref = trimCopy(reference);
-    if (ref.empty()) return ref;
-
-    size_t split = ref.find_first_of(",;");
-    if (split == std::string::npos) return ref;
-
-    std::string first = trimCopy(ref.substr(0, split));
-    return first.empty() ? ref : first;
-}
-
 int readingPlanChoiceIndexForEditableId(
     const std::vector<DailyReadingPlanChoiceItem>& items,
     int planId) {
@@ -952,8 +884,9 @@ std::vector<std::string> extractSwordReadingPlanReferences(
     for (auto it = begin; it != end; ++it) {
         std::string url = (*it)[1].str();
         std::string compactRef;
-        if (url.rfind("verdad-plan://open", 0) == 0) {
-            compactRef = firstReadingListItem(extractQueryValue(url, "ref"));
+        if (scripture::isReadingPlanOpenUrl(url)) {
+            compactRef =
+                scripture::firstReadingListItem(scripture::readingPlanOpenReference(url));
         } else {
             compactRef = trimCopy(SwordManager::verseReferenceFromLink(url));
         }
@@ -1000,8 +933,8 @@ std::string rewriteSwordReadingPlanLinks(const std::string& html,
             if (refsOut && seen.insert(compactRef).second) {
                 refsOut->push_back(compactRef);
             }
-            out += "href=\"verdad-plan://open?ref=";
-            out += urlEncode(compactRef);
+            out += "href=\"";
+            out += scripture::readingPlanOpenUrl(compactRef);
             out += "\"";
         } else {
             out.append(html, pos, len);
@@ -1072,8 +1005,8 @@ std::string buildReadingPlanPassageLinkHtml(const std::string& reference) {
     if (trimmedReference.empty()) return "";
 
     std::ostringstream html;
-    html << "<a href=\"verdad-plan://open?ref="
-         << urlEncode(trimmedReference) << "\">"
+    html << "<a href=\""
+         << scripture::readingPlanOpenUrl(trimmedReference) << "\">"
          << htmlEscape(trimmedReference) << "</a>";
     return html.str();
 }
@@ -1140,8 +1073,8 @@ std::string buildReadingPlanDayHtml(const ReadingPlan& plan,
     } else {
         html << "<ul>\n";
         for (const auto& passage : day->passages) {
-            html << "<li><a href=\"verdad-plan://open?ref="
-                 << urlEncode(passage.reference) << "\">"
+            html << "<li><a href=\""
+                 << scripture::readingPlanOpenUrl(passage.reference) << "\">"
                  << htmlEscape(passage.reference) << "</a></li>\n";
         }
         html << "</ul>\n";
@@ -5061,7 +4994,7 @@ void RightPane::refreshDailyWorkspace(bool /*forceCalendarReload*/) {
 
 void RightPane::openReadingPlanPassage(const std::string& reference) {
     if (!app_ || !app_->mainWindow()) return;
-    std::string ref = firstReadingListItem(reference);
+    std::string ref = scripture::firstReadingListItem(reference);
     if (ref.empty()) return;
     app_->mainWindow()->navigateTo(ref);
 }
@@ -5069,8 +5002,8 @@ void RightPane::openReadingPlanPassage(const std::string& reference) {
 void RightPane::onDailyContentLink(const std::string& url) {
     if (!app_ || !app_->mainWindow()) return;
 
-    if (url.rfind("verdad-plan://open", 0) == 0) {
-        openReadingPlanPassage(extractQueryValue(url, "ref"));
+    if (scripture::isReadingPlanOpenUrl(url)) {
+        openReadingPlanPassage(scripture::readingPlanOpenReference(url));
         return;
     }
 

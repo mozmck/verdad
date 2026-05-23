@@ -11,6 +11,8 @@
 #include "ui/TagPanel.h"
 #include "ui/VerseContext.h"
 #include "reading/DateUtils.h"
+#include "sword/ScriptureLink.h"
+#include "sword/ScriptureReference.h"
 #include "sword/SwordManager.h"
 #include "tags/TagManager.h"
 #include "app/PerfTrace.h"
@@ -21,7 +23,6 @@
 
 #include <algorithm>
 #include <cctype>
-#include <cstdlib>
 #include <fstream>
 #include <functional>
 #include <iomanip>
@@ -225,140 +226,6 @@ int findChoiceIndexByLabel(const Fl_Choice* choice, const std::string& label) {
     return -1;
 }
 
-std::string normalizeBookLookupKey(const std::string& text) {
-    std::string out;
-    out.reserve(text.size());
-    for (char c : text) {
-        unsigned char uc = static_cast<unsigned char>(c);
-        if (std::isalnum(uc)) {
-            out.push_back(static_cast<char>(std::tolower(uc)));
-        }
-    }
-    return out;
-}
-
-std::string ordinalBookLookupKey(const std::string& text) {
-    std::string trimmed = module_choice::trimCopy(text);
-    if (trimmed.empty()) return "";
-
-    auto skipSeparators = [&trimmed](size_t pos) {
-        while (pos < trimmed.size()) {
-            unsigned char c = static_cast<unsigned char>(trimmed[pos]);
-            if (std::isalnum(c)) break;
-            ++pos;
-        }
-        return pos;
-    };
-
-    unsigned char first = static_cast<unsigned char>(trimmed.front());
-    if (first >= '1' && first <= '3') {
-        size_t restPos = skipSeparators(1);
-        std::string rest = normalizeBookLookupKey(trimmed.substr(restPos));
-        if (rest.empty()) return "";
-
-        const char* roman = first == '1' ? "i" : (first == '2' ? "ii" : "iii");
-        return std::string(roman) + rest;
-    }
-
-    size_t romanLen = 0;
-    while (romanLen < trimmed.size() && romanLen < 3) {
-        char c = static_cast<char>(
-            std::tolower(static_cast<unsigned char>(trimmed[romanLen])));
-        if (c != 'i') break;
-        ++romanLen;
-    }
-    if (romanLen == 0) return "";
-
-    size_t afterRoman = romanLen;
-    if (afterRoman < trimmed.size() &&
-        std::isalnum(static_cast<unsigned char>(trimmed[afterRoman]))) {
-        return "";
-    }
-    if (romanLen > 3) return "";
-
-    size_t restPos = skipSeparators(afterRoman);
-    std::string rest = normalizeBookLookupKey(trimmed.substr(restPos));
-    if (rest.empty()) return "";
-
-    return std::to_string(static_cast<int>(romanLen)) + rest;
-}
-
-std::vector<std::string> bookLookupKeys(const std::string& text) {
-    std::vector<std::string> keys;
-    std::string normalized = normalizeBookLookupKey(text);
-    if (!normalized.empty()) keys.push_back(normalized);
-
-    std::string ordinal = ordinalBookLookupKey(text);
-    if (!ordinal.empty() &&
-        std::find(keys.begin(), keys.end(), ordinal) == keys.end()) {
-        keys.push_back(std::move(ordinal));
-    }
-    return keys;
-}
-
-bool anyBookKeyEquals(const std::vector<std::string>& lhs,
-                      const std::vector<std::string>& rhs) {
-    for (const auto& left : lhs) {
-        for (const auto& right : rhs) {
-            if (left == right) return true;
-        }
-    }
-    return false;
-}
-
-bool anyBookKeyPrefixMatches(const std::vector<std::string>& queryKeys,
-                             const std::vector<std::string>& candidateKeys) {
-    for (const auto& query : queryKeys) {
-        for (const auto& candidate : candidateKeys) {
-            if (query.empty() || candidate.empty()) continue;
-            if (candidate.rfind(query, 0) == 0 ||
-                query.rfind(candidate, 0) == 0) {
-                return true;
-            }
-        }
-    }
-    return false;
-}
-
-std::string canonicalBookLabelForModule(VerdadApp* app,
-                                        const std::string& moduleName,
-                                        const std::string& book) {
-    const std::string trimmedBook = module_choice::trimCopy(book);
-    if (!app || moduleName.empty() || trimmedBook.empty()) {
-        return trimmedBook;
-    }
-
-    const std::vector<std::string> wantedKeys = bookLookupKeys(trimmedBook);
-    if (wantedKeys.empty()) return trimmedBook;
-
-    std::vector<std::string> books = app->swordManager().getBookNames(moduleName);
-    std::string uniquePrefixMatch;
-    int prefixMatches = 0;
-
-    for (const auto& candidate : books) {
-        std::vector<std::string> candidateKeys = bookLookupKeys(candidate);
-        if (anyBookKeyEquals(wantedKeys, candidateKeys)) {
-            return candidate;
-        }
-
-        std::string shortRef = app->swordManager().getShortReference(moduleName,
-                                                                     candidate + " 1:1");
-        SwordManager::VerseRef shortParsed = SwordManager::parseVerseRef(shortRef);
-        std::vector<std::string> shortKeys = bookLookupKeys(shortParsed.book);
-        if (anyBookKeyEquals(wantedKeys, shortKeys)) {
-            return candidate;
-        }
-
-        if (anyBookKeyPrefixMatches(wantedKeys, candidateKeys) ||
-            anyBookKeyPrefixMatches(wantedKeys, shortKeys)) {
-            uniquePrefixMatch = candidate;
-            ++prefixMatches;
-        }
-    }
-
-    return prefixMatches == 1 ? uniquePrefixMatch : trimmedBook;
-}
-
 std::string htmlEscape(const std::string& text) {
     std::string out;
     out.reserve(text.size());
@@ -418,51 +285,6 @@ std::string monthDayLabel(const std::string& isoDate) {
     std::string month = reading::monthName(date.month);
     if (month.empty()) return isoDate;
     return month + " " + std::to_string(date.day);
-}
-
-std::string urlDecode(const std::string& text) {
-    std::string decoded;
-    decoded.reserve(text.size());
-
-    for (size_t i = 0; i < text.size(); ++i) {
-        char c = text[i];
-        if (c == '%' && i + 2 < text.size()) {
-            const std::string hex = text.substr(i + 1, 2);
-            char* end = nullptr;
-            long value = std::strtol(hex.c_str(), &end, 16);
-            if (end && *end == '\0') {
-                decoded.push_back(static_cast<char>(value));
-                i += 2;
-                continue;
-            }
-        }
-        decoded.push_back(c == '+' ? ' ' : c);
-    }
-
-    return decoded;
-}
-
-std::string extractQueryValue(const std::string& url, const char* key) {
-    if (!key || !*key) return "";
-    const std::string marker = std::string(key) + "=";
-    size_t queryPos = url.find('?');
-    if (queryPos == std::string::npos) return "";
-    size_t pos = url.find(marker, queryPos + 1);
-    if (pos == std::string::npos) return "";
-    pos += marker.size();
-    size_t end = url.find('&', pos);
-    return urlDecode(url.substr(pos, end == std::string::npos ? std::string::npos : end - pos));
-}
-
-std::string firstReadingListItem(const std::string& reference) {
-    std::string ref = module_choice::trimCopy(reference);
-    if (ref.empty()) return ref;
-
-    size_t split = ref.find_first_of(",;");
-    if (split == std::string::npos) return ref;
-
-    std::string first = module_choice::trimCopy(ref.substr(0, split));
-    return first.empty() ? ref : first;
 }
 
 std::string decodeBasicHtmlEntities(const std::string& text) {
@@ -1000,7 +822,9 @@ void BiblePane::layoutNavBarControls() {
 
 void BiblePane::navigateTo(const std::string& book, int chapter, int verse) {
     if (moduleName_.empty()) return;
-    const std::string canonicalBook = canonicalBookLabelForModule(app_, moduleName_, book);
+    const std::string canonicalBook = app_
+        ? scripture::canonicalBookLabelForModule(app_->swordManager(), moduleName_, book)
+        : module_choice::trimCopy(book);
     if (canonicalBook.empty()) return;
 
     if (canonicalBook == currentBook_ && chapter == currentChapter_) {
@@ -1461,7 +1285,7 @@ void BiblePane::setStudyState(const std::string& module,
 
     currentBook_ = book.empty()
         ? currentBook_
-        : canonicalBookLabelForModule(app_, moduleName_, book);
+        : scripture::canonicalBookLabelForModule(app_->swordManager(), moduleName_, book);
     if (currentBook_.empty()) currentBook_ = "Genesis";
 
     currentChapter_ = std::max(1, chapter);
@@ -2199,8 +2023,9 @@ void BiblePane::openDailyReadingPlanWorkspace() {
 }
 
 void BiblePane::onDailyReadingBarLink(const std::string& url) {
-    if (url.rfind("verdad-plan://open", 0) == 0) {
-        const std::string ref = firstReadingListItem(extractQueryValue(url, "ref"));
+    if (scripture::isReadingPlanOpenUrl(url)) {
+        const std::string ref =
+            scripture::firstReadingListItem(scripture::readingPlanOpenReference(url));
         if (!ref.empty()) {
             if (app_ && app_->mainWindow()) {
                 app_->mainWindow()->navigateTo(ref);
