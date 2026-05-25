@@ -1684,13 +1684,10 @@ bool BiblePane::canUpdateVerseSelectionInPlace() const {
 void BiblePane::syncVerseSelectionInPlace(int oldVerse, int newVerse) {
     perf::ScopeTimer timer("BiblePane::syncVerseSelectionInPlace");
     if (!htmlWidget_) return;
-    htmlWidget_->updateElementClassById(verseElementId(oldVerse),
-                                        verseElementId(newVerse),
-                                        "verse-selected",
-                                        false);
-    htmlWidget_->updateElementTreeStyleSnippetById(
+    htmlWidget_->updateElementClassAndStyleSnippetById(
         verseElementId(oldVerse),
         verseElementId(newVerse),
+        "verse-selected",
         selectedVerseInlineStyleSnippet(),
         false);
 }

@@ -75,24 +75,25 @@ struct VerseReferenceRange {
 bool findValidVerseReferenceSuffix(const std::string& candidate,
                                    int basePos,
                                    VerseReferenceRange& rangeOut) {
-    for (size_t start = 0; start < candidate.size(); ++start) {
-        if (start > 0 &&
-            !std::isspace(static_cast<unsigned char>(candidate[start - 1]))) {
-            continue;
+    size_t pos = 0;
+    while (pos < candidate.size()) {
+        while (pos < candidate.size() &&
+               std::isspace(static_cast<unsigned char>(candidate[pos]))) {
+            ++pos;
+        }
+        if (pos >= candidate.size()) break;
+
+        std::string suffix = candidate.substr(pos);
+        if (SwordManager::isValidVerseRef(suffix)) {
+            rangeOut.start = basePos + static_cast<int>(pos);
+            rangeOut.end = basePos + static_cast<int>(candidate.size());
+            return true;
         }
 
-        size_t textStart = start;
-        while (textStart < candidate.size() &&
-               std::isspace(static_cast<unsigned char>(candidate[textStart]))) {
-            ++textStart;
+        while (pos < candidate.size() &&
+               !std::isspace(static_cast<unsigned char>(candidate[pos]))) {
+            ++pos;
         }
-
-        std::string suffix = candidate.substr(textStart);
-        if (suffix.empty() || !SwordManager::isValidVerseRef(suffix)) continue;
-
-        rangeOut.start = basePos + static_cast<int>(textStart);
-        rangeOut.end = basePos + static_cast<int>(candidate.size());
-        return true;
     }
     return false;
 }

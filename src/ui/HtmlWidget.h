@@ -99,6 +99,13 @@ public:
                                            const std::string& styleSnippet,
                                            bool relayout = true);
 
+    /// Toggle a CSS class and style snippet on up to two elements in one render pass.
+    void updateElementClassAndStyleSnippetById(const std::string& removeId,
+                                               const std::string& addId,
+                                               const std::string& className,
+                                               const std::string& styleSnippet,
+                                               bool relayout = true);
+
     /// Scroll to a named anchor
     void scrollToAnchor(const std::string& anchor);
 

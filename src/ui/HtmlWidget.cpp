@@ -683,6 +683,29 @@ bool updateElementTreeStyleSnippetRecursive(const std::shared_ptr<litehtml::elem
     return changed;
 }
 
+bool applyStyleSnippetToElementTreeRecursive(const std::shared_ptr<litehtml::element>& root,
+                                              const std::string& styleSnippet,
+                                              bool enable) {
+    if (!root) return false;
+
+    bool changed = false;
+    const char* current = root->get_attr("style", "");
+    const std::string currentStyle = current ? current : "";
+    const std::string normalizedCurrent = normalizeInlineStyle(currentStyle);
+    const std::string updatedStyle = enable
+        ? addInlineStyleSnippet(currentStyle, styleSnippet)
+        : removeInlineStyleSnippet(currentStyle, styleSnippet);
+    if (updatedStyle != normalizedCurrent) {
+        root->set_attr("style", updatedStyle.c_str());
+        changed = true;
+    }
+
+    for (const auto& child : root->children()) {
+        changed = applyStyleSnippetToElementTreeRecursive(child, styleSnippet, enable) || changed;
+    }
+    return changed;
+}
+
 int parseVerseNumberValue(const char* text) {
     if (!text || !*text) return 0;
 
@@ -1711,6 +1734,48 @@ void HtmlWidget::updateElementTreeStyleSnippetById(const std::string& removeId,
     updateTree(removeId, false);
     updateTree(addId, true);
     if (!changed) return;
+
+    int oldScrollX = scrollX_;
+    int oldScroll = scrollY_;
+    int oldContentWidth = contentWidth_;
+    int oldContentHeight = contentHeight_;
+    renderDocument();
+    if (relayout) {
+        if (contentWidth_ != oldContentWidth || contentHeight_ != oldContentHeight) {
+            updateScrollbar(true);
+        }
+        setScrollX(oldScrollX);
+        setScrollY(oldScroll);
+    }
+    redraw();
+}
+
+void HtmlWidget::updateElementClassAndStyleSnippetById(const std::string& removeId,
+                                                       const std::string& addId,
+                                                       const std::string& className,
+                                                       const std::string& styleSnippet,
+                                                       bool relayout) {
+    if (!doc_) return;
+    auto root = doc_->root();
+    if (!root) return;
+
+    bool changed = false;
+    auto processElement = [&](const std::string& id, bool enable) {
+        if (id.empty()) return;
+        auto el = findElementByIdRecursive(root, id);
+        if (!el) return;
+        if (!className.empty())
+            changed = el->set_class(className.c_str(), enable) || changed;
+        if (!styleSnippet.empty())
+            changed = applyStyleSnippetToElementTreeRecursive(el, styleSnippet, enable) || changed;
+    };
+    processElement(removeId, false);
+    processElement(addId, true);
+
+    if (!changed) return;
+
+    root->refresh_styles();
+    root->compute_styles();
 
     int oldScrollX = scrollX_;
     int oldScroll = scrollY_;
