@@ -71,6 +71,7 @@ private:
     std::string selectedTagName_;
     TagTarget selectedTarget_;
     bool hasSelectedTarget_ = false;
+    bool filterTargetsByText_ = true;
     ResourceFilter selectedResourceFilter_ = ResourceFilter::All;
 
     void layoutChildren();
