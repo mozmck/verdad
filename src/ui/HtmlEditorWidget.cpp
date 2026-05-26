@@ -1505,9 +1505,20 @@ int HtmlEditorTextArea::handle(int event) {
             owner_->syncToolbarState();
             return 1;
         }
-        if (Fl::event_button() != FL_LEFT_MOUSE) return 0;
-        take_focus();
         int pos = positionForPoint(Fl::event_x(), Fl::event_y());
+        if (Fl::event_button() != FL_LEFT_MOUSE) return 0;
+        const bool ctrl = (Fl::event_state() & FL_CTRL) != 0;
+        if (ctrl && owner_->referenceClickCallback_) {
+            std::string verseRef = scripture::verseReferenceAtPosition(
+                currentText(), pos);
+            if (!verseRef.empty()) {
+                take_focus();
+                owner_->referenceClickCallback_(verseRef);
+                return 1;
+            }
+        }
+
+        take_focus();
         const bool shift = (Fl::event_state() & FL_SHIFT) != 0;
         int clicks = Fl::event_clicks();
         if (clicks >= 2 && buffer_) {

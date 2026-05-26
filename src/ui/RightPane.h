@@ -487,6 +487,7 @@ private:
     bool saveDocumentToPath(const std::string& path);
     bool exportDocumentToOdtPath(const std::string& path);
     bool isManagedStudypadPath(const std::string& path) const;
+    void showDocumentReference(const std::string& reference);
     void loadCommentaryEditorForCurrentEntry();
     void applyCommentaryStyleOverride();
     void syncCommentarySelectionClass(int oldVerse, int newVerse);

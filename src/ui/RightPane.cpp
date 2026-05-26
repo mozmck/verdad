@@ -1908,6 +1908,10 @@ RightPane::RightPane(VerdadApp* app, int X, int Y, int W, int H)
         [this](const std::string& verseReference) {
             return buildStudypadVerseInsertHtml(app_, verseReference);
         });
+    documentsEditor_->setReferenceClickCallback(
+        [this](const std::string& verseReference) {
+            showDocumentReference(verseReference);
+        });
     documentsGroup_->end();
     documentsGroup_->resizable(documentsEditor_);
 
@@ -5546,6 +5550,24 @@ bool RightPane::saveDocument() {
         return saveDocumentAs();
     }
     return saveDocumentToPath(currentDocumentPath_);
+}
+
+void RightPane::showDocumentReference(const std::string& reference) {
+    if (!app_ || !app_->mainWindow() || !app_->mainWindow()->leftPane()) return;
+
+    std::string previewModule;
+    if (BiblePane* biblePane = app_->mainWindow()->biblePane()) {
+        previewModule = biblePane->currentModule();
+    }
+
+    std::vector<std::string> refs = app_->swordManager().verseReferencesFromLink(
+        "sword://" + reference, "", previewModule);
+    if (refs.empty()) {
+        refs.push_back(reference);
+    }
+
+    app_->mainWindow()->leftPane()->showReferenceResults(
+        previewModule, refs, "(linked verses)");
 }
 
 void RightPane::onHtmlLink(const std::string& url, bool commentarySource) {
