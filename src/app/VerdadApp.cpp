@@ -591,20 +591,6 @@ bool VerdadApp::initialize(int argc, char* argv[]) {
         }
     }
 
-    refreshSearchIndexCatalog(true);
-
-    if (mainWindow_ && searchIndexer_) {
-        if (!searchIndexer_->indexBackendAvailable()) {
-            std::string status = searchIndexer_->backendStatusMessage();
-            if (status.empty()) {
-                status = "Search index unavailable; using slower direct scanning.";
-            }
-            mainWindow_->showTransientStatus(status, 4.5);
-        } else if (!searchIndexer_->hasAnyIndexedData()) {
-            mainWindow_->showTransientStatus("Building search index in background.", 3.6);
-        }
-    }
-
     return true;
 }
 
@@ -612,6 +598,28 @@ int VerdadApp::run() {
     if (mainWindow_) {
         mainWindow_->show();
     }
+
+    Fl::add_timeout(0.05, [](void* data) {
+        auto* app = static_cast<VerdadApp*>(data);
+        if (!app) return;
+
+        app->refreshSearchIndexCatalog(true);
+
+        MainWindow* window = app->mainWindow();
+        SearchIndexer* indexer = app->searchIndexer();
+        if (!window || !indexer) return;
+
+        if (!indexer->indexBackendAvailable()) {
+            std::string status = indexer->backendStatusMessage();
+            if (status.empty()) {
+                status = "Search index unavailable; using slower direct scanning.";
+            }
+            window->showTransientStatus(status, 4.5);
+        } else if (!indexer->hasAnyIndexedData()) {
+            window->showTransientStatus("Building search index in background.", 3.6);
+        }
+    }, this);
+
     return Fl::run();
 }
 

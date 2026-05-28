@@ -48,7 +48,8 @@ std::vector<std::string> generateTypoVariants(const std::string& word);
 /// Each query word is expanded with synonyms and phonetic variants, then
 /// combined with OR within each word group and AND across word groups.
 std::string buildSmartFtsQuery(const std::string& query,
-                                const std::string& language = "en");
+                               const std::string& language = "en",
+                               const std::unordered_map<std::string, std::vector<std::string>>& spellingAlternatives = {});
 
 /// A match result with scoring metadata for smart search ranking.
 struct ScoredMatch {

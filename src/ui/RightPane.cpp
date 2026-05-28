@@ -3660,7 +3660,19 @@ void RightPane::ensureDictionaryKeysLoaded() {
     if (!dictionaryKeyInput_ || !app_ || currentDictionary_.empty()) return;
     if (dictionaryKeysModule_ == currentDictionary_ && dictionaryKeys_) return;
 
-    dictionaryKeys_ = app_->swordManager().getDictionaryKeys(currentDictionary_);
+    dictionaryKeys_.reset();
+    if (SearchIndexer* indexer = app_->searchIndexer()) {
+        std::vector<std::string> indexedKeys =
+            indexer->dictionaryKeys(currentDictionary_);
+        if (!indexedKeys.empty()) {
+            dictionaryKeys_ =
+                std::make_shared<const std::vector<std::string>>(
+                    std::move(indexedKeys));
+        }
+    }
+    if (!dictionaryKeys_) {
+        dictionaryKeys_ = app_->swordManager().getDictionaryKeys(currentDictionary_);
+    }
     dictionaryKeyIndices_.clear();
     if (dictionaryKeys_) {
         dictionaryKeyIndices_.reserve(dictionaryKeys_->size());

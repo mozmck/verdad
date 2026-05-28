@@ -1131,8 +1131,10 @@ std::vector<std::string> generateTypoVariants(const std::string& word) {
     return variants;
 }
 
-std::string buildSmartFtsQuery(const std::string& query,
-                                const std::string& language) {
+std::string buildSmartFtsQuery(
+    const std::string& query,
+    const std::string& language,
+    const std::unordered_map<std::string, std::vector<std::string>>& spellingAlternatives) {
     std::vector<std::string> words = splitWords(query);
     if (words.empty()) return "";
 
@@ -1165,16 +1167,31 @@ std::string buildSmartFtsQuery(const std::string& query,
             }
         }
 
-        // Add typo/misspelling variants so FTS5 can find close matches.
-        // This is the key mechanism for catching "holly"→"holy", "haly"→"holy".
-        auto typoVars = generateTypoVariants(word);
-        for (const auto& tv : typoVars) {
-            alternatives.insert(tv);
-        }
-        if (strippedWord != word) {
-            auto typoVars2 = generateTypoVariants(strippedWord);
-            for (const auto& tv : typoVars2) {
+        bool hasIndexedSpellingAlternatives = false;
+        auto addSpellingAlternatives = [&](const std::string& key) {
+            auto it = spellingAlternatives.find(key);
+            if (it == spellingAlternatives.end() || it->second.empty()) return;
+            hasIndexedSpellingAlternatives = true;
+            for (const auto& alt : it->second) {
+                std::string lowered = toLower(alt);
+                if (!lowered.empty()) alternatives.insert(std::move(lowered));
+            }
+        };
+        addSpellingAlternatives(word);
+        if (strippedWord != word) addSpellingAlternatives(strippedWord);
+
+        // If the indexer provided real indexed alternatives, prefer those over
+        // synthetic variants. Otherwise keep the older generated fallback.
+        if (!hasIndexedSpellingAlternatives) {
+            auto typoVars = generateTypoVariants(word);
+            for (const auto& tv : typoVars) {
                 alternatives.insert(tv);
+            }
+            if (strippedWord != word) {
+                auto typoVars2 = generateTypoVariants(strippedWord);
+                for (const auto& tv : typoVars2) {
+                    alternatives.insert(tv);
+                }
             }
         }
 

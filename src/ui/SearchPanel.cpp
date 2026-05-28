@@ -88,6 +88,13 @@ namespace {
 
 constexpr double kPreviewUpdateDelaySec = 0.08;
 constexpr double kStatusPollDelaySec = 0.1;
+constexpr int kLazySnippetBatchSize = 80;
+constexpr int kLazySnippetPrefetchRows = 120;
+constexpr size_t kResultBrowserBatchRows = 1500;
+constexpr size_t kFullResultMetricsLimit = 5000;
+constexpr unsigned char kLazySnippetLoaded = 0;
+constexpr unsigned char kLazySnippetUnloaded = 1;
+constexpr unsigned char kLazySnippetPending = 2;
 
 const VerdadApp::ThemePalette& currentThemePalette() {
     static const VerdadApp::ThemePalette fallback;
@@ -926,6 +933,8 @@ SearchPanel::SearchPanel(VerdadApp* app, int X, int Y, int W, int H)
 }
 
 SearchPanel::~SearchPanel() {
+    cancelPendingResultAppend();
+    cancelLazySnippetLoading();
     cancelActiveSearch();
     cancelPendingPreviewUpdate();
     if (indexingIndicatorActive_) {
@@ -952,6 +961,7 @@ void SearchPanel::setResultLineSpacing(int pixels) {
 }
 
 void SearchPanel::resetResultView() {
+    cancelPendingResultAppend();
     pendingPreviewModule_.clear();
     pendingPreviewKey_.clear();
     pendingPreviewResourceType_.clear();
@@ -960,6 +970,9 @@ void SearchPanel::resetResultView() {
     lastPreviewKey_.clear();
     resultDisplayKeys_.clear();
     resultLineWidths_.clear();
+    displayedResultCount_ = 0;
+    lazySnippetContext_ = LazySnippetContext{};
+    lazySnippetStates_.clear();
     resultRefColumnWidth_ = kResultRefColumnWidth;
     results_.clear();
     if (resultBrowser_) {
@@ -983,10 +996,7 @@ void SearchPanel::finalizeSearchResults(const std::string& moduleName,
     statusResultCountOverride_ = -1;
     sortResultsForDisplay(moduleName);
 
-    resultDisplayKeys_.clear();
-    for (const auto& r : results_) {
-        resultDisplayKeys_.push_back(resultDisplayLabel(r));
-    }
+    resultDisplayKeys_.assign(results_.size(), "");
     rebuildResultBrowserItems();
 
     std::string labelSuffix;
@@ -999,7 +1009,7 @@ void SearchPanel::finalizeSearchResults(const std::string& moduleName,
     }
     if (fallbackDeferred) {
         if (!labelSuffix.empty()) labelSuffix += " ";
-        labelSuffix += "(regex requires module index)";
+        labelSuffix += "(waiting for module index)";
     }
     std::string summary = resultSummarySuffix();
     if (!summary.empty()) {
@@ -1039,6 +1049,7 @@ void SearchPanel::finalizeSearchResults(const std::string& moduleName,
         }
     }
 
+    requestLazySnippetsForVisibleResults();
     redraw();
 }
 
@@ -1053,12 +1064,176 @@ void SearchPanel::cancelActiveSearch() {
     asyncSearchState_ = AsyncSearchState{};
 }
 
+void SearchPanel::cancelLazySnippetLoading() {
+    cancelLazySnippets_.store(true);
+    if (lazySnippetThread_.joinable()) {
+        lazySnippetThread_.join();
+    }
+    cancelLazySnippets_.store(false);
+
+    std::lock_guard<std::mutex> lock(lazySnippetMutex_);
+    lazySnippetWorkerActive_ = false;
+    lazySnippetUpdates_.clear();
+    ++lazySnippetGeneration_;
+    lazySnippetContext_ = LazySnippetContext{};
+    lazySnippetStates_.clear();
+}
+
+void SearchPanel::cancelPendingResultAppend() {
+    if (!resultAppendScheduled_) return;
+    Fl::remove_timeout(onDeferredResultAppend, this);
+    resultAppendScheduled_ = false;
+}
+
+void SearchPanel::prepareLazySnippetLoading(const LazySnippetContext& context) {
+    lazySnippetContext_ = context;
+    if (!lazySnippetContext_.active || results_.empty()) {
+        lazySnippetStates_.clear();
+        return;
+    }
+
+    lazySnippetStates_.assign(results_.size(), kLazySnippetUnloaded);
+    for (size_t i = 0; i < results_.size(); ++i) {
+        if (!results_[i].text.empty()) {
+            lazySnippetStates_[i] = kLazySnippetLoaded;
+        }
+    }
+}
+
+void SearchPanel::requestLazySnippetsForVisibleResults() {
+    if (!lazySnippetContext_.active || !resultBrowser_) return;
+    if (lazySnippetStates_.size() != results_.size()) return;
+
+    SearchIndexer* indexer = app_ ? app_->searchIndexer() : nullptr;
+    if (!indexer) return;
+
+    if (lazySnippetThread_.joinable()) {
+        bool workerActive = false;
+        {
+            std::lock_guard<std::mutex> lock(lazySnippetMutex_);
+            workerActive = lazySnippetWorkerActive_;
+        }
+        if (workerActive) return;
+        lazySnippetThread_.join();
+    }
+
+    const int lineHeight = std::max(1, resultBrowser_->textsize() +
+                                       resultBrowser_->linespacing() + 4);
+    const int visibleRows = std::max(20, resultBrowser_->h() / lineHeight + 4);
+    const int topLine = std::max(1, resultBrowser_->topline());
+    const int selectedLine = resultBrowser_->value();
+
+    std::vector<size_t> indexes;
+    indexes.reserve(kLazySnippetBatchSize);
+
+    auto addIndex = [&](int oneBasedLine) {
+        if (oneBasedLine <= 0 ||
+            oneBasedLine > static_cast<int>(lazySnippetStates_.size())) {
+            return;
+        }
+        size_t index = static_cast<size_t>(oneBasedLine - 1);
+        if (lazySnippetStates_[index] != kLazySnippetUnloaded) return;
+        if (std::find(indexes.begin(), indexes.end(), index) != indexes.end()) return;
+        indexes.push_back(index);
+    };
+
+    addIndex(selectedLine);
+
+    const int endLine = std::min(static_cast<int>(lazySnippetStates_.size()),
+                                 topLine + visibleRows + kLazySnippetPrefetchRows);
+    for (int line = topLine; line <= endLine &&
+         static_cast<int>(indexes.size()) < kLazySnippetBatchSize; ++line) {
+        addIndex(line);
+    }
+
+    if (indexes.empty()) return;
+
+    std::vector<SearchResult> batch;
+    batch.reserve(indexes.size());
+    for (size_t index : indexes) {
+        lazySnippetStates_[index] = kLazySnippetPending;
+        batch.push_back(results_[index]);
+    }
+
+    LazySnippetContext context = lazySnippetContext_;
+    int generation = 0;
+    {
+        std::lock_guard<std::mutex> lock(lazySnippetMutex_);
+        generation = lazySnippetGeneration_;
+        lazySnippetWorkerActive_ = true;
+    }
+
+    cancelLazySnippets_.store(false);
+    lazySnippetThread_ = std::thread([this, indexer, context, indexes = std::move(indexes),
+                                      batch = std::move(batch), generation]() mutable {
+        std::vector<SearchResult> snippets;
+        if (!cancelLazySnippets_.load()) {
+            snippets = indexer->buildResultSnippets(batch,
+                                                    context.kind,
+                                                    context.query,
+                                                    context.language,
+                                                    context.caseSensitive);
+        }
+
+        std::lock_guard<std::mutex> lock(lazySnippetMutex_);
+        if (!cancelLazySnippets_.load() && generation == lazySnippetGeneration_) {
+            const size_t count = std::min(indexes.size(), snippets.size());
+            for (size_t i = 0; i < count; ++i) {
+                lazySnippetUpdates_.push_back({indexes[i], std::move(snippets[i])});
+            }
+        }
+        lazySnippetWorkerActive_ = false;
+    });
+}
+
+bool SearchPanel::updateLazySnippetUi() {
+    std::vector<LazySnippetUpdate> updates;
+    bool workerActive = false;
+    {
+        std::lock_guard<std::mutex> lock(lazySnippetMutex_);
+        workerActive = lazySnippetWorkerActive_;
+        updates.swap(lazySnippetUpdates_);
+    }
+
+    if (!workerActive && lazySnippetThread_.joinable()) {
+        lazySnippetThread_.join();
+    }
+
+    bool applied = false;
+    for (auto& update : updates) {
+        if (update.index >= results_.size() ||
+            update.index >= lazySnippetStates_.size()) {
+            continue;
+        }
+
+        results_[update.index].text = std::move(update.result.text);
+        if (!update.result.title.empty()) {
+            results_[update.index].title = std::move(update.result.title);
+        }
+        lazySnippetStates_[update.index] = kLazySnippetLoaded;
+        if (update.index < resultDisplayKeys_.size()) {
+            resultDisplayKeys_[update.index] = resultDisplayLabel(results_[update.index]);
+        }
+        rebuildResultMetric(update.index);
+        applied = true;
+    }
+
+    if (applied && resultBrowser_) {
+        resultBrowser_->redraw();
+    }
+
+    requestLazySnippetsForVisibleResults();
+    return applied || workerActive;
+}
+
 void SearchPanel::startAsyncRegexSearch(const SearchIndexer::SearchRequest& request,
                                         const std::string& moduleName,
                                         const std::string& query,
                                         bool usedDirectFallback,
                                         bool indexingPending,
-                                        SearchIndexer* indexer) {
+                                        SearchIndexer* indexer,
+                                        bool lazySnippets,
+                                        const LazySnippetContext& lazyContext) {
     if (!indexer) return;
 
     {
@@ -1069,6 +1244,8 @@ void SearchPanel::startAsyncRegexSearch(const SearchIndexer::SearchRequest& requ
         asyncSearchState_.usedDirectFallback = usedDirectFallback;
         asyncSearchState_.indexingPending = indexingPending;
         asyncSearchState_.moduleName = moduleName;
+        asyncSearchState_.lazySnippets = lazySnippets;
+        asyncSearchState_.lazyContext = lazyContext;
     }
 
     statusResultCountOverride_ = 0;
@@ -1082,7 +1259,8 @@ void SearchPanel::startAsyncRegexSearch(const SearchIndexer::SearchRequest& requ
 
     cancelAsyncSearch_.store(false);
     searchThread_ = std::thread([this, request, moduleName, query,
-                                 usedDirectFallback, indexingPending, indexer]() {
+                                 usedDirectFallback, indexingPending, indexer,
+                                 lazySnippets, lazyContext]() {
         auto progressCallback = [this](const SearchIndexer::RegexSearchProgress& progress) {
             if (cancelAsyncSearch_.load()) return false;
 
@@ -1096,7 +1274,7 @@ void SearchPanel::startAsyncRegexSearch(const SearchIndexer::SearchRequest& requ
 
         std::vector<SearchResult> results = usedDirectFallback
             ? indexer->searchRegexDirect(request, query, false, 0, progressCallback)
-            : indexer->searchRegex(request, query, false, 0, progressCallback);
+            : indexer->searchRegex(request, query, false, 0, progressCallback, !lazySnippets);
 
         std::lock_guard<std::mutex> lock(asyncSearchMutex_);
         asyncSearchState_.active = false;
@@ -1107,6 +1285,8 @@ void SearchPanel::startAsyncRegexSearch(const SearchIndexer::SearchRequest& requ
         asyncSearchState_.indexingPending = indexingPending;
         asyncSearchState_.fallbackDeferred = false;
         asyncSearchState_.moduleName = moduleName;
+        asyncSearchState_.lazySnippets = lazySnippets;
+        asyncSearchState_.lazyContext = lazyContext;
         asyncSearchState_.results = std::move(results);
         asyncSearchState_.matches = static_cast<int>(asyncSearchState_.results.size());
         if (asyncSearchState_.total < asyncSearchState_.scanned) {
@@ -1182,6 +1362,9 @@ void SearchPanel::applyCompletedAsyncSearch() {
     }
 
     results_ = std::move(completed.results);
+    if (completed.lazySnippets) {
+        prepareLazySnippetLoading(completed.lazyContext);
+    }
     finalizeSearchResults(completed.moduleName,
                           completed.usedIndexer,
                           completed.usedDirectFallback,
@@ -1192,6 +1375,7 @@ void SearchPanel::applyCompletedAsyncSearch() {
 void SearchPanel::search(const std::string& query,
                          const std::string& moduleOverride) {
     cancelActiveSearch();
+    cancelLazySnippetLoading();
     cancelPendingPreviewUpdate();
     resetHighlightState();
     resetResultView();
@@ -1296,6 +1480,8 @@ void SearchPanel::search(const std::string& query,
     bool usedIndexer = false;
     bool usedDirectFallback = false;
     bool fallbackDeferred = false;
+    bool lazySnippets = false;
+    LazySnippetContext lazyContext;
     SearchIndexer* indexer = app_->searchIndexer();
     std::vector<std::string> relevantModules;
     std::vector<std::string> bibleFallbackModules;
@@ -1332,14 +1518,26 @@ void SearchPanel::search(const std::string& query,
     }
 
     const bool indexedSearchReady = indexer && indexer->canUseIndexedSearch(request);
+    const bool directFallbackAllowed =
+        !moduleName.empty() ||
+        (resourceTypes.size() == 1 && resourceTypes.front() == "bible");
     if (indexer && !indexedSearchReady) {
-        usedDirectFallback = true;
+        usedDirectFallback = directFallbackAllowed;
+        fallbackDeferred = !directFallbackAllowed;
     }
 
     if (indexer && regexSearch && !isStrongs) {
         stopIndexingIndicator();
+        if (!usedDirectFallback) {
+            lazySnippets = true;
+            lazyContext.active = true;
+            lazyContext.kind = SearchIndexer::SnippetKind::Regex;
+            lazyContext.query = trimmedQuery;
+            lazyContext.caseSensitive = false;
+        }
         startAsyncRegexSearch(request, moduleName, trimmedQuery,
-                              usedDirectFallback, indexingPending, indexer);
+                              usedDirectFallback, indexingPending, indexer,
+                              lazySnippets, lazyContext);
         redraw();
         return;
     }
@@ -1347,14 +1545,25 @@ void SearchPanel::search(const std::string& query,
     // Prefer indexed searches when the index exists.
     if (indexer && indexedSearchReady) {
         usedIndexer = true;
+        lazySnippets = true;
+        lazyContext.active = true;
         if (isStrongs) {
-            results_ = indexer->searchStrongs(request, strongsQuery);
+            lazyContext.kind = SearchIndexer::SnippetKind::Strongs;
+            lazyContext.query = strongsQuery;
+            results_ = indexer->searchStrongs(request, strongsQuery, 0, false);
         } else if (smartSearch) {
             std::string smartLang = detectSmartSearchLanguage(
                 moduleName, resourceTypes, searchableModules_);
-            results_ = indexer->searchSmart(request, trimmedQuery, smartLang);
+            lazyContext.kind = SearchIndexer::SnippetKind::Smart;
+            lazyContext.query = trimmedQuery;
+            lazyContext.language = smartLang;
+            results_ = indexer->searchSmart(request, trimmedQuery, smartLang, 0, false);
         } else {
-            results_ = indexer->searchWord(request, trimmedQuery, exactPhrase);
+            lazyContext.kind = exactPhrase
+                ? SearchIndexer::SnippetKind::ExactPhrase
+                : SearchIndexer::SnippetKind::Word;
+            lazyContext.query = trimmedQuery;
+            results_ = indexer->searchWord(request, trimmedQuery, exactPhrase, 0, false);
         }
     }
 
@@ -1452,6 +1661,9 @@ void SearchPanel::search(const std::string& query,
             if (result.resourceType.empty()) result.resourceType = "bible";
         }
     }
+    if (lazySnippets) {
+        prepareLazySnippetLoading(lazyContext);
+    }
     finalizeSearchResults(moduleName, usedIndexer, usedDirectFallback,
                           indexingPending, fallbackDeferred);
 }
@@ -1460,6 +1672,7 @@ void SearchPanel::showReferenceResults(const std::string& moduleName,
                                        const std::vector<std::string>& references,
                                        const std::string& statusSuffix) {
     cancelActiveSearch();
+    cancelLazySnippetLoading();
     cancelPendingPreviewUpdate();
     resetHighlightState();
     currentSearchQuery_.clear();
@@ -1510,6 +1723,7 @@ void SearchPanel::showReferenceResults(const std::string& moduleName,
 
 void SearchPanel::clear() {
     cancelActiveSearch();
+    cancelLazySnippetLoading();
     cancelPendingPreviewUpdate();
     resetHighlightState();
     resetResultView();
@@ -1521,19 +1735,40 @@ void SearchPanel::rebuildResultBrowserItems() {
     if (!resultBrowser_) return;
 
     const int selectedLine = resultBrowser_->value();
+    cancelPendingResultAppend();
     resultBrowser_->clear();
     resultBrowser_->value(0);
+    displayedResultCount_ = 0;
 
-    for (size_t i = 0; i < results_.size(); ++i) {
-        resultBrowser_->add(" ");
-    }
-    rebuildResultMetrics();
+    appendResultBrowserBatch();
 
     if (selectedLine > 0 &&
-        selectedLine <= static_cast<int>(results_.size())) {
+        selectedLine <= static_cast<int>(displayedResultCount_)) {
         resultBrowser_->value(selectedLine);
     }
     resultBrowser_->redraw();
+}
+
+void SearchPanel::appendResultBrowserBatch() {
+    if (!resultBrowser_) return;
+    resultAppendScheduled_ = false;
+
+    const size_t start = displayedResultCount_;
+    const size_t end = std::min(results_.size(), start + kResultBrowserBatchRows);
+    for (size_t i = start; i < end; ++i) {
+        ensureResultDisplayLabel(i);
+        resultBrowser_->add(" ");
+    }
+    displayedResultCount_ = end;
+
+    rebuildResultMetrics();
+    resultBrowser_->redraw();
+    requestLazySnippetsForVisibleResults();
+
+    if (displayedResultCount_ < results_.size()) {
+        resultAppendScheduled_ = true;
+        Fl::add_timeout(0.001, onDeferredResultAppend, this);
+    }
 }
 
 const SearchResult* SearchPanel::selectedResult() const {
@@ -1596,6 +1831,7 @@ void SearchPanel::populateModules() {
 
     for (const auto& module : searchableModules_) {
         std::string resourceType = searchResourceTypeTokenForModuleType(module.type);
+        if (resourceType == "dictionary") continue;
         if (!allowedTypes.empty() &&
             std::find(allowedTypes.begin(), allowedTypes.end(), resourceType) ==
                 allowedTypes.end()) {
@@ -1641,13 +1877,11 @@ void SearchPanel::populateResourceTypes() {
     } else if (domain == SearchDomain::LibraryOnly) {
         addTypeChoice("All library types", "");
         addTypeChoice("Commentaries", "commentary");
-        addTypeChoice("Dictionaries", "dictionary");
         addTypeChoice("General books", "general_book");
     } else {
         addTypeChoice("All types", "");
         addTypeChoice("Bible", "bible");
         addTypeChoice("Commentaries", "commentary");
-        addTypeChoice("Dictionaries", "dictionary");
         addTypeChoice("General books", "general_book");
     }
 
@@ -1736,9 +1970,9 @@ std::vector<std::string> SearchPanel::effectiveResourceTypes() const {
         return {selectedType};
     }
     if (domain == SearchDomain::LibraryOnly) {
-        return {"commentary", "dictionary", "general_book"};
+        return {"commentary", "general_book"};
     }
-    return {};
+    return {"bible", "commentary", "general_book"};
 }
 
 std::string SearchPanel::effectiveModuleSelection(const std::string& moduleOverride) const {
@@ -1908,6 +2142,26 @@ void SearchPanel::resetHighlightState() {
     currentSearchQuery_.clear();
 }
 
+int SearchPanel::measureMarkupWidth(const std::string& markup) const {
+    const auto chunks = normalizeMarkupWhitespace(parseHighlightedMarkup(markup));
+    int width = 0;
+    for (const auto& chunk : chunks) {
+        if (chunk.text.empty()) continue;
+        width += static_cast<int>(fl_width(chunk.text.c_str()));
+    }
+    return width;
+}
+
+void SearchPanel::ensureResultDisplayLabel(size_t index) {
+    if (index >= results_.size()) return;
+    if (resultDisplayKeys_.size() != results_.size()) {
+        resultDisplayKeys_.assign(results_.size(), "");
+    }
+    if (resultDisplayKeys_[index].empty()) {
+        resultDisplayKeys_[index] = resultDisplayLabel(results_[index]);
+    }
+}
+
 void SearchPanel::rebuildResultMetrics() {
     resultLineWidths_.clear();
     resultRefColumnWidth_ = kResultRefColumnWidth;
@@ -1915,30 +2169,50 @@ void SearchPanel::rebuildResultMetrics() {
 
     fl_font(resultBrowser_->textfont(), resultBrowser_->textsize());
 
-    auto measureMarkupWidth = [](const std::string& markup) -> int {
-        const auto chunks = normalizeMarkupWhitespace(
-            parseHighlightedMarkup(markup));
-        int width = 0;
-        for (const auto& chunk : chunks) {
-            if (chunk.text.empty()) continue;
-            width += static_cast<int>(fl_width(chunk.text.c_str()));
-        }
-        return width;
-    };
+    const size_t metricCount = results_.size() > kFullResultMetricsLimit
+        ? std::min(displayedResultCount_, results_.size())
+        : results_.size();
 
-    for (const auto& refLabel : resultDisplayKeys_) {
-        int width = measureMarkupWidth(refLabel) + (kResultLinePadding * 2);
+    for (size_t i = 0; i < metricCount; ++i) {
+        ensureResultDisplayLabel(i);
+        int width = measureMarkupWidth(resultDisplayKeys_[i]) + (kResultLinePadding * 2);
         resultRefColumnWidth_ = std::max(resultRefColumnWidth_, width);
     }
 
-    resultLineWidths_.reserve(results_.size());
-    for (size_t i = 0; i < results_.size(); ++i) {
+    resultLineWidths_.assign(results_.size(), resultBrowser_->w());
+    for (size_t i = 0; i < metricCount; ++i) {
         int width = resultRefColumnWidth_ + (kResultLinePadding * 2);
         if (i < results_.size() && !results_[i].text.empty()) {
             width += kResultColumnGap + measureMarkupWidth(results_[i].text);
         }
-        resultLineWidths_.push_back(width);
+        resultLineWidths_[i] = width;
     }
+}
+
+void SearchPanel::rebuildResultMetric(size_t index) {
+    if (!resultBrowser_ || index >= results_.size()) return;
+    fl_font(resultBrowser_->textfont(), resultBrowser_->textsize());
+
+    ensureResultDisplayLabel(index);
+    if (index < resultDisplayKeys_.size()) {
+        int refWidth = measureMarkupWidth(resultDisplayKeys_[index]) +
+                       (kResultLinePadding * 2);
+        if (refWidth > resultRefColumnWidth_) {
+            rebuildResultMetrics();
+            return;
+        }
+    }
+
+    if (index >= resultLineWidths_.size()) {
+        rebuildResultMetrics();
+        return;
+    }
+
+    int width = resultRefColumnWidth_ + (kResultLinePadding * 2);
+    if (!results_[index].text.empty()) {
+        width += kResultColumnGap + measureMarkupWidth(results_[index].text);
+    }
+    resultLineWidths_[index] = width;
 }
 
 int SearchPanel::resultLineWidth(int line) const {
@@ -2259,6 +2533,7 @@ void SearchPanel::onIndexingPoll(void* data) {
     if (!self || !self->indexingIndicatorActive_) return;
 
     const bool searchActive = self->updateSearchProgressUi();
+    self->updateLazySnippetUi();
     if (!searchActive) {
         self->updateIndexingIndicator();
     }
@@ -2269,6 +2544,12 @@ void SearchPanel::onDeferredPreviewUpdate(void* data) {
     auto* self = static_cast<SearchPanel*>(data);
     if (!self) return;
     self->applyPendingPreviewUpdate();
+}
+
+void SearchPanel::onDeferredResultAppend(void* data) {
+    auto* self = static_cast<SearchPanel*>(data);
+    if (!self) return;
+    self->appendResultBrowserBatch();
 }
 
 void SearchPanel::onFilterChoiceChanged(Fl_Widget* /*w*/, void* data) {
@@ -2285,14 +2566,18 @@ void SearchPanel::onFilterChoiceChanged(Fl_Widget* /*w*/, void* data) {
 void SearchPanel::onSortChoiceChanged(Fl_Widget* /*w*/, void* data) {
     auto* self = static_cast<SearchPanel*>(data);
     if (!self || self->results_.empty()) return;
+    SearchPanel::LazySnippetContext lazyContext = self->lazySnippetContext_;
+    const bool resumeLazySnippets = lazyContext.active;
+    self->cancelPendingResultAppend();
+    self->cancelLazySnippetLoading();
     std::string canonicalModule;
     if (self->app_ && self->app_->mainWindow() && self->app_->mainWindow()->biblePane()) {
         canonicalModule = trimCopy(self->app_->mainWindow()->biblePane()->currentModule());
     }
     self->sortResultsForDisplay(canonicalModule);
-    self->resultDisplayKeys_.clear();
-    for (const auto& result : self->results_) {
-        self->resultDisplayKeys_.push_back(self->resultDisplayLabel(result));
+    self->resultDisplayKeys_.assign(self->results_.size(), "");
+    if (resumeLazySnippets) {
+        self->prepareLazySnippetLoading(lazyContext);
     }
     self->rebuildResultBrowserItems();
     self->setResultCountLabel(self->resultSummarySuffix());
@@ -2307,6 +2592,7 @@ void SearchPanel::onResultSelect(Fl_Widget* /*w*/, void* data) {
         return;
     }
 
+    self->requestLazySnippetsForVisibleResults();
     self->schedulePreviewUpdate(*result);
 }
 
