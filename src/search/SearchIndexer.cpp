@@ -30,6 +30,8 @@ namespace {
 
 constexpr int kSearchSchemaVersion = 9;
 constexpr size_t kMaxSpellingCandidatesPerToken = 360;
+constexpr size_t kMaxGeneralBookTocEntries = 50000;
+constexpr int kMaxGeneralBookTocDepth = 128;
 
 struct CatalogSnapshot {
     ModuleInfo info;
@@ -882,12 +884,17 @@ void removeSearchDatabaseCacheFiles(const std::string& dbPath) {
     std::filesystem::remove(dbPath, ec);
 }
 
-void appendGeneralBookTocEntries(sword::TreeKey* treeKey,
-                                 int depth,
-                                 std::vector<GeneralBookTocEntry>& out) {
+void appendGeneralBookTocEntriesBounded(sword::TreeKey* treeKey,
+                                        int depth,
+                                        std::vector<GeneralBookTocEntry>& out,
+                                        size_t& visitedEntries) {
     if (!treeKey) return;
+    if (depth > kMaxGeneralBookTocDepth) return;
 
     do {
+        if (visitedEntries >= kMaxGeneralBookTocEntries) return;
+        ++visitedEntries;
+
         GeneralBookTocEntry entry;
         entry.key = treeKey->getText();
         entry.label = treeKey->getLocalName();
@@ -896,10 +903,19 @@ void appendGeneralBookTocEntries(sword::TreeKey* treeKey,
         out.push_back(std::move(entry));
 
         if (treeKey->hasChildren() && treeKey->firstChild()) {
-            appendGeneralBookTocEntries(treeKey, depth + 1, out);
+            appendGeneralBookTocEntriesBounded(treeKey, depth + 1, out,
+                                               visitedEntries);
             treeKey->parent();
         }
-    } while (treeKey->nextSibling());
+    } while (visitedEntries < kMaxGeneralBookTocEntries &&
+             treeKey->nextSibling());
+}
+
+void appendGeneralBookTocEntries(sword::TreeKey* treeKey,
+                                 int depth,
+                                 std::vector<GeneralBookTocEntry>& out) {
+    size_t visitedEntries = 0;
+    appendGeneralBookTocEntriesBounded(treeKey, depth, out, visitedEntries);
 }
 
 std::unique_ptr<sword::SWMgr> createIsolatedSwordManager(
@@ -2136,7 +2152,10 @@ bool SearchIndexer::hasAnyIndexedData() const {
 void SearchIndexer::queueModuleIndex(const std::string& moduleName, bool force) {
     std::string normalized = trimCopy(moduleName);
     if (!db_ || normalized.empty()) return;
-    if (!force && isModuleIndexed(normalized)) return;
+    if (!force &&
+        (isModuleIndexed(normalized) || hasModuleIndexError(normalized))) {
+        return;
+    }
 
     std::lock_guard<std::mutex> lock(workerMutex_);
     auto it = pendingForces_.find(normalized);
@@ -2397,6 +2416,10 @@ std::string SearchIndexer::moduleIndexError(const std::string& moduleName) const
     }
     sqlite3_finalize(stmt);
     return error;
+}
+
+bool SearchIndexer::hasModuleIndexError(const std::string& moduleName) const {
+    return !moduleIndexError(moduleName).empty();
 }
 
 std::vector<std::string> SearchIndexer::dictionaryKeys(

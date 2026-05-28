@@ -139,6 +139,7 @@ private:
     int resultRefColumnWidth_ = 100;
     size_t displayedResultCount_ = 0;
     bool resultAppendScheduled_ = false;
+    bool singleModuleResultLabels_ = false;
 
     // Indexing indicator state
     bool indexingIndicatorActive_ = false;

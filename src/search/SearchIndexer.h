@@ -137,6 +137,9 @@ public:
     /// Return the last indexing error for a module, if any.
     std::string moduleIndexError(const std::string& moduleName) const;
 
+    /// True when a module has a recorded indexing error.
+    bool hasModuleIndexError(const std::string& moduleName) const;
+
     /// Pause background indexing until the returned guard is destroyed.
     [[nodiscard]] ScopedSuspend suspendBackgroundIndexing();
 

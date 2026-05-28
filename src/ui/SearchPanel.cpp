@@ -442,6 +442,7 @@ std::string truncateSnippetWords(const std::string& text, size_t maxWords = 18) 
 }
 
 constexpr int kResultRefColumnWidth = 100;
+constexpr int kResultRefColumnMaxWidth = 360;
 constexpr int kResultLinePadding = 4;
 constexpr int kResultColumnGap = 8;
 constexpr const char* kCurrentBibleModuleToken = "__current_bible__";
@@ -786,6 +787,20 @@ bool strongsAttrMatches(const std::string& attr,
     return false;
 }
 
+int resultRefColumnLimit(int browserWidth) {
+    const int proportionalLimit = browserWidth > 0
+        ? (browserWidth * 2) / 5
+        : kResultRefColumnMaxWidth;
+    return std::max(kResultRefColumnWidth,
+                    std::min(kResultRefColumnMaxWidth, proportionalLimit));
+}
+
+int boundedResultRefColumnWidth(int measuredWidth, int browserWidth) {
+    return std::clamp(measuredWidth,
+                      kResultRefColumnWidth,
+                      resultRefColumnLimit(browserWidth));
+}
+
 } // namespace
 
 int SearchResultBrowser::item_height(void* item) const {
@@ -984,6 +999,7 @@ void SearchPanel::resetResultView() {
     resultDisplayKeys_.clear();
     resultLineWidths_.clear();
     displayedResultCount_ = 0;
+    singleModuleResultLabels_ = false;
     lazySnippetContext_ = LazySnippetContext{};
     lazySnippetStates_.clear();
     resultRefColumnWidth_ = kResultRefColumnWidth;
@@ -1407,6 +1423,7 @@ void SearchPanel::search(const std::string& query,
     }
     std::vector<std::string> resourceTypes = effectiveResourceTypes();
     moduleName = effectiveModuleSelection(moduleOverride);
+    singleModuleResultLabels_ = !moduleName.empty();
 
     SearchIndexer::SearchRequest request;
     request.resourceTypes = resourceTypes;
@@ -1538,7 +1555,10 @@ void SearchPanel::search(const std::string& query,
 
         for (const auto& name : relevantModules) {
             indexer->queueModuleIndex(name);
-            if (!indexer->isModuleIndexed(name)) indexingPending = true;
+            if (!indexer->isModuleIndexed(name) &&
+                !indexer->hasModuleIndexError(name)) {
+                indexingPending = true;
+            }
         }
     }
 
@@ -1717,6 +1737,7 @@ void SearchPanel::showReferenceResults(const std::string& moduleName,
     }
 
     setSelectedModule(module);
+    singleModuleResultLabels_ = true;
 
     for (const auto& rawRef : references) {
         std::string ref = trimCopy(rawRef);
@@ -2047,6 +2068,12 @@ std::string SearchPanel::resultDisplayLabel(const SearchResult& result) const {
         if (!shortKey.empty()) location = shortKey;
     }
 
+    if (singleModuleResultLabels_) {
+        if (!location.empty()) return location;
+        if (!result.key.empty()) return result.key;
+        return result.title;
+    }
+
     std::string label = result.module;
     if (!label.empty()) label += " ";
     label += "[" + searchResourceTypeLabel(
@@ -2191,7 +2218,6 @@ void SearchPanel::ensureResultDisplayLabel(size_t index) {
 
 void SearchPanel::rebuildResultMetrics() {
     resultLineWidths_.clear();
-    resultRefColumnWidth_ = kResultRefColumnWidth;
     if (!resultBrowser_) return;
 
     fl_font(resultBrowser_->textfont(), resultBrowser_->textsize());
@@ -2200,11 +2226,14 @@ void SearchPanel::rebuildResultMetrics() {
         ? std::min(displayedResultCount_, results_.size())
         : results_.size();
 
+    int measuredRefColumnWidth = kResultRefColumnWidth;
     for (size_t i = 0; i < metricCount; ++i) {
         ensureResultDisplayLabel(i);
         int width = measureMarkupWidth(resultDisplayKeys_[i]) + (kResultLinePadding * 2);
-        resultRefColumnWidth_ = std::max(resultRefColumnWidth_, width);
+        measuredRefColumnWidth = std::max(measuredRefColumnWidth, width);
     }
+    resultRefColumnWidth_ = boundedResultRefColumnWidth(measuredRefColumnWidth,
+                                                        resultBrowser_->w());
 
     resultLineWidths_.assign(results_.size(), resultBrowser_->w());
     for (size_t i = 0; i < metricCount; ++i) {
@@ -2224,7 +2253,8 @@ void SearchPanel::rebuildResultMetric(size_t index) {
     if (index < resultDisplayKeys_.size()) {
         int refWidth = measureMarkupWidth(resultDisplayKeys_[index]) +
                        (kResultLinePadding * 2);
-        if (refWidth > resultRefColumnWidth_) {
+        if (refWidth > resultRefColumnWidth_ &&
+            resultRefColumnWidth_ < resultRefColumnLimit(resultBrowser_->w())) {
             rebuildResultMetrics();
             return;
         }
