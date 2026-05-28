@@ -7,6 +7,7 @@
 #include "tags/TagManager.h"
 #include "ui/MainWindow.h"
 #include "ui/BiblePane.h"
+#include "ui/LeftPane.h"
 
 #include <FL/Fl.H>
 #include <FL/Fl_File_Icon.H>
@@ -267,6 +268,35 @@ VerdadApp::ThemeMode themeModeFromToken(const std::string& text,
                    });
     if (token == "dark") return VerdadApp::ThemeMode::Dark;
     if (token == "light") return VerdadApp::ThemeMode::Light;
+    return fallback;
+}
+
+const char* searchAssistanceModeToken(SearchAssistanceMode mode) {
+    switch (mode) {
+    case SearchAssistanceMode::Exact:
+        return "exact";
+    case SearchAssistanceMode::Spelling:
+        return "spelling";
+    case SearchAssistanceMode::Synonyms:
+        return "synonyms";
+    case SearchAssistanceMode::Smart:
+    default:
+        return "smart";
+    }
+}
+
+SearchAssistanceMode searchAssistanceModeFromToken(
+    const std::string& text,
+    SearchAssistanceMode fallback) {
+    std::string token = trimCopy(text);
+    std::transform(token.begin(), token.end(), token.begin(),
+                   [](unsigned char c) {
+                       return static_cast<char>(std::tolower(c));
+                   });
+    if (token == "exact" || token == "none") return SearchAssistanceMode::Exact;
+    if (token == "spelling" || token == "spell") return SearchAssistanceMode::Spelling;
+    if (token == "synonyms" || token == "synonym") return SearchAssistanceMode::Synonyms;
+    if (token == "smart" || token == "smarter") return SearchAssistanceMode::Smart;
     return fallback;
 }
 
@@ -759,6 +789,33 @@ bool VerdadApp::applyPreferencesMap(const PreferenceMap& prefs,
         parseBoolOr(lookup("show_cross_reference_markers"),
                     importedOptions.showCrossReferenceMarkers);
 
+    SearchSettings importedSearch = searchSettings_;
+    importedSearch.assistanceMode =
+        searchAssistanceModeFromToken(lookup("search_assistance_mode"),
+                                      importedSearch.assistanceMode);
+    if (lookup("search_assistance_mode").empty()) {
+        const int currentModeLevel = static_cast<int>(importedSearch.assistanceMode);
+        const bool spelling =
+            parseBoolOr(lookup("search_spelling_correction"),
+                        currentModeLevel >= static_cast<int>(SearchAssistanceMode::Spelling));
+        const bool synonyms =
+            parseBoolOr(lookup("search_include_synonyms"),
+                        currentModeLevel >= static_cast<int>(SearchAssistanceMode::Synonyms));
+        const bool smart =
+            parseBoolOr(lookup("search_smarter_search"),
+                        importedSearch.assistanceMode == SearchAssistanceMode::Smart);
+
+        if (smart) {
+            importedSearch.assistanceMode = SearchAssistanceMode::Smart;
+        } else if (synonyms) {
+            importedSearch.assistanceMode = SearchAssistanceMode::Synonyms;
+        } else if (spelling) {
+            importedSearch.assistanceMode = SearchAssistanceMode::Spelling;
+        } else {
+            importedSearch.assistanceMode = SearchAssistanceMode::Exact;
+        }
+    }
+
     PreviewDictionarySettings importedPreview = previewDictionarySettings_;
     importedPreview.greekModule =
         normalizePreviewDictionaryModule(lookup("preview_dict_greek"),
@@ -814,6 +871,7 @@ bool VerdadApp::applyPreferencesMap(const PreferenceMap& prefs,
 
     setPreviewDictionarySettings(importedPreview);
     setOptionDisplaySettings(importedOptions);
+    setSearchSettings(importedSearch);
     setAppearanceSettings(importedAppearance);
     setModuleManagerSettings(importedModuleManager);
 
@@ -876,6 +934,15 @@ void VerdadApp::savePreferences() {
         file << "show_morph_markers=" << (optionDisplaySettings_.showMorphMarkers ? 1 : 0) << "\n";
         file << "show_footnote_markers=" << (optionDisplaySettings_.showFootnoteMarkers ? 1 : 0) << "\n";
         file << "show_cross_reference_markers=" << (optionDisplaySettings_.showCrossReferenceMarkers ? 1 : 0) << "\n";
+        const int searchModeLevel = static_cast<int>(searchSettings_.assistanceMode);
+        file << "search_assistance_mode="
+             << searchAssistanceModeToken(searchSettings_.assistanceMode) << "\n";
+        file << "search_spelling_correction="
+             << (searchModeLevel >= static_cast<int>(SearchAssistanceMode::Spelling) ? 1 : 0) << "\n";
+        file << "search_include_synonyms="
+             << (searchModeLevel >= static_cast<int>(SearchAssistanceMode::Synonyms) ? 1 : 0) << "\n";
+        file << "search_smarter_search="
+             << (searchSettings_.assistanceMode == SearchAssistanceMode::Smart ? 1 : 0) << "\n";
         file << "preview_dict_greek=" << previewDictionarySettings_.greekModule << "\n";
         file << "preview_dict_hebrew=" << previewDictionarySettings_.hebrewModule << "\n";
         std::vector<std::string> languageCodes;
@@ -1087,6 +1154,19 @@ void VerdadApp::setModuleManagerSettings(
     normalized.selectedSources = std::move(cleanedSources);
 
     moduleManagerSettings_ = std::move(normalized);
+}
+
+void VerdadApp::setSearchSettings(const SearchSettings& settings) {
+    searchSettings_ = settings;
+    if (mainWindow_ && mainWindow_->leftPane()) {
+        mainWindow_->leftPane()->setSearchAssistanceMode(searchSettings_.assistanceMode);
+    }
+}
+
+void VerdadApp::setSearchAssistanceMode(SearchAssistanceMode mode) {
+    SearchSettings settings = searchSettings_;
+    settings.assistanceMode = mode;
+    setSearchSettings(settings);
 }
 
 std::string VerdadApp::preferredPreviewDictionary(char strongPrefix) const {

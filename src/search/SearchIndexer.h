@@ -60,6 +60,19 @@ public:
         int maxResults = 0;
     };
 
+    struct SmartSearchOptions {
+        SmartSearchOptions(bool spelling = true,
+                           bool synonyms = true,
+                           bool fuzzy = true)
+            : spellingCorrection(spelling)
+            , includeSynonyms(synonyms)
+            , fuzzyExpansion(fuzzy) {}
+
+        bool spellingCorrection;
+        bool includeSynonyms;
+        bool fuzzyExpansion;
+    };
+
     struct RegexSearchProgress {
         int scanned = 0;
         int total = 0;
@@ -168,7 +181,8 @@ public:
                                           const std::string& query,
                                           const std::string& language = "en",
                                           int maxResults = 0,
-                                          bool includeSnippets = true) const;
+                                          bool includeSnippets = true,
+                                          SmartSearchOptions options = SmartSearchOptions()) const;
 
     /// Fill snippets for existing indexed search rows by reading source module text.
     std::vector<SearchResult> buildResultSnippets(
@@ -176,7 +190,8 @@ public:
         SnippetKind kind,
         const std::string& query,
         const std::string& language = "en",
-        bool caseSensitive = false) const;
+        bool caseSensitive = false,
+        SmartSearchOptions smartOptions = SmartSearchOptions()) const;
 
     /// Return indexed dictionary keys for fast dropdown filtering.
     std::vector<std::string> dictionaryKeys(const std::string& moduleName) const;
@@ -224,7 +239,8 @@ private:
                                             const std::string& query);
     std::unordered_map<std::string, std::vector<std::string>>
     buildSmartSpellingAlternatives(const SearchRequest& request,
-                                   const std::string& query) const;
+                                   const std::string& query,
+                                   SmartSearchOptions options = SmartSearchOptions()) const;
 
     static void applyPragmas(sqlite3* db);
     static bool ensureSchema(sqlite3* db);

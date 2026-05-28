@@ -28,8 +28,8 @@
 namespace verdad {
 namespace {
 
-constexpr int kSmartSearchMaxCandidateLimit = 2000;
-constexpr int kSearchSchemaVersion = 7;
+constexpr int kSearchSchemaVersion = 8;
+constexpr size_t kMaxSpellingCandidatesPerToken = 360;
 
 struct CatalogSnapshot {
     ModuleInfo info;
@@ -55,6 +55,11 @@ struct ModuleScanSource {
 struct MetadataFilter {
     std::string sql;
     std::vector<std::string> values;
+};
+
+struct SpellingProbe {
+    std::string term;
+    bool orthographic = false;
 };
 
 std::string trimCopy(const std::string& text) {
@@ -301,47 +306,195 @@ std::string normalizeVocabularyTerm(const std::string& raw) {
     return out;
 }
 
-std::vector<std::string> vocabularyDeleteKeys(const std::string& term,
-                                              int maxDistance) {
-    std::unordered_set<std::string> seen;
-    std::vector<std::string> current;
-    std::vector<std::string> out;
-
-    if (term.empty()) return out;
-
-    seen.insert(term);
-    current.push_back(term);
-    out.push_back(term);
-
-    for (int depth = 0; depth < maxDistance; ++depth) {
-        std::vector<std::string> next;
-        for (const auto& value : current) {
-            if (value.size() <= 1) continue;
-            for (size_t i = 0; i < value.size(); ++i) {
-                std::string deleted = value.substr(0, i) + value.substr(i + 1);
-                if (deleted.size() < 2) continue;
-                if (seen.insert(deleted).second) {
-                    out.push_back(deleted);
-                    next.push_back(std::move(deleted));
-                }
-            }
-        }
-        current = std::move(next);
-        if (current.empty()) break;
-    }
-
-    return out;
-}
-
-int vocabularyDeleteDistanceForLength(size_t len) {
-    return len <= 4 ? 1 : 2;
-}
-
 int spellingDistanceThreshold(size_t lhsLen, size_t rhsLen) {
     const size_t len = std::max(lhsLen, rhsLen);
     if (len <= 4) return 1;
-    if (len <= 8) return 2;
+    if (len <= 8) return 1;
     return 2;
+}
+
+int spellingCandidateLengthWindow(size_t len) {
+    return len <= 4 ? 1 : 2;
+}
+
+size_t spellingPrefixProbeLength(size_t len) {
+    if (len <= 4) return std::min<size_t>(3, len);
+    if (len <= 7) return 3;
+    return 4;
+}
+
+std::string prefixRangeUpperBound(const std::string& prefix) {
+    if (prefix.empty()) return "";
+    std::string upper = prefix;
+    upper.push_back('\x7f');
+    return upper;
+}
+
+std::vector<std::string> spellingPrefixProbes(const std::string& term) {
+    std::vector<std::string> probes;
+    std::unordered_set<std::string> seen;
+    const size_t prefixLen = spellingPrefixProbeLength(term.size());
+    if (prefixLen < 2 || term.size() < prefixLen) return probes;
+
+    auto addProbe = [&](const std::string& value) {
+        if (value.size() < 2) return;
+        std::string prefix = value.substr(0, std::min(prefixLen, value.size()));
+        if (prefix.size() < 2) return;
+        if (seen.insert(prefix).second) {
+            probes.push_back(std::move(prefix));
+        }
+    };
+
+    addProbe(term);
+
+    if (term.size() >= 5) {
+        const size_t deleteProbeSpan = std::min(term.size(), prefixLen + 2);
+        for (size_t i = 0; i < deleteProbeSpan; ++i) {
+            std::string deleted = term.substr(0, i) + term.substr(i + 1);
+            addProbe(deleted);
+        }
+    }
+
+    return probes;
+}
+
+bool endsWith(std::string_view text, std::string_view suffix) {
+    return text.size() >= suffix.size() &&
+           text.compare(text.size() - suffix.size(), suffix.size(), suffix) == 0;
+}
+
+void addSpellingProbe(std::vector<SpellingProbe>& probes,
+                      std::unordered_set<std::string>& seen,
+                      std::string value,
+                      bool orthographic) {
+    if (value.size() < 2) return;
+    if (seen.insert(value).second) {
+        probes.push_back({std::move(value), orthographic});
+    }
+}
+
+void addSuffixSwapProbe(std::vector<SpellingProbe>& probes,
+                        std::unordered_set<std::string>& seen,
+                        const std::string& term,
+                        std::string_view from,
+                        std::string_view to) {
+    if (!endsWith(term, from) || term.size() <= from.size() + 1) return;
+    std::string value = term.substr(0, term.size() - from.size());
+    value.append(to);
+    addSpellingProbe(probes, seen, std::move(value), true);
+}
+
+smart_search::QueryExpansionOptions toQueryExpansionOptions(
+    SearchIndexer::SmartSearchOptions options) {
+    smart_search::QueryExpansionOptions queryOptions;
+    queryOptions.includeSpelling = options.spellingCorrection;
+    queryOptions.includeSynonyms = options.includeSynonyms;
+    queryOptions.includeFuzzy = options.fuzzyExpansion;
+    return queryOptions;
+}
+
+std::vector<SpellingProbe> spellingProbeTerms(const std::string& term,
+                                              bool includeTypoProbes) {
+    std::vector<SpellingProbe> probes;
+    std::unordered_set<std::string> seen;
+    seen.insert(term);
+
+    if (term.size() < 3 || term.size() > 24) return probes;
+
+    auto addSuffixSwap = [&](std::string_view from, std::string_view to) {
+        addSuffixSwapProbe(probes, seen, term, from, to);
+    };
+
+    // Common American/British spelling alternations. These are exact probes
+    // against indexed terms, so they do not add persistent index rows.
+    addSuffixSwap("our", "or");
+    addSuffixSwap("ours", "ors");
+    addSuffixSwap("oured", "ored");
+    addSuffixSwap("ouring", "oring");
+    addSuffixSwap("ourful", "orful");
+    addSuffixSwap("or", "our");
+    addSuffixSwap("ors", "ours");
+    addSuffixSwap("ored", "oured");
+    addSuffixSwap("oring", "ouring");
+    addSuffixSwap("orful", "ourful");
+    addSuffixSwap("isation", "ization");
+    addSuffixSwap("isations", "izations");
+    addSuffixSwap("ise", "ize");
+    addSuffixSwap("ises", "izes");
+    addSuffixSwap("ised", "ized");
+    addSuffixSwap("ising", "izing");
+    addSuffixSwap("ization", "isation");
+    addSuffixSwap("izations", "isations");
+    addSuffixSwap("ize", "ise");
+    addSuffixSwap("izes", "ises");
+    addSuffixSwap("ized", "ised");
+    addSuffixSwap("izing", "ising");
+    addSuffixSwap("yse", "yze");
+    addSuffixSwap("yses", "yzes");
+    addSuffixSwap("ysed", "yzed");
+    addSuffixSwap("ysing", "yzing");
+    addSuffixSwap("yze", "yse");
+    addSuffixSwap("yzes", "yses");
+    addSuffixSwap("yzed", "ysed");
+    addSuffixSwap("yzing", "ysing");
+    addSuffixSwap("re", "er");
+    addSuffixSwap("res", "ers");
+    addSuffixSwap("red", "ered");
+    addSuffixSwap("er", "re");
+    addSuffixSwap("ers", "res");
+    addSuffixSwap("ered", "red");
+    addSuffixSwap("ce", "se");
+    addSuffixSwap("ces", "ses");
+    addSuffixSwap("ced", "sed");
+    addSuffixSwap("cing", "sing");
+    addSuffixSwap("se", "ce");
+    addSuffixSwap("ses", "ces");
+    addSuffixSwap("sed", "ced");
+    addSuffixSwap("sing", "cing");
+    addSuffixSwap("ogue", "og");
+    addSuffixSwap("ogues", "ogs");
+    addSuffixSwap("og", "ogue");
+    addSuffixSwap("ogs", "ogues");
+    addSuffixSwap("lling", "ling");
+    addSuffixSwap("lled", "led");
+    addSuffixSwap("ller", "ler");
+    addSuffixSwap("llor", "lor");
+    addSuffixSwap("ling", "lling");
+    addSuffixSwap("led", "lled");
+    addSuffixSwap("ler", "ller");
+    addSuffixSwap("lor", "llor");
+
+    if (!includeTypoProbes) return probes;
+
+    for (size_t i = 0; i + 1 < term.size(); ++i) {
+        std::string transposed = term;
+        std::swap(transposed[i], transposed[i + 1]);
+        addSpellingProbe(probes, seen, std::move(transposed), false);
+    }
+
+    if (term.size() <= 10) {
+        static const std::unordered_map<char, std::string> kQwertyNeighbors = {
+            {'q', "wa"},    {'w', "qeas"},   {'e', "wrsd"},   {'r', "etdf"},
+            {'t', "ryfg"},  {'y', "tugh"},   {'u', "yijh"},   {'i', "uokj"},
+            {'o', "iplk"},  {'p', "ol"},     {'a', "qwsz"},   {'s', "awedxz"},
+            {'d', "serfcx"}, {'f', "drtgvc"}, {'g', "ftyhbv"}, {'h', "gyujnb"},
+            {'j', "huikmn"}, {'k', "jiolm"}, {'l', "kop"},    {'z', "asx"},
+            {'x', "zsdc"},  {'c', "xdfv"},   {'v', "cfgb"},   {'b', "vghn"},
+            {'n', "bhjm"},  {'m', "njk"},
+        };
+
+        for (size_t i = 0; i < term.size(); ++i) {
+            auto it = kQwertyNeighbors.find(term[i]);
+            if (it == kQwertyNeighbors.end()) continue;
+            for (char replacement : it->second) {
+                std::string value = term;
+                value[i] = replacement;
+                addSpellingProbe(probes, seen, std::move(value), false);
+            }
+        }
+    }
+
+    return probes;
 }
 
 struct VocabularyAggregate {
@@ -1006,10 +1159,6 @@ bool removeModuleSpellTerms(sqlite3* db, const std::string& moduleName) {
     if (!ok) return false;
 
     sqlite3_exec(db,
-                 "DELETE FROM spell_deletes "
-                 "WHERE term IN (SELECT term FROM spell_terms WHERE total_count <= 0)",
-                 nullptr, nullptr, nullptr);
-    sqlite3_exec(db,
                  "DELETE FROM spell_terms WHERE total_count <= 0",
                  nullptr, nullptr, nullptr);
     return true;
@@ -1464,7 +1613,8 @@ std::string buildSmartSnippetFromSourceText(
     const std::string& title,
     const std::vector<std::string>& queryTerms,
     const std::string& language,
-    const std::unordered_map<std::string, std::vector<std::string>>& spellingAlternatives) {
+    const std::unordered_map<std::string, std::vector<std::string>>& spellingAlternatives,
+    SearchIndexer::SmartSearchOptions options) {
 
     std::string plain = plainText.empty() ? title : plainText;
     if (plain.empty()) return "";
@@ -1561,17 +1711,20 @@ std::string buildSmartSnippetFromSourceText(
             markInLower(lowerStrippedPlain, lowerStrippedTerm, true);
         }
 
-        auto syns = smart_search::expandSynonyms(lowerTerm, language);
-        for (const auto& syn : syns) {
-            std::string lowerSyn = lowerCopy(syn);
-            if (lowerSyn.empty() || lowerSyn == lowerTerm) continue;
-            markInLower(lowerPlain, lowerSyn, false);
-            std::string lowerStrippedSyn = lowerCopy(
-                smart_search::stripDiacritics(lowerSyn));
-            markInLower(lowerStrippedPlain, lowerStrippedSyn, true);
+        if (options.includeSynonyms) {
+            auto syns = smart_search::expandSynonyms(lowerTerm, language);
+            for (const auto& syn : syns) {
+                std::string lowerSyn = lowerCopy(syn);
+                if (lowerSyn.empty() || lowerSyn == lowerTerm) continue;
+                markInLower(lowerPlain, lowerSyn, false);
+                std::string lowerStrippedSyn = lowerCopy(
+                    smart_search::stripDiacritics(lowerSyn));
+                markInLower(lowerStrippedPlain, lowerStrippedSyn, true);
+            }
         }
 
         auto markSpellingAlternatives = [&](const std::string& key) {
+            if (!options.spellingCorrection) return;
             auto it = spellingAlternatives.find(key);
             if (it == spellingAlternatives.end()) return;
             for (const auto& alt : it->second) {
@@ -1725,6 +1878,8 @@ bool SearchIndexer::ensureSchema(sqlite3* db) {
         sqlite3_exec(db, "DROP TABLE IF EXISTS module_index_errors;", nullptr, nullptr, nullptr);
     }
 
+    sqlite3_exec(db, "DROP TABLE IF EXISTS spell_deletes;", nullptr, nullptr, nullptr);
+
     const char* tableSql = R"SQL(
         CREATE TABLE IF NOT EXISTS indexed_modules (
             module_name TEXT PRIMARY KEY,
@@ -1794,16 +1949,10 @@ bool SearchIndexer::ensureSchema(sqlite3* db) {
             total_count INTEGER NOT NULL DEFAULT 0
         );
 
-        CREATE TABLE IF NOT EXISTS spell_deletes (
-            delete_key TEXT NOT NULL,
-            term TEXT NOT NULL,
-            PRIMARY KEY(delete_key, term)
-        );
-
         CREATE INDEX IF NOT EXISTS idx_spell_terms_phonetic
-            ON spell_terms(phonetic_key, term_len);
-        CREATE INDEX IF NOT EXISTS idx_spell_deletes_term
-            ON spell_deletes(term);
+            ON spell_terms(phonetic_key, term_len, total_count);
+        CREATE INDEX IF NOT EXISTS idx_spell_terms_len_term
+            ON spell_terms(term_len, term);
     )SQL";
 
     char* err = nullptr;
@@ -2553,7 +2702,8 @@ std::vector<SearchResult> SearchIndexer::buildResultSnippets(
     SnippetKind kind,
     const std::string& query,
     const std::string& language,
-    bool caseSensitive) const {
+    bool caseSensitive,
+    SmartSearchOptions smartOptions) const {
 
     std::vector<SearchResult> results = inputResults;
     if (results.empty()) return results;
@@ -2585,7 +2735,8 @@ std::vector<SearchResult> SearchIndexer::buildResultSnippets(
                    static_cast<unsigned char>(word[e - 1]) < 0x80) --e;
             if (s < e) smartQueryTerms.push_back(word.substr(s, e - s));
         }
-        spellingAlternatives = buildSmartSpellingAlternatives(SearchRequest{}, query);
+        spellingAlternatives = buildSmartSpellingAlternatives(
+            SearchRequest{}, query, smartOptions);
     }
 
     const bool includeXhtml = kind == SnippetKind::Strongs;
@@ -2639,7 +2790,8 @@ std::vector<SearchResult> SearchIndexer::buildResultSnippets(
                 results[i].title,
                 smartQueryTerms,
                 language,
-                spellingAlternatives);
+                spellingAlternatives,
+                smartOptions);
             break;
         }
 
@@ -3114,13 +3266,14 @@ std::vector<SearchResult> SearchIndexer::searchRegexDirect(
 std::unordered_map<std::string, std::vector<std::string>>
 SearchIndexer::buildSmartSpellingAlternatives(
     const SearchRequest& request,
-    const std::string& query) const {
+    const std::string& query,
+    SmartSearchOptions options) const {
 
     (void)request;
 
     std::unordered_map<std::string, std::vector<std::string>> alternatives;
     std::vector<std::string> tokens = tokenizeWords(query);
-    if (!db_ || tokens.empty()) return alternatives;
+    if (!db_ || tokens.empty() || !options.spellingCorrection) return alternatives;
 
     struct Candidate {
         std::string term;
@@ -3128,8 +3281,10 @@ SearchIndexer::buildSmartSpellingAlternatives(
         std::string phoneticKey;
         int totalCount = 0;
         bool exactHit = false;
-        bool deleteHit = false;
+        bool prefixHit = false;
         bool phoneticHit = false;
+        bool spellingProbeHit = false;
+        bool orthographicHit = false;
         double score = 0.0;
     };
 
@@ -3139,8 +3294,10 @@ SearchIndexer::buildSmartSpellingAlternatives(
                            const std::string& phoneticKey,
                            int totalCount,
                            bool exactHit,
-                           bool deleteHit,
-                           bool phoneticHit) {
+                           bool prefixHit,
+                           bool phoneticHit,
+                           bool spellingProbeHit,
+                           bool orthographicHit) {
         if (term.empty()) return;
         auto [it, inserted] = candidates.emplace(term, Candidate{});
         Candidate& candidate = it->second;
@@ -3151,16 +3308,23 @@ SearchIndexer::buildSmartSpellingAlternatives(
         }
         candidate.totalCount = std::max(candidate.totalCount, totalCount);
         candidate.exactHit = candidate.exactHit || exactHit;
-        candidate.deleteHit = candidate.deleteHit || deleteHit;
+        candidate.prefixHit = candidate.prefixHit || prefixHit;
         candidate.phoneticHit = candidate.phoneticHit || phoneticHit;
+        candidate.spellingProbeHit = candidate.spellingProbeHit || spellingProbeHit;
+        candidate.orthographicHit = candidate.orthographicHit || orthographicHit;
     };
 
     auto readCandidates = [&](sqlite3_stmt* stmt,
                               std::unordered_map<std::string, Candidate>& candidates,
                               bool exactHit,
-                              bool deleteHit,
-                              bool phoneticHit) {
-        while (sqlite3_step(stmt) == SQLITE_ROW) {
+                              bool prefixHit,
+                              bool phoneticHit,
+                              bool spellingProbeHit,
+                              bool orthographicHit) {
+        int rows = 0;
+        while (candidates.size() < kMaxSpellingCandidatesPerToken &&
+               sqlite3_step(stmt) == SQLITE_ROW) {
+            ++rows;
             const char* term = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 0));
             const char* stripped = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 1));
             const char* phonetic = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 2));
@@ -3171,9 +3335,12 @@ SearchIndexer::buildSmartSpellingAlternatives(
                          phonetic ? phonetic : "",
                          totalCount,
                          exactHit,
-                         deleteHit,
-                         phoneticHit);
+                         prefixHit,
+                         phoneticHit,
+                         spellingProbeHit,
+                         orthographicHit);
         }
+        return rows;
     };
 
     std::lock_guard<std::mutex> lock(dbMutex_);
@@ -3187,67 +3354,92 @@ SearchIndexer::buildSmartSpellingAlternatives(
         alternatives.try_emplace(normalized);
 
         std::unordered_map<std::string, Candidate> candidates;
-        const int threshold = spellingDistanceThreshold(normalized.size(),
-                                                        normalized.size());
-        const int minLen = std::max<int>(3, static_cast<int>(normalized.size()) - threshold);
-        const int maxLen = static_cast<int>(normalized.size()) + threshold;
+        const int lengthWindow = spellingCandidateLengthWindow(normalized.size());
+        const int minLen = std::max<int>(3, static_cast<int>(normalized.size()) - lengthWindow);
+        const int maxLen = static_cast<int>(normalized.size()) + lengthWindow;
 
         {
             sqlite3_stmt* stmt = nullptr;
             if (sqlite3_prepare_v2(
                     db_,
                     "SELECT term, term, phonetic_key, total_count "
-                    "FROM spell_terms WHERE term = ? LIMIT 32",
+                    "FROM spell_terms WHERE term = ? LIMIT 1",
                     -1, &stmt, nullptr) == SQLITE_OK) {
                 bindText(stmt, 1, normalized);
-                readCandidates(stmt, candidates, true, false, false);
+                readCandidates(stmt, candidates, true, false, false, false, false);
             }
             if (stmt) sqlite3_finalize(stmt);
         }
 
-        std::vector<std::string> deleteKeys = vocabularyDeleteKeys(
-            normalized, vocabularyDeleteDistanceForLength(normalized.size()));
-        if (!deleteKeys.empty()) {
-            std::ostringstream sql;
-            sql << "SELECT t.term, t.term, t.phonetic_key, t.total_count "
-                << "FROM spell_deletes d "
-                << "JOIN spell_terms t ON t.term = d.term "
-                << "WHERE d.delete_key IN (";
-            for (size_t i = 0; i < deleteKeys.size(); ++i) {
-                if (i) sql << ", ";
-                sql << "?";
-            }
-            sql << ") AND t.term_len BETWEEN ? AND ? LIMIT 160";
+        const auto exactIt = candidates.find(normalized);
+        const bool exactTermExists = exactIt != candidates.end();
+        const int exactTermTotalCount = exactTermExists ? exactIt->second.totalCount : 0;
+        const bool exactTermIsRare = exactTermExists && exactTermTotalCount < 64;
 
+        for (const auto& probe : spellingProbeTerms(
+                 normalized, !exactTermExists || exactTermIsRare ||
+                             options.fuzzyExpansion)) {
+            if (candidates.size() >= kMaxSpellingCandidatesPerToken) break;
             sqlite3_stmt* stmt = nullptr;
-            if (sqlite3_prepare_v2(db_, sql.str().c_str(), -1, &stmt, nullptr) == SQLITE_OK) {
-                int bindIndex = 1;
-                for (const auto& deleteKey : deleteKeys) {
-                    bindText(stmt, bindIndex++, deleteKey);
-                }
-                sqlite3_bind_int(stmt, bindIndex++, minLen);
-                sqlite3_bind_int(stmt, bindIndex++, maxLen);
-                readCandidates(stmt, candidates, false, true, false);
+            if (sqlite3_prepare_v2(
+                    db_,
+                    "SELECT term, term, phonetic_key, total_count "
+                    "FROM spell_terms WHERE term = ? LIMIT 1",
+                    -1, &stmt, nullptr) == SQLITE_OK) {
+                bindText(stmt, 1, probe.term);
+                readCandidates(stmt, candidates, false, false, false, true,
+                               probe.orthographic);
             }
             if (stmt) sqlite3_finalize(stmt);
         }
 
         std::string phoneticKey = smart_search::metaphoneKey(normalized);
-        if (!phoneticKey.empty() && normalized.size() >= 4) {
+        const bool allowBroadFuzzyCandidates =
+            options.fuzzyExpansion || !exactTermExists || exactTermIsRare;
+        if (allowBroadFuzzyCandidates &&
+            !phoneticKey.empty() && normalized.size() >= 4 &&
+            candidates.size() < kMaxSpellingCandidatesPerToken) {
             sqlite3_stmt* stmt = nullptr;
             if (sqlite3_prepare_v2(
                     db_,
                     "SELECT term, term, phonetic_key, total_count "
                     "FROM spell_terms "
                     "WHERE phonetic_key = ? AND term_len BETWEEN ? AND ? "
-                    "LIMIT 120",
+                    "ORDER BY total_count DESC "
+                    "LIMIT 160",
                     -1, &stmt, nullptr) == SQLITE_OK) {
                 bindText(stmt, 1, phoneticKey);
                 sqlite3_bind_int(stmt, 2, minLen);
                 sqlite3_bind_int(stmt, 3, maxLen);
-                readCandidates(stmt, candidates, false, false, true);
+                readCandidates(stmt, candidates, false, false, true, false, false);
             }
             if (stmt) sqlite3_finalize(stmt);
+        }
+
+        if (allowBroadFuzzyCandidates) {
+            for (const auto& prefix : spellingPrefixProbes(normalized)) {
+                if (candidates.size() >= kMaxSpellingCandidatesPerToken) break;
+                std::string upperBound = prefixRangeUpperBound(prefix);
+                if (upperBound.empty()) continue;
+
+                sqlite3_stmt* stmt = nullptr;
+                if (sqlite3_prepare_v2(
+                        db_,
+                        "SELECT term, term, phonetic_key, total_count "
+                        "FROM spell_terms "
+                        "WHERE term >= ? AND term < ? "
+                        "AND term_len BETWEEN ? AND ? "
+                        "ORDER BY total_count DESC "
+                        "LIMIT 96",
+                        -1, &stmt, nullptr) == SQLITE_OK) {
+                    bindText(stmt, 1, prefix);
+                    bindText(stmt, 2, upperBound);
+                    sqlite3_bind_int(stmt, 3, minLen);
+                    sqlite3_bind_int(stmt, 4, maxLen);
+                    readCandidates(stmt, candidates, false, true, false, false, false);
+                }
+                if (stmt) sqlite3_finalize(stmt);
+            }
         }
 
         std::vector<Candidate> ranked;
@@ -3268,7 +3460,11 @@ SearchIndexer::buildSmartSpellingAlternatives(
             if (distance > 0 && distance <= allowedDistance) {
                 candidate.score = std::max(fuzzy, 0.92 - 0.08 * distance);
                 acceptable = true;
+            } else if (candidate.orthographicHit) {
+                candidate.score = std::max(fuzzy, 0.76);
+                acceptable = true;
             } else if (candidate.phoneticHit && normalized.size() >= 5 &&
+                       options.fuzzyExpansion &&
                        std::abs(static_cast<int>(normalized.size()) -
                                 static_cast<int>(candidateTerm.size())) <= 2 &&
                        fuzzy >= 0.50) {
@@ -3316,22 +3512,20 @@ std::vector<SearchResult> SearchIndexer::searchSmart(
     const std::string& query,
     const std::string& language,
     int maxResults,
-    bool includeSnippets) const {
+    bool includeSnippets,
+    SmartSearchOptions options) const {
 
     std::vector<SearchResult> results;
     if (!db_ || query.empty()) return results;
 
-    auto spellingAlternatives = buildSmartSpellingAlternatives(request, query);
+    auto spellingAlternatives = buildSmartSpellingAlternatives(request, query, options);
 
     // Build the expanded FTS query (synonyms, spelling alternatives, prefix matching)
     std::string smartFtsContent = smart_search::buildSmartFtsQuery(
-        query, language, spellingAlternatives);
+        query, language, spellingAlternatives, toQueryExpansionOptions(options));
     if (smartFtsContent.empty()) return results;
 
     const int limit = (maxResults > 0) ? maxResults : request.maxResults;
-    int queryLimit = (limit > 0)
-        ? std::min(limit, kSmartSearchMaxCandidateLimit)
-        : kSmartSearchMaxCandidateLimit;
 
     sqlite3_stmt* stmt = nullptr;
     MetadataFilter filter = buildMetadataFilter(request, "e");
@@ -3349,15 +3543,19 @@ std::vector<SearchResult> SearchIndexer::searchSmart(
             sql += " ";
         }
         sql +=
-            "ORDER BY bm25(library_index) "
-            "LIMIT ?";
+            "ORDER BY bm25(library_index)";
+        if (limit > 0) {
+            sql += " LIMIT ?";
+        }
         if (sqlite3_prepare_v2(db_, sql.c_str(), -1, &stmt, nullptr) != SQLITE_OK) {
             return results;
         }
 
         bindText(stmt, 1, smartFtsContent);
         bindMetadataFilterValues(stmt, 2, filter);
-        sqlite3_bind_int(stmt, static_cast<int>(filter.values.size()) + 2, queryLimit);
+        if (limit > 0) {
+            sqlite3_bind_int(stmt, static_cast<int>(filter.values.size()) + 2, limit);
+        }
 
         while (sqlite3_step(stmt) == SQLITE_ROW) {
             SearchResult result;
@@ -3380,7 +3578,9 @@ std::vector<SearchResult> SearchIndexer::searchSmart(
     return buildResultSnippets(results,
                                SnippetKind::Smart,
                                query,
-                               language);
+                               language,
+                               false,
+                               options);
 }
 
 void SearchIndexer::workerLoop() {
@@ -3537,7 +3737,6 @@ void SearchIndexer::indexModuleNow(const std::string& moduleName) {
     sqlite3_stmt* insertDictionaryEntry = nullptr;
     sqlite3_stmt* insertModuleTerm = nullptr;
     sqlite3_stmt* upsertSpellTerm = nullptr;
-    sqlite3_stmt* insertSpellDelete = nullptr;
     sqlite3_stmt* markIndexed = nullptr;
     sqlite3_stmt* deleteError = nullptr;
 
@@ -3585,10 +3784,6 @@ void SearchIndexer::indexModuleNow(const std::string& moduleName) {
         -1, &upsertSpellTerm, nullptr);
     sqlite3_prepare_v2(
         writeDb,
-        "INSERT OR IGNORE INTO spell_deletes(delete_key, term) VALUES (?, ?)",
-        -1, &insertSpellDelete, nullptr);
-    sqlite3_prepare_v2(
-        writeDb,
         "INSERT OR REPLACE INTO indexed_modules(module_name, resource_type, module_signature, entry_count, indexed_at) "
         "VALUES (?, ?, ?, ?, datetime('now'))",
         -1, &markIndexed, nullptr);
@@ -3599,8 +3794,7 @@ void SearchIndexer::indexModuleNow(const std::string& moduleName) {
 
     if (!deleteEntries || !deleteDictionaryEntries || !deleteStatus ||
         !insertEntry || !insertFtsRow || !insertDictionaryEntry ||
-        !insertModuleTerm || !upsertSpellTerm || !insertSpellDelete ||
-        !markIndexed || !deleteError) {
+        !insertModuleTerm || !upsertSpellTerm || !markIndexed || !deleteError) {
         if (deleteEntries) sqlite3_finalize(deleteEntries);
         if (deleteDictionaryEntries) sqlite3_finalize(deleteDictionaryEntries);
         if (deleteStatus) sqlite3_finalize(deleteStatus);
@@ -3609,7 +3803,6 @@ void SearchIndexer::indexModuleNow(const std::string& moduleName) {
         if (insertDictionaryEntry) sqlite3_finalize(insertDictionaryEntry);
         if (insertModuleTerm) sqlite3_finalize(insertModuleTerm);
         if (upsertSpellTerm) sqlite3_finalize(upsertSpellTerm);
-        if (insertSpellDelete) sqlite3_finalize(insertSpellDelete);
         if (markIndexed) sqlite3_finalize(markIndexed);
         if (deleteError) sqlite3_finalize(deleteError);
         sqlite3_exec(writeDb, "ROLLBACK;", nullptr, nullptr, nullptr);
@@ -3713,21 +3906,6 @@ void SearchIndexer::indexModuleNow(const std::string& moduleName) {
             sqlite3_reset(upsertSpellTerm);
             sqlite3_clear_bindings(upsertSpellTerm);
             if (!ok) return false;
-
-            const int deleteDistance = vocabularyDeleteDistanceForLength(
-                aggregate.term.size());
-            for (const auto& deleteKey : vocabularyDeleteKeys(aggregate.term,
-                                                              deleteDistance)) {
-                if (stopRequested_.load()) return false;
-
-                bindText(insertSpellDelete, 1, deleteKey);
-                bindText(insertSpellDelete, 2, aggregate.term);
-
-                ok = (sqlite3_step(insertSpellDelete) == SQLITE_DONE);
-                sqlite3_reset(insertSpellDelete);
-                sqlite3_clear_bindings(insertSpellDelete);
-                if (!ok) return false;
-            }
         }
 
         return true;
@@ -3928,7 +4106,6 @@ void SearchIndexer::indexModuleNow(const std::string& moduleName) {
     sqlite3_finalize(insertDictionaryEntry);
     sqlite3_finalize(insertModuleTerm);
     sqlite3_finalize(upsertSpellTerm);
-    sqlite3_finalize(insertSpellDelete);
     sqlite3_finalize(markIndexed);
     sqlite3_finalize(deleteError);
     sqlite3_close(writeDb);

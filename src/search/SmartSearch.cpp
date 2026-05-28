@@ -1134,7 +1134,8 @@ std::vector<std::string> generateTypoVariants(const std::string& word) {
 std::string buildSmartFtsQuery(
     const std::string& query,
     const std::string& language,
-    const std::unordered_map<std::string, std::vector<std::string>>& spellingAlternatives) {
+    const std::unordered_map<std::string, std::vector<std::string>>& spellingAlternatives,
+    QueryExpansionOptions options) {
     std::vector<std::string> words = splitWords(query);
     if (words.empty()) return "";
 
@@ -1156,19 +1157,22 @@ std::string buildSmartFtsQuery(
         if (strippedWord != word) alternatives.insert(strippedWord);
 
         // Add synonyms (tries both accented and stripped forms internally)
-        auto syns = expandSynonyms(word, language);
-        for (const auto& s : syns) {
-            alternatives.insert(toLower(s));
-        }
-        if (strippedWord != word) {
-            auto syns2 = expandSynonyms(strippedWord, language);
-            for (const auto& s : syns2) {
+        if (options.includeSynonyms) {
+            auto syns = expandSynonyms(word, language);
+            for (const auto& s : syns) {
                 alternatives.insert(toLower(s));
+            }
+            if (strippedWord != word) {
+                auto syns2 = expandSynonyms(strippedWord, language);
+                for (const auto& s : syns2) {
+                    alternatives.insert(toLower(s));
+                }
             }
         }
 
         bool hasIndexedSpellingAlternatives = false;
         auto addSpellingAlternatives = [&](const std::string& key) {
+            if (!options.includeSpelling) return;
             auto it = spellingAlternatives.find(key);
             if (it == spellingAlternatives.end() || it->second.empty()) return;
             hasIndexedSpellingAlternatives = true;
@@ -1182,7 +1186,7 @@ std::string buildSmartFtsQuery(
 
         // If the indexer provided real indexed alternatives, prefer those over
         // synthetic variants. Otherwise keep the older generated fallback.
-        if (!hasIndexedSpellingAlternatives) {
+        if (options.includeFuzzy && !hasIndexedSpellingAlternatives) {
             auto typoVars = generateTypoVariants(word);
             for (const auto& tv : typoVars) {
                 alternatives.insert(tv);
@@ -1220,7 +1224,7 @@ std::string buildSmartFtsQuery(
 
         // Add prefix match for original word (catches morphological variants).
         // FTS5 prefix syntax: token* (unquoted token with trailing asterisk).
-        if (word.size() >= 4) {
+        if (options.includeFuzzy && word.size() >= 4) {
             size_t stemLen = word.size() - 1;
             if (stemLen >= 3) {
                 std::string stem = word.substr(0, stemLen);

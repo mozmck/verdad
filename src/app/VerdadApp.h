@@ -16,6 +16,13 @@ class ReadingPlanManager;
 class ImportedModuleManager;
 class MainWindow;
 
+enum class SearchAssistanceMode {
+    Exact,
+    Spelling,
+    Synonyms,
+    Smart,
+};
+
 /// Main application class - owns all managers and the main window
 class VerdadApp {
 public:
@@ -96,6 +103,10 @@ public:
         bool showRemoteNetworkWarning = true;
         bool hasSelectedSources = false;
         std::vector<std::string> selectedSources;
+    };
+
+    struct SearchSettings {
+        SearchAssistanceMode assistanceMode = SearchAssistanceMode::Smart;
     };
 
     VerdadApp();
@@ -198,6 +209,16 @@ public:
     /// Update Module Manager filter preferences.
     void setModuleManagerSettings(const ModuleManagerSettings& settings);
 
+    /// Current search assistance defaults.
+    const SearchSettings& searchSettings() const { return searchSettings_; }
+    SearchAssistanceMode searchAssistanceMode() const {
+        return searchSettings_.assistanceMode;
+    }
+
+    /// Update search assistance defaults.
+    void setSearchSettings(const SearchSettings& settings);
+    void setSearchAssistanceMode(SearchAssistanceMode mode);
+
     /// Load preferences from a specific file. When preserveLayout is true,
     /// imported window geometry, splitter sizes, and pane scroll positions
     /// are ignored in favor of the current session layout.
@@ -229,6 +250,7 @@ private:
     PreviewDictionarySettings previewDictionarySettings_;
     OptionDisplaySettings optionDisplaySettings_;
     ModuleManagerSettings moduleManagerSettings_;
+    SearchSettings searchSettings_;
     ThemePalette themePalette_;
     std::vector<std::string> systemFontFamilies_;
     /// Map from family name (lowercase) to FLTK font index

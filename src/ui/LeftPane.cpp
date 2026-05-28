@@ -88,6 +88,11 @@ LeftPane::LeftPane(VerdadApp* app, int X, int Y, int W, int H)
     , searchGroup_(nullptr)
     , searchInput_(nullptr)
     , searchButton_(nullptr)
+    , searchModeGroup_(nullptr)
+    , exactSearchModeButton_(nullptr)
+    , spellingSearchModeButton_(nullptr)
+    , synonymsSearchModeButton_(nullptr)
+    , smartSearchModeButton_(nullptr)
     , contentTile_(nullptr)
     , contentResizeBox_(nullptr)
     , tabs_(nullptr)
@@ -102,6 +107,7 @@ LeftPane::LeftPane(VerdadApp* app, int X, int Y, int W, int H)
 
     int padding = 2;
     int searchH = 30;
+    int modeH = 24;
     int previewH = 150;
     int minTabH = 80;
     int minPreviewH = 60;
@@ -127,8 +133,44 @@ LeftPane::LeftPane(VerdadApp* app, int X, int Y, int W, int H)
     searchGroup_->end();
     searchGroup_->resizable(searchInput_);
 
+    searchModeGroup_ = new Fl_Group(X + padding, Y + padding + searchH + padding,
+                                    W - 2 * padding, modeH);
+    searchModeGroup_->begin();
+
+    auto makeModeButton = [&](int index,
+                              const char* label,
+                              const char* tooltip) {
+        int modeW = std::max(20, W - 2 * padding);
+        int buttonX = X + padding + (modeW * index) / 4;
+        int buttonWLocal = (modeW * (index + 1)) / 4 - (modeW * index) / 4;
+        Fl_Button* button = new Fl_Button(buttonX,
+                                          Y + padding + searchH + padding,
+                                          buttonWLocal,
+                                          modeH,
+                                          label);
+        button->type(FL_TOGGLE_BUTTON);
+        button->box(FL_THIN_UP_BOX);
+        button->down_box(FL_THIN_DOWN_BOX);
+        button->labelsize(12);
+        button->tooltip(tooltip);
+        button->callback(onSearchMode, this);
+        return button;
+    };
+
+    exactSearchModeButton_ = makeModeButton(
+        0, "Exact", "Search exact query terms");
+    spellingSearchModeButton_ = makeModeButton(
+        1, "Spelling", "Search exact terms plus spelling corrections");
+    synonymsSearchModeButton_ = makeModeButton(
+        2, "Synonyms", "Search spelling corrections plus synonyms");
+    smartSearchModeButton_ = makeModeButton(
+        3, "Smart", "Search spelling corrections, synonyms, and fuzzy matches");
+
+    searchModeGroup_->end();
+    syncSearchAssistanceButtons();
+
     // Splitter area in the middle/bottom (tabs + preview)
-    int contentY = Y + padding + searchH + padding;
+    int contentY = Y + padding + searchH + padding + modeH + padding;
     int contentW = std::max(20, W - 2 * padding);
     int contentH = std::max(minTabH + minPreviewH, H - (contentY - Y) - padding);
     contentTile_ = new Fl_Tile(X + padding, contentY, contentW, contentH);
@@ -197,7 +239,9 @@ LeftPane::~LeftPane() = default;
 void LeftPane::resize(int X, int Y, int W, int H) {
     Fl_Group::resize(X, Y, W, H);
 
-    if (!searchGroup_ || !searchInput_ || !searchButton_ || !contentTile_ ||
+    if (!searchGroup_ || !searchInput_ || !searchButton_ || !searchModeGroup_ ||
+        !exactSearchModeButton_ || !spellingSearchModeButton_ ||
+        !synonymsSearchModeButton_ || !smartSearchModeButton_ || !contentTile_ ||
         !contentResizeBox_ ||
         !tabs_ ||
         !modulePanel_ || !searchPanel_ || !tagPanel_ ||
@@ -207,6 +251,7 @@ void LeftPane::resize(int X, int Y, int W, int H) {
 
     const int padding = 2;
     const int searchH = 30;
+    const int modeH = 24;
     const int minTabH = 80;
     const int minPreviewH = 60;
     const int buttonW = 60;
@@ -218,8 +263,23 @@ void LeftPane::resize(int X, int Y, int W, int H) {
     searchInput_->resize(X + padding, Y + padding, searchW, searchH);
     searchButton_->resize(X + W - padding - buttonW, Y + padding, buttonW, searchH);
 
+    const int modeY = Y + padding + searchH + padding;
+    const int modeW = std::max(20, W - 2 * padding);
+    searchModeGroup_->resize(X + padding, modeY, modeW, modeH);
+    Fl_Button* modeButtons[] = {
+        exactSearchModeButton_,
+        spellingSearchModeButton_,
+        synonymsSearchModeButton_,
+        smartSearchModeButton_,
+    };
+    for (int i = 0; i < 4; ++i) {
+        int bx = X + padding + (modeW * i) / 4;
+        int bw = (modeW * (i + 1)) / 4 - (modeW * i) / 4;
+        modeButtons[i]->resize(bx, modeY, bw, modeH);
+    }
+
     int oldTabsH = tabs_->h();
-    int tileY = Y + padding + searchH + padding;
+    int tileY = Y + padding + searchH + padding + modeH + padding;
     int tileW = std::max(20, W - 2 * padding);
     int tileH = std::max(minTabH + minPreviewH, H - (tileY - Y) - padding);
 
@@ -243,6 +303,31 @@ void LeftPane::doSearch(const std::string& query,
         searchPanel_->search(query, moduleOverride);
         showSearchTab();
     }
+}
+
+void LeftPane::setSearchAssistanceMode(SearchAssistanceMode mode) {
+    if (!app_) return;
+    if (app_->searchAssistanceMode() != mode) {
+        app_->setSearchAssistanceMode(mode);
+        return;
+    }
+    syncSearchAssistanceButtons();
+}
+
+void LeftPane::syncSearchAssistanceButtons() {
+    if (!exactSearchModeButton_ || !spellingSearchModeButton_ ||
+        !synonymsSearchModeButton_ || !smartSearchModeButton_) {
+        return;
+    }
+
+    SearchAssistanceMode mode = app_
+        ? app_->searchAssistanceMode()
+        : SearchAssistanceMode::Smart;
+    exactSearchModeButton_->value(mode == SearchAssistanceMode::Exact);
+    spellingSearchModeButton_->value(mode == SearchAssistanceMode::Spelling);
+    synonymsSearchModeButton_->value(mode == SearchAssistanceMode::Synonyms);
+    smartSearchModeButton_->value(mode == SearchAssistanceMode::Smart);
+    if (searchModeGroup_) searchModeGroup_->redraw();
 }
 
 void LeftPane::setSearchModule(const std::string& moduleName) {
@@ -410,6 +495,7 @@ void LeftPane::redrawChrome() {
     }
     if (searchInput_) searchInput_->redraw();
     if (searchButton_) searchButton_->redraw();
+    if (searchModeGroup_) searchModeGroup_->redraw();
     if (tabs_) tabs_->redraw();
 }
 
@@ -502,6 +588,30 @@ void LeftPane::onSearchInput(Fl_Widget* /*w*/, void* data) {
     auto* self = static_cast<LeftPane*>(data);
     const char* text = self->searchInput_->value();
     if (text && text[0]) {
+        self->doSearch(text);
+    }
+}
+
+void LeftPane::onSearchMode(Fl_Widget* w, void* data) {
+    auto* self = static_cast<LeftPane*>(data);
+    if (!self || !self->app_) return;
+
+    SearchAssistanceMode mode = SearchAssistanceMode::Smart;
+    if (w == self->exactSearchModeButton_) {
+        mode = SearchAssistanceMode::Exact;
+    } else if (w == self->spellingSearchModeButton_) {
+        mode = SearchAssistanceMode::Spelling;
+    } else if (w == self->synonymsSearchModeButton_) {
+        mode = SearchAssistanceMode::Synonyms;
+    }
+
+    self->app_->setSearchAssistanceMode(mode);
+    self->syncSearchAssistanceButtons();
+
+    const char* text = self->searchInput_ ? self->searchInput_->value() : nullptr;
+    if (self->tabs_ && self->searchPanel_ &&
+        self->tabs_->value() == self->searchPanel_ &&
+        text && text[0]) {
         self->doSearch(text);
     }
 }

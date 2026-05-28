@@ -44,12 +44,19 @@ std::string metaphoneKey(const std::string& word);
 /// Returns candidate forms that are likely typos of the input.
 std::vector<std::string> generateTypoVariants(const std::string& word);
 
+struct QueryExpansionOptions {
+    bool includeSpelling = true;
+    bool includeSynonyms = true;
+    bool includeFuzzy = true;
+};
+
 /// Build an FTS5 query that covers the original terms plus fuzzy expansions.
 /// Each query word is expanded with synonyms and phonetic variants, then
 /// combined with OR within each word group and AND across word groups.
 std::string buildSmartFtsQuery(const std::string& query,
                                const std::string& language = "en",
-                               const std::unordered_map<std::string, std::vector<std::string>>& spellingAlternatives = {});
+                               const std::unordered_map<std::string, std::vector<std::string>>& spellingAlternatives = {},
+                               QueryExpansionOptions options = {});
 
 /// A match result with scoring metadata for smart search ranking.
 struct ScoredMatch {

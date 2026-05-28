@@ -204,6 +204,18 @@ std::string normalizeSmartSearchLanguage(std::string language) {
     return language;
 }
 
+SearchIndexer::SmartSearchOptions smartSearchOptionsForMode(
+    SearchAssistanceMode mode) {
+    SearchIndexer::SmartSearchOptions options;
+    const int level = static_cast<int>(mode);
+    options.spellingCorrection =
+        level >= static_cast<int>(SearchAssistanceMode::Spelling);
+    options.includeSynonyms =
+        level >= static_cast<int>(SearchAssistanceMode::Synonyms);
+    options.fuzzyExpansion = mode == SearchAssistanceMode::Smart;
+    return options;
+}
+
 std::string detectSmartSearchLanguage(
     const std::string& moduleName,
     const std::vector<std::string>& resourceTypes,
@@ -871,9 +883,8 @@ SearchPanel::SearchPanel(VerdadApp* app, int X, int Y, int W, int H)
     searchType_->add("Multi-word");
     searchType_->add("Exact phrase");
     searchType_->add("Regex");
-    searchType_->add("Smart");
     searchType_->value(0);
-    searchType_->tooltip("Search type");
+    searchType_->tooltip("Match type");
 
     cy += choiceH + padding;
 
@@ -1172,7 +1183,8 @@ void SearchPanel::requestLazySnippetsForVisibleResults() {
                                                     context.kind,
                                                     context.query,
                                                     context.language,
-                                                    context.caseSensitive);
+                                                    context.caseSensitive,
+                                                    context.smartOptions);
         }
 
         std::lock_guard<std::mutex> lock(lazySnippetMutex_);
@@ -1419,7 +1431,14 @@ void SearchPanel::search(const std::string& query,
     // Get search type
     const bool exactPhrase = (searchType_->value() == 1);
     const bool regexSearch = (searchType_->value() == 2);
-    const bool smartSearch = (searchType_->value() == 3);
+    const SearchAssistanceMode assistanceMode = app_
+        ? app_->searchAssistanceMode()
+        : SearchAssistanceMode::Smart;
+    const bool assistedSearch =
+        !exactPhrase && !regexSearch &&
+        assistanceMode != SearchAssistanceMode::Exact;
+    const SearchIndexer::SmartSearchOptions smartOptions =
+        smartSearchOptionsForMode(assistanceMode);
     std::string strongsQuery = normalizeStrongsQuery(trimmedQuery);
     bool isStrongs = !strongsQuery.empty() && requestCanUseStrongs(resourceTypes);
     if (isStrongs) trimmedQuery = strongsQuery;
@@ -1443,9 +1462,9 @@ void SearchPanel::search(const std::string& query,
         highlightStrongs_ = extractStrongsTokens(strongsQuery);
     } else if (regexSearch) {
         highlightMode_ = HighlightMode::Regex;
-    } else if (smartSearch) {
-        // Smart search highlights terms + their synonyms; the indexer
-        // builds highlighted snippets, so we just track terms for preview.
+    } else if (assistedSearch) {
+        // Assisted search highlights query terms and enabled expansions. The
+        // indexer builds result snippets with the same option set.
         highlightMode_ = HighlightMode::Terms;
         highlightTerms_ = tokenizeWords(trimmedQuery);
         // Also add synonyms to the highlight terms for preview highlighting.
@@ -1454,16 +1473,20 @@ void SearchPanel::search(const std::string& query,
         std::vector<std::string> expandedTerms;
         std::unordered_set<std::string> seen;
         for (const auto& term : highlightTerms_) {
-            auto syns = smart_search::expandSynonyms(term, smartLang);
-            for (const auto& syn : syns) {
-                std::string lower = syn;
-                std::transform(lower.begin(), lower.end(), lower.begin(),
-                               [](unsigned char c) {
-                                   return static_cast<char>(std::tolower(c));
-                               });
-                if (seen.insert(lower).second) {
-                    expandedTerms.push_back(syn);
+            if (smartOptions.includeSynonyms) {
+                auto syns = smart_search::expandSynonyms(term, smartLang);
+                for (const auto& syn : syns) {
+                    std::string lower = syn;
+                    std::transform(lower.begin(), lower.end(), lower.begin(),
+                                   [](unsigned char c) {
+                                       return static_cast<char>(std::tolower(c));
+                                   });
+                    if (seen.insert(lower).second) {
+                        expandedTerms.push_back(syn);
+                    }
                 }
+            } else if (seen.insert(term).second) {
+                expandedTerms.push_back(term);
             }
         }
         highlightTerms_ = std::move(expandedTerms);
@@ -1551,13 +1574,15 @@ void SearchPanel::search(const std::string& query,
             lazyContext.kind = SearchIndexer::SnippetKind::Strongs;
             lazyContext.query = strongsQuery;
             results_ = indexer->searchStrongs(request, strongsQuery, 0, false);
-        } else if (smartSearch) {
+        } else if (assistedSearch) {
             std::string smartLang = detectSmartSearchLanguage(
                 moduleName, resourceTypes, searchableModules_);
             lazyContext.kind = SearchIndexer::SnippetKind::Smart;
             lazyContext.query = trimmedQuery;
             lazyContext.language = smartLang;
-            results_ = indexer->searchSmart(request, trimmedQuery, smartLang, 0, false);
+            lazyContext.smartOptions = smartOptions;
+            results_ = indexer->searchSmart(request, trimmedQuery, smartLang, 0,
+                                            false, smartOptions);
         } else {
             lazyContext.kind = exactPhrase
                 ? SearchIndexer::SnippetKind::ExactPhrase
@@ -1592,7 +1617,7 @@ void SearchPanel::search(const std::string& query,
     }
 
     if (usedDirectFallback && !isStrongs && !regexSearch && indexer) {
-        if (smartSearch) {
+        if (assistedSearch) {
             results_ = indexer->searchWordDirect(request, trimmedQuery, false);
         } else {
             results_ = indexer->searchWordDirect(request, trimmedQuery, exactPhrase);

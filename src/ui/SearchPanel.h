@@ -85,6 +85,7 @@ private:
         std::string query;
         std::string language = "en";
         bool caseSensitive = false;
+        SearchIndexer::SmartSearchOptions smartOptions;
     };
 
     struct AsyncSearchState {
