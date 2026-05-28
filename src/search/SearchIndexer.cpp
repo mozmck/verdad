@@ -28,7 +28,7 @@
 namespace verdad {
 namespace {
 
-constexpr int kSearchSchemaVersion = 8;
+constexpr int kSearchSchemaVersion = 9;
 constexpr size_t kMaxSpellingCandidatesPerToken = 360;
 
 struct CatalogSnapshot {
@@ -116,6 +116,30 @@ std::string truncateSnippet(const std::string& text, size_t maxLen = 200) {
 
 std::string normalizeDirectSearchText(const std::string& text) {
     return lowerCopy(smart_search::stripDiacritics(text));
+}
+
+bool isDirectSearchWordByte(unsigned char c) {
+    return std::isalnum(c) || c == '\'' || c == '-' || c >= 0x80;
+}
+
+bool containsWholeDirectSearchMatch(std::string_view haystack,
+                                    std::string_view needle) {
+    if (needle.empty()) return false;
+
+    size_t pos = 0;
+    while ((pos = haystack.find(needle, pos)) != std::string_view::npos) {
+        const size_t end = pos + needle.size();
+        const bool leftBoundary =
+            (pos == 0) ||
+            !isDirectSearchWordByte(static_cast<unsigned char>(haystack[pos - 1]));
+        const bool rightBoundary =
+            (end >= haystack.size()) ||
+            !isDirectSearchWordByte(static_cast<unsigned char>(haystack[end]));
+        if (leftBoundary && rightBoundary) return true;
+        ++pos;
+    }
+
+    return false;
 }
 
 bool isAsciiText(std::string_view text) {
@@ -389,6 +413,7 @@ smart_search::QueryExpansionOptions toQueryExpansionOptions(
     smart_search::QueryExpansionOptions queryOptions;
     queryOptions.includeSpelling = options.spellingCorrection;
     queryOptions.includeSynonyms = options.includeSynonyms;
+    queryOptions.includePartialWords = options.partialWordMatching;
     queryOptions.includeFuzzy = options.fuzzyExpansion;
     return queryOptions;
 }
@@ -623,33 +648,74 @@ std::vector<std::string> extractStrongsTokens(const std::string& text) {
     return terms;
 }
 
-std::string buildCompactStrongsIndexText(const std::string& xhtml) {
-    if (xhtml.empty()) return "";
-
-    std::vector<std::string> tokens;
-    std::unordered_set<std::string> seen;
-    static const std::regex kPrefixedTokenRe(R"(([HhGg]\d+[A-Za-z]?))");
-
-    auto it = std::sregex_iterator(xhtml.begin(), xhtml.end(), kPrefixedTokenRe);
-    const auto end = std::sregex_iterator();
-    for (; it != end; ++it) {
-        for (const auto& token : extractStrongsTokens((*it)[1].str())) {
-            if (token.empty()) continue;
-            char prefix = static_cast<char>(std::toupper(
-                static_cast<unsigned char>(token[0])));
-            if (prefix != 'H' && prefix != 'G') continue;
-            if (seen.insert(token).second) {
-                tokens.push_back(token);
-            }
-        }
-    }
-
+std::string joinStrongsTokens(const std::vector<std::string>& tokens) {
     std::ostringstream out;
     for (size_t i = 0; i < tokens.size(); ++i) {
         if (i) out << ' ';
         out << tokens[i];
     }
     return out.str();
+}
+
+void appendStrongsIndexTokens(const std::string& text,
+                              std::vector<std::string>& tokens,
+                              std::unordered_set<std::string>& seen) {
+    for (const auto& token : extractStrongsTokens(text)) {
+        if (token.empty()) continue;
+        char prefix = static_cast<char>(std::toupper(
+            static_cast<unsigned char>(token[0])));
+        if (prefix != 'H' && prefix != 'G') continue;
+        if (seen.insert(token).second) {
+            tokens.push_back(token);
+        }
+    }
+}
+
+std::string buildCompactStrongsIndexText(sword::SWModule* mod,
+                                         const std::string& xhtml) {
+    std::vector<std::string> tokens;
+    std::unordered_set<std::string> seen;
+
+    if (mod) {
+        auto& attrs = mod->getEntryAttributes();
+        auto wordIt = attrs.find("Word");
+        if (wordIt != attrs.end()) {
+            for (const auto& entry : wordIt->second) {
+                const auto& wordAttrs = entry.second;
+                auto lemmaIt = wordAttrs.find("Lemma");
+                if (lemmaIt == wordAttrs.end()) continue;
+                appendStrongsIndexTokens(lemmaIt->second.c_str(),
+                                         tokens,
+                                         seen);
+            }
+        }
+    }
+
+    static const std::regex kTypedStrongValueRe(
+        R"(type\s*=\s*([A-Za-z]+).*?(?:&|&amp;)value\s*=\s*(\d+[A-Za-z]?))",
+        std::regex::icase);
+    auto valueIt = std::sregex_iterator(xhtml.begin(), xhtml.end(), kTypedStrongValueRe);
+    const auto valueEnd = std::sregex_iterator();
+    for (; valueIt != valueEnd; ++valueIt) {
+        std::string type = lowerCopy((*valueIt)[1].str());
+        char prefix = 0;
+        if (type == "greek") prefix = 'G';
+        if (type == "hebrew") prefix = 'H';
+        if (!prefix) continue;
+        appendStrongsIndexTokens(std::string(1, prefix) + (*valueIt)[2].str(),
+                                 tokens,
+                                 seen);
+    }
+
+    static const std::regex kPrefixedTokenRe(R"(([HhGg]\d+[A-Za-z]?))");
+
+    auto it = std::sregex_iterator(xhtml.begin(), xhtml.end(), kPrefixedTokenRe);
+    const auto end = std::sregex_iterator();
+    for (; it != end; ++it) {
+        appendStrongsIndexTokens((*it)[1].str(), tokens, seen);
+    }
+
+    return joinStrongsTokens(tokens);
 }
 
 enum class StrongsLanguageHint {
@@ -1400,8 +1466,13 @@ std::string buildSnippetMarkup(const std::string& text,
     return out;
 }
 
+bool isLiteralWordByte(unsigned char c) {
+    return std::isalnum(c) || c == '\'' || c == '-' || c >= 0x80;
+}
+
 std::vector<bool> buildLiteralMask(const std::string& text,
-                                   const std::vector<std::string>& needles) {
+                                   const std::vector<std::string>& needles,
+                                   bool requireWordBoundaries) {
     std::vector<bool> mask(text.size(), false);
     if (text.empty() || needles.empty()) return mask;
 
@@ -1412,10 +1483,26 @@ std::vector<bool> buildLiteralMask(const std::string& text,
 
         size_t pos = 0;
         while ((pos = lowerText.find(needle, pos)) != std::string::npos) {
-            for (size_t i = pos; i < pos + needle.size() && i < mask.size(); ++i) {
-                mask[i] = true;
+            const size_t end = pos + needle.size();
+            bool ok = true;
+            if (requireWordBoundaries) {
+                if (pos > 0 &&
+                    isLiteralWordByte(static_cast<unsigned char>(text[pos - 1]))) {
+                    ok = false;
+                }
+                if (end < text.size() &&
+                    isLiteralWordByte(static_cast<unsigned char>(text[end]))) {
+                    ok = false;
+                }
             }
-            pos += needle.size();
+            if (ok) {
+                for (size_t i = pos; i < end && i < mask.size(); ++i) {
+                    mask[i] = true;
+                }
+                pos = end;
+            } else {
+                ++pos;
+            }
         }
     }
 
@@ -1435,7 +1522,7 @@ std::string buildWordSnippetFromSourceText(const std::string& plainText,
     }
 
     auto makeSnippet = [&](const std::string& text) {
-        std::vector<bool> mask = buildLiteralMask(text, needles);
+        std::vector<bool> mask = buildLiteralMask(text, needles, true);
         if (std::find(mask.begin(), mask.end(), true) == mask.end()) {
             return truncateSnippet(text);
         }
@@ -1674,6 +1761,18 @@ std::string buildSmartSnippetFromSourceText(
         size_t pos = 0;
         while ((pos = haystack.find(needle, pos)) != std::string::npos) {
             size_t end = pos + needle.size();
+            if (!options.partialWordMatching) {
+                const bool leftBoundary =
+                    (pos == 0) ||
+                    !isLiteralWordByte(static_cast<unsigned char>(haystack[pos - 1]));
+                const bool rightBoundary =
+                    (end >= haystack.size()) ||
+                    !isLiteralWordByte(static_cast<unsigned char>(haystack[end]));
+                if (!leftBoundary || !rightBoundary) {
+                    ++pos;
+                    continue;
+                }
+            }
             if (useStrippedMap) {
                 size_t origStart = (pos < strippedToOrig.size()) ? strippedToOrig[pos] : pos;
                 size_t origEnd = (end > 0 && end - 1 < strippedToOrig.size())
@@ -2892,7 +2991,7 @@ std::vector<SearchResult> SearchIndexer::searchWordDirect(
                                std::string& snippetOut) {
                 const std::string searchable = normalizeDirectSearchText(
                     result.title.empty() ? plainText : (result.title + " " + plainText));
-                if (searchable.find(normalizedPhrase) == std::string::npos) {
+                if (!containsWholeDirectSearchMatch(searchable, normalizedPhrase)) {
                     return false;
                 }
                 snippetOut = truncateSnippet(plainText.empty() ? result.title : plainText);
@@ -2923,7 +3022,7 @@ std::vector<SearchResult> SearchIndexer::searchWordDirect(
             const bool matched = std::all_of(
                 normalizedTokens.begin(), normalizedTokens.end(),
                 [&searchable](const std::string& token) {
-                    return searchable.find(token) != std::string::npos;
+                    return containsWholeDirectSearchMatch(searchable, token);
                 });
             if (!matched) return false;
             snippetOut = truncateSnippet(plainText.empty() ? result.title : plainText);
@@ -3375,6 +3474,8 @@ SearchIndexer::buildSmartSpellingAlternatives(
         const bool exactTermExists = exactIt != candidates.end();
         const int exactTermTotalCount = exactTermExists ? exactIt->second.totalCount : 0;
         const bool exactTermIsRare = exactTermExists && exactTermTotalCount < 64;
+        const bool allowPartialCandidateProbe =
+            options.partialWordMatching || options.fuzzyExpansion;
 
         for (const auto& probe : spellingProbeTerms(
                  normalized, !exactTermExists || exactTermIsRare ||
@@ -3416,7 +3517,7 @@ SearchIndexer::buildSmartSpellingAlternatives(
             if (stmt) sqlite3_finalize(stmt);
         }
 
-        if (allowBroadFuzzyCandidates) {
+        if (allowBroadFuzzyCandidates && allowPartialCandidateProbe) {
             for (const auto& prefix : spellingPrefixProbes(normalized)) {
                 if (candidates.size() >= kMaxSpellingCandidatesPerToken) break;
                 std::string upperBound = prefixRangeUpperBound(prefix);
@@ -3446,6 +3547,11 @@ SearchIndexer::buildSmartSpellingAlternatives(
         ranked.reserve(candidates.size());
         for (auto& [term, candidate] : candidates) {
             if (term == normalized) continue;
+            if (candidate.prefixHit && !allowPartialCandidateProbe &&
+                !candidate.spellingProbeHit && !candidate.orthographicHit &&
+                !candidate.phoneticHit) {
+                continue;
+            }
 
             const std::string& candidateTerm = candidate.strippedTerm.empty()
                 ? candidate.term
@@ -3985,6 +4091,7 @@ void SearchIndexer::indexModuleNow(const std::string& moduleName) {
         source.mgr->setGlobalOption("Footnotes", "On");
         source.mgr->setGlobalOption("Cross-references", "On");
         source.mgr->setGlobalOption("Headings", "On");
+        source.mod->setProcessEntryAttributes(true);
 
         for (size_t ki = 0; ki < source.keyedEntries.size() && !cancelled; ++ki) {
             if (stopRequested_.load()) {
@@ -4015,7 +4122,7 @@ void SearchIndexer::indexModuleNow(const std::string& moduleName) {
                 scopeToken = makeBibleTestamentToken(vk->getTestament());
                 bookToken = normalizeFilterToken(bookName ? bookName : "");
             }
-            std::string strongsIndexText = buildCompactStrongsIndexText(xhtml);
+            std::string strongsIndexText = buildCompactStrongsIndexText(source.mod, xhtml);
             if (!insertCurrentRow(scopeToken,
                                   bookToken,
                                   title,

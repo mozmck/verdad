@@ -212,6 +212,8 @@ SearchIndexer::SmartSearchOptions smartSearchOptionsForMode(
         level >= static_cast<int>(SearchAssistanceMode::Spelling);
     options.includeSynonyms =
         level >= static_cast<int>(SearchAssistanceMode::Synonyms);
+    options.partialWordMatching =
+        level >= static_cast<int>(SearchAssistanceMode::Synonyms);
     options.fuzzyExpansion = mode == SearchAssistanceMode::Smart;
     return options;
 }
@@ -1610,9 +1612,9 @@ void SearchPanel::search(const std::string& query,
             swordSearchType = exactPhrase ? 1 : -1;
         }
     } else if (isStrongs && results_.empty() &&
-               (usedDirectFallback || indexingPending) &&
+               (usedDirectFallback || indexingPending || !indexedSearchReady) &&
                canRunSwordFallback) {
-        // Allow immediate Strong's lookups before module indexing is ready.
+        // Allow immediate Strong's lookups before the fast lemma index is ready.
         runSwordFallback = true;
     }
 

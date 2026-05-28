@@ -1222,9 +1222,10 @@ std::string buildSmartFtsQuery(
             fts << quoteFtsToken(alt);
         }
 
-        // Add prefix match for original word (catches morphological variants).
+        // Add prefix match for original word (catches partial words and
+        // morphological variants).
         // FTS5 prefix syntax: token* (unquoted token with trailing asterisk).
-        if (options.includeFuzzy && word.size() >= 4) {
+        if (options.includePartialWords && word.size() >= 4) {
             size_t stemLen = word.size() - 1;
             if (stemLen >= 3) {
                 std::string stem = word.substr(0, stemLen);

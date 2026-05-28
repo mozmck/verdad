@@ -47,6 +47,7 @@ std::vector<std::string> generateTypoVariants(const std::string& word);
 struct QueryExpansionOptions {
     bool includeSpelling = true;
     bool includeSynonyms = true;
+    bool includePartialWords = true;
     bool includeFuzzy = true;
 };
 

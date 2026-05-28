@@ -162,7 +162,7 @@ LeftPane::LeftPane(VerdadApp* app, int X, int Y, int W, int H)
     spellingSearchModeButton_ = makeModeButton(
         1, "Spelling", "Search exact terms plus spelling corrections");
     synonymsSearchModeButton_ = makeModeButton(
-        2, "Synonyms", "Search spelling corrections plus synonyms");
+        2, "Synonyms", "Search spelling corrections, synonyms, and partial words");
     smartSearchModeButton_ = makeModeButton(
         3, "Smart", "Search spelling corrections, synonyms, and fuzzy matches");
 

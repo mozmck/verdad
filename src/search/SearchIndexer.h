@@ -63,13 +63,16 @@ public:
     struct SmartSearchOptions {
         SmartSearchOptions(bool spelling = true,
                            bool synonyms = true,
+                           bool partialWords = true,
                            bool fuzzy = true)
             : spellingCorrection(spelling)
             , includeSynonyms(synonyms)
+            , partialWordMatching(partialWords)
             , fuzzyExpansion(fuzzy) {}
 
         bool spellingCorrection;
         bool includeSynonyms;
+        bool partialWordMatching;
         bool fuzzyExpansion;
     };
 
