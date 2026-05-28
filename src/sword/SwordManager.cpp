@@ -5,6 +5,7 @@
 #include "sword/SwordPaths.h"
 #include "app/PerfTrace.h"
 #include "reading/DateUtils.h"
+#include "search/SearchSnippet.h"
 
 #include <swmgr.h>
 #include <swconfig.h>
@@ -2533,109 +2534,10 @@ void appendSnippetVisibleText(const std::string& rawText,
                                lastWordStart, lastWordEnd, lastWordValid);
 }
 
-struct SearchSnippetData {
-    std::string text;
-    std::vector<bool> mask;
-};
-
-SearchSnippetData collapseSnippetWhitespace(const std::string& text,
-                                            const std::vector<bool>& mask) {
-    SearchSnippetData collapsed;
-    collapsed.text.reserve(text.size());
-    collapsed.mask.reserve(mask.size());
-
-    bool lastWasSpace = true;
-    for (size_t i = 0; i < text.size(); ++i) {
-        unsigned char uc = static_cast<unsigned char>(text[i]);
-        if (std::isspace(uc)) {
-            if (!lastWasSpace) {
-                collapsed.text.push_back(' ');
-                collapsed.mask.push_back(false);
-                lastWasSpace = true;
-            }
-            continue;
-        }
-
-        collapsed.text.push_back(text[i]);
-        collapsed.mask.push_back(i < mask.size() ? mask[i] : false);
-        lastWasSpace = false;
-    }
-
-    while (!collapsed.text.empty() && collapsed.text.back() == ' ') {
-        collapsed.text.pop_back();
-        if (!collapsed.mask.empty()) collapsed.mask.pop_back();
-    }
-    {
-        size_t start = 0;
-        while (start < collapsed.text.size() && collapsed.text[start] == ' ') ++start;
-        if (start > 0) {
-            collapsed.text.erase(0, start);
-            if (collapsed.mask.size() >= start)
-                collapsed.mask.erase(collapsed.mask.begin(),
-                                     collapsed.mask.begin() + static_cast<ptrdiff_t>(start));
-        }
-    }
-
-    return collapsed;
-}
-
-std::string buildMaskedSnippetMarkup(const std::string& text,
-                                     const std::vector<bool>& mask,
-                                     size_t maxLen = 160) {
-    if (text.empty()) return "";
-
-    size_t hitStart = std::string::npos;
-    size_t hitEnd = std::string::npos;
-    for (size_t i = 0; i < mask.size() && i < text.size(); ++i) {
-        if (!mask[i]) continue;
-        hitStart = i;
-        hitEnd = i + 1;
-        while (hitEnd < mask.size() && hitEnd < text.size() && mask[hitEnd]) {
-            ++hitEnd;
-        }
-        break;
-    }
-
-    size_t left = 0;
-    size_t right = text.size();
-    if (text.size() > maxLen) {
-        if (hitStart != std::string::npos) {
-            left = (hitStart > maxLen / 2) ? (hitStart - maxLen / 2) : 0;
-            if (hitEnd > left + maxLen) {
-                left = hitEnd - maxLen;
-            }
-        }
-        if (left > text.size()) left = text.size();
-        right = std::min(text.size(), left + maxLen);
-    }
-
-    std::string out;
-    out.reserve((right - left) + 32);
-    if (left > 0) out += "... ";
-
-    bool inHighlight = false;
-    for (size_t i = left; i < right; ++i) {
-        bool highlight = (i < mask.size()) && mask[i];
-        if (highlight && !inHighlight) {
-            out += "<span class=\"searchhit\">";
-            inHighlight = true;
-        } else if (!highlight && inHighlight) {
-            out += "</span>";
-            inHighlight = false;
-        }
-        out.push_back(text[i]);
-    }
-
-    if (inHighlight) out += "</span>";
-    if (right < text.size()) out += " ...";
-    return out;
-}
-
 std::string buildStrongsSearchSnippet(const std::string& html,
-                                      const std::string& strongsNumber,
-                                      size_t maxLen = 160) {
+                                      const std::string& strongsNumber) {
     std::string wanted = normalizeStrongsKey(strongsNumber);
-    if (wanted.empty()) return trimCopy(stripTags(html));
+    if (wanted.empty()) return search_snippet::truncateWords(stripTags(html));
 
     std::string plain;
     std::vector<bool> mask;
@@ -2744,16 +2646,7 @@ std::string buildStrongsSearchSnippet(const std::string& html,
         pos = tagEnd + 1;
     }
 
-    SearchSnippetData collapsed = collapseSnippetWhitespace(plain, mask);
-    if (collapsed.text.empty()) return "";
-
-    if (std::find(collapsed.mask.begin(), collapsed.mask.end(), true) ==
-        collapsed.mask.end()) {
-        if (collapsed.text.size() <= maxLen) return collapsed.text;
-        return collapsed.text.substr(0, maxLen) + "...";
-    }
-
-    return buildMaskedSnippetMarkup(collapsed.text, collapsed.mask, maxLen);
+    return search_snippet::buildHighlightedMarkup(plain, mask);
 }
 
 bool isInlineStrongMarkerTag(const std::string& rawTag, const std::string& tagName) {
@@ -5877,11 +5770,6 @@ std::vector<SearchResult> SwordManager::search(
         const char* preview = mod->stripText();
         result.text = preview ? preview : "";
 
-        // Truncate long preview
-        if (result.text.length() > 200) {
-            result.text = result.text.substr(0, 200) + "...";
-        }
-
         results.push_back(result);
     }
 
@@ -5919,10 +5807,7 @@ std::vector<SearchResult> SwordManager::searchStrongs(
         result.text = buildStrongsSearchSnippet(rendered, normalizedStrong);
         if (result.text.empty()) {
             const char* preview = mod->stripText();
-            result.text = preview ? preview : "";
-            if (result.text.size() > 200) {
-                result.text = result.text.substr(0, 200) + "...";
-            }
+            result.text = search_snippet::truncateWords(preview ? preview : "");
         }
 
         results.push_back(std::move(result));

@@ -8,6 +8,7 @@
 #include "ui/VerseListCopyMenu.h"
 #include "ui/WrappingChoice.h"
 #include "search/SearchIndexer.h"
+#include "search/SearchSnippet.h"
 #include "search/SmartSearch.h"
 #include "sword/SwordManager.h"
 
@@ -345,102 +346,6 @@ std::vector<std::string> extractStrongsTokens(const std::string& text) {
     return terms;
 }
 
-std::string collapseWhitespace(const std::string& in) {
-    std::string out;
-    out.reserve(in.size());
-    bool lastWasSpace = true;
-    for (char c : in) {
-        unsigned char uc = static_cast<unsigned char>(c);
-        if (std::isspace(uc)) {
-            if (!lastWasSpace) {
-                out.push_back(' ');
-                lastWasSpace = true;
-            }
-        } else {
-            out.push_back(c);
-            lastWasSpace = false;
-        }
-    }
-
-    while (!out.empty() && out.back() == ' ') out.pop_back();
-    size_t start = 0;
-    while (start < out.size() && out[start] == ' ') ++start;
-    return (start == 0) ? out : out.substr(start);
-}
-
-void replaceAll(std::string& text,
-                const std::string& from,
-                const std::string& to) {
-    if (from.empty()) return;
-    size_t pos = 0;
-    while ((pos = text.find(from, pos)) != std::string::npos) {
-        text.replace(pos, from.size(), to);
-        pos += to.size();
-    }
-}
-
-std::string htmlToSnippetText(std::string html) {
-    // Strip HTML tags without regex for performance
-    {
-        std::string stripped;
-        stripped.reserve(html.size());
-        bool inTag = false;
-        for (char c : html) {
-            if (c == '<') { inTag = true; stripped.push_back(' '); continue; }
-            if (c == '>') { inTag = false; continue; }
-            if (!inTag) stripped.push_back(c);
-        }
-        html = std::move(stripped);
-    }
-    replaceAll(html, "&nbsp;", " ");
-    replaceAll(html, "&amp;", "&");
-    replaceAll(html, "&quot;", "\"");
-    replaceAll(html, "&lt;", "<");
-    replaceAll(html, "&gt;", ">");
-    replaceAll(html, "&#39;", "'");
-    html = collapseWhitespace(html);
-    constexpr size_t kMaxSnippetLen = 220;
-    if (html.size() > kMaxSnippetLen) {
-        html.resize(kMaxSnippetLen);
-        html += "...";
-    }
-    return html;
-}
-
-std::string truncateSnippetWords(const std::string& text, size_t maxWords = 18) {
-    std::string collapsed = collapseWhitespace(text);
-    if (collapsed.empty()) return "";
-
-    size_t pos = 0;
-    size_t words = 0;
-    size_t cut = collapsed.size();
-    bool truncated = false;
-
-    while (pos < collapsed.size()) {
-        while (pos < collapsed.size() && collapsed[pos] == ' ') ++pos;
-        if (pos >= collapsed.size()) break;
-
-        size_t wordEnd = collapsed.find(' ', pos);
-        ++words;
-        if (words > maxWords) {
-            cut = pos;
-            truncated = true;
-            break;
-        }
-        if (wordEnd == std::string::npos) {
-            break;
-        }
-        pos = wordEnd + 1;
-    }
-
-    if (!truncated) return collapsed;
-
-    std::string out = collapsed.substr(0, cut);
-    while (!out.empty() && out.back() == ' ') out.pop_back();
-    if (!out.empty()) out += " ...";
-    return out;
-}
-
 constexpr int kResultRefColumnWidth = 100;
 constexpr int kResultRefColumnMaxWidth = 360;
 constexpr int kResultLinePadding = 4;
@@ -673,7 +578,8 @@ std::string highlightPlainSnippetMarkup(
     const std::vector<std::string>& terms,
     const std::string& phrase,
     const std::regex* regexPattern,
-    bool phraseMode) {
+    bool phraseMode,
+    bool cropToSnippet = false) {
 
     if (text.empty()) return "";
 
@@ -693,6 +599,9 @@ std::string highlightPlainSnippetMarkup(
         }
     }
 
+    if (cropToSnippet) {
+        return search_snippet::buildHighlightedMarkup(text, mask);
+    }
     return wrapHighlightMask(text, mask);
 }
 
@@ -1700,10 +1609,10 @@ void SearchPanel::search(const std::string& query,
                                              : nullptr;
         const bool phraseMode = (highlightMode_ == HighlightMode::Phrase);
         for (auto& result : results_) {
-            std::string snippet = collapseWhitespace(result.text);
+            std::string snippet = search_snippet::collapseWhitespace(result.text);
             result.text = highlightPlainSnippetMarkup(
                 snippet, highlightTerms_, highlightPhrase_,
-                regexPattern, phraseMode);
+                regexPattern, phraseMode, true);
             if (result.title.empty()) result.title = result.key;
             if (result.resourceType.empty()) result.resourceType = "bible";
         }
@@ -1748,7 +1657,7 @@ void SearchPanel::showReferenceResults(const std::string& moduleName,
         result.module = module;
         result.key = ref;
         result.title = ref;
-        result.text = truncateSnippetWords(
+        result.text = search_snippet::truncateWords(
             app_->swordManager().getVersePlainText(module, ref));
         if (result.text.empty()) result.text = ref;
         results_.push_back(std::move(result));

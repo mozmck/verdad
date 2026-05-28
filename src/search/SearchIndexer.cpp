@@ -1,5 +1,6 @@
 #include "import/ImportedModuleManager.h"
 #include "search/SearchIndexer.h"
+#include "search/SearchSnippet.h"
 #include "search/SmartSearch.h"
 #include "sword/SwordPaths.h"
 
@@ -84,36 +85,6 @@ std::string lowerCopy(std::string text) {
     std::transform(text.begin(), text.end(), text.begin(),
                    [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
     return text;
-}
-
-std::string collapseWhitespace(const std::string& text) {
-    std::string out;
-    out.reserve(text.size());
-
-    bool lastWasSpace = true;
-    for (unsigned char c : text) {
-        if (std::isspace(c)) {
-            if (!lastWasSpace) {
-                out.push_back(' ');
-                lastWasSpace = true;
-            }
-            continue;
-        }
-
-        out.push_back(static_cast<char>(c));
-        lastWasSpace = false;
-    }
-
-    while (!out.empty() && out.back() == ' ') {
-        out.pop_back();
-    }
-    return out;
-}
-
-std::string truncateSnippet(const std::string& text, size_t maxLen = 200) {
-    std::string collapsed = collapseWhitespace(text);
-    if (collapsed.size() <= maxLen) return collapsed;
-    return collapsed.substr(0, maxLen) + "...";
 }
 
 std::string normalizeDirectSearchText(const std::string& text) {
@@ -763,7 +734,8 @@ std::string makeBibleTestamentToken(int testament) {
 }
 
 std::string normalizeDictionaryLookupText(const std::string& text) {
-    return collapseWhitespace(lowerCopy(smart_search::stripDiacritics(trimCopy(text))));
+    return search_snippet::collapseWhitespace(
+        lowerCopy(smart_search::stripDiacritics(trimCopy(text))));
 }
 
 MetadataFilter buildMetadataFilter(const SearchIndexer::SearchRequest& request,
@@ -1384,102 +1356,20 @@ bool containsMatchingStrongs(const std::string& text,
     return false;
 }
 
-struct MaskedText {
-    std::string text;
-    std::vector<bool> mask;
-};
-
-MaskedText collapseWhitespaceWithMask(const std::string& text,
-                                      const std::vector<bool>& mask) {
-    MaskedText collapsed;
-    collapsed.text.reserve(text.size());
-    collapsed.mask.reserve(mask.size());
-
-    bool lastWasSpace = true;
-    for (size_t i = 0; i < text.size(); ++i) {
-        unsigned char uc = static_cast<unsigned char>(text[i]);
-        if (std::isspace(uc)) {
-            if (!lastWasSpace) {
-                collapsed.text.push_back(' ');
-                collapsed.mask.push_back(false);
-                lastWasSpace = true;
-            }
-            continue;
-        }
-
-        collapsed.text.push_back(text[i]);
-        collapsed.mask.push_back(i < mask.size() ? mask[i] : false);
-        lastWasSpace = false;
-    }
-
-    while (!collapsed.text.empty() && collapsed.text.back() == ' ') {
-        collapsed.text.pop_back();
-        if (!collapsed.mask.empty()) collapsed.mask.pop_back();
-    }
-    {
-        size_t start = 0;
-        while (start < collapsed.text.size() && collapsed.text[start] == ' ') ++start;
-        if (start > 0) {
-            collapsed.text.erase(0, start);
-            if (collapsed.mask.size() >= start)
-                collapsed.mask.erase(collapsed.mask.begin(),
-                                     collapsed.mask.begin() + static_cast<ptrdiff_t>(start));
-        }
-    }
-
-    return collapsed;
-}
-
 std::string buildSnippetMarkup(const std::string& text,
                                const std::vector<bool>& mask,
-                               size_t maxLen = 160) {
-    if (text.empty()) return "";
+                               size_t contextWords = search_snippet::kDefaultContextWords) {
+    return search_snippet::buildHighlightedMarkup(text, mask, contextWords);
+}
 
-    size_t hitStart = std::string::npos;
-    size_t hitEnd = std::string::npos;
-    for (size_t i = 0; i < mask.size() && i < text.size(); ++i) {
-        if (!mask[i]) continue;
-        hitStart = i;
-        hitEnd = i + 1;
-        while (hitEnd < mask.size() && hitEnd < text.size() && mask[hitEnd]) {
-            ++hitEnd;
-        }
-        break;
-    }
+std::string buildPlainSnippet(const std::string& text,
+                              const std::vector<bool>& mask,
+                              size_t contextWords = search_snippet::kDefaultContextWords) {
+    return search_snippet::buildPlainText(text, mask, contextWords);
+}
 
-    size_t left = 0;
-    size_t right = text.size();
-    if (text.size() > maxLen) {
-        if (hitStart != std::string::npos) {
-            left = (hitStart > maxLen / 2) ? (hitStart - maxLen / 2) : 0;
-            if (hitEnd > left + maxLen) {
-                left = hitEnd - maxLen;
-            }
-        }
-        if (left > text.size()) left = text.size();
-        right = std::min(text.size(), left + maxLen);
-    }
-
-    std::string out;
-    out.reserve((right - left) + 32);
-    if (left > 0) out += "... ";
-
-    bool inHighlight = false;
-    for (size_t i = left; i < right; ++i) {
-        bool highlight = (i < mask.size()) && mask[i];
-        if (highlight && !inHighlight) {
-            out += "<span class=\"searchhit\">";
-            inHighlight = true;
-        } else if (!highlight && inHighlight) {
-            out += "</span>";
-            inHighlight = false;
-        }
-        out.push_back(text[i]);
-    }
-
-    if (inHighlight) out += "</span>";
-    if (right < text.size()) out += " ...";
-    return out;
+std::string truncateSnippet(const std::string& text) {
+    return search_snippet::truncateWords(text);
 }
 
 bool isLiteralWordByte(unsigned char c) {
@@ -1528,7 +1418,8 @@ std::vector<bool> buildLiteralMask(const std::string& text,
 std::string buildWordSnippetFromSourceText(const std::string& plainText,
                                            const std::string& title,
                                            const std::string& query,
-                                           bool exactPhrase) {
+                                           bool exactPhrase,
+                                           bool includeHighlightMarkup = true) {
     std::vector<std::string> needles;
     if (exactPhrase) {
         std::string phrase = trimCopy(query);
@@ -1542,7 +1433,9 @@ std::string buildWordSnippetFromSourceText(const std::string& plainText,
         if (std::find(mask.begin(), mask.end(), true) == mask.end()) {
             return truncateSnippet(text);
         }
-        return buildSnippetMarkup(text, mask);
+        return includeHighlightMarkup
+            ? buildSnippetMarkup(text, mask)
+            : buildPlainSnippet(text, mask);
     };
 
     if (!plainText.empty()) {
@@ -1560,52 +1453,28 @@ std::string buildWordSnippetFromSourceText(const std::string& plainText,
 }
 
 std::string buildRegexSnippet(const std::string& text,
-                              const std::smatch& match,
-                              const std::regex& re,
-                              size_t maxLen = 160) {
+                              const std::smatch& match) {
     if (text.empty()) return "";
 
     const size_t startPos = static_cast<size_t>(match.position());
     const size_t endPos = startPos + static_cast<size_t>(match.length());
-
-    size_t left = 0;
-    if (startPos > maxLen / 2) {
-        left = startPos - (maxLen / 2);
-    }
-    if (endPos > left + maxLen) {
-        left = endPos - maxLen;
-    }
-    if (left > text.size()) left = text.size();
-
-    size_t right = std::min(text.size(), left + maxLen);
-    std::string snippet = text.substr(left, right - left);
-    std::vector<bool> mask(snippet.size(), false);
-    auto begin = std::sregex_iterator(snippet.begin(), snippet.end(), re);
-    auto end = std::sregex_iterator();
-    for (auto it = begin; it != end; ++it) {
-        size_t pos = static_cast<size_t>((*it).position());
-        size_t len = static_cast<size_t>((*it).length());
-        if (len == 0) continue;
-        for (size_t i = pos; i < pos + len && i < mask.size(); ++i) {
-            mask[i] = true;
-        }
+    if (startPos >= text.size() || endPos <= startPos) {
+        return truncateSnippet(text);
     }
 
-    std::string out;
-    if (left > 0) out += "... ";
-    out += buildSnippetMarkup(snippet, mask, snippet.size());
-    if (right < text.size()) out += " ...";
-    return out;
+    std::vector<bool> mask(text.size(), false);
+    const size_t clippedEnd = std::min(endPos, text.size());
+    for (size_t i = startPos; i < clippedEnd; ++i) {
+        mask[i] = true;
+    }
+    return buildSnippetMarkup(text, mask);
 }
 
 std::string buildStrongsSnippet(const std::string& xhtml,
                                 const std::string& strongsQuery,
-                                const std::string& plainFallback,
-                                size_t maxLen = 160) {
-    auto truncateFallback = [maxLen](const std::string& text) {
-        std::string collapsed = trimCopy(text);
-        if (collapsed.size() <= maxLen) return collapsed;
-        return collapsed.substr(0, maxLen) + "...";
+                                const std::string& plainFallback) {
+    auto truncateFallback = [](const std::string& text) {
+        return truncateSnippet(text);
     };
 
     if (xhtml.empty()) return truncateFallback(plainFallback);
@@ -1697,18 +1566,8 @@ std::string buildStrongsSnippet(const std::string& xhtml,
         pos = tagEnd + 1;
     }
 
-    MaskedText collapsed = collapseWhitespaceWithMask(plain, mask);
-    if (collapsed.text.empty()) {
-        return plainFallback;
-    }
-
-    if (std::find(collapsed.mask.begin(), collapsed.mask.end(), true) ==
-        collapsed.mask.end()) {
-        if (collapsed.text.size() <= maxLen) return collapsed.text;
-        return collapsed.text.substr(0, maxLen) + "...";
-    }
-
-    return buildSnippetMarkup(collapsed.text, collapsed.mask, maxLen);
+    std::string snippet = buildSnippetMarkup(plain, mask);
+    return snippet.empty() ? truncateFallback(plainFallback) : snippet;
 }
 
 std::string buildSmartSnippetFromSourceText(
@@ -2894,8 +2753,7 @@ std::vector<SearchResult> SearchIndexer::buildResultSnippets(
                 if (!searchableText.empty() &&
                     std::regex_search(searchableText, sourceMatch, regexPattern)) {
                     results[i].text = buildRegexSnippet(searchableText,
-                                                        sourceMatch,
-                                                        regexPattern);
+                                                        sourceMatch);
                 }
             }
             if (results[i].text.empty()) {
@@ -3009,15 +2867,16 @@ std::vector<SearchResult> SearchIndexer::searchWordDirect(
 
         return searchDirectInternal(
             request,
-            [normalizedPhrase](const SearchResult& result,
-                               const std::string& plainText,
-                               std::string& snippetOut) {
+            [normalizedPhrase, query](const SearchResult& result,
+                                      const std::string& plainText,
+                                      std::string& snippetOut) {
                 const std::string searchable = normalizeDirectSearchText(
                     result.title.empty() ? plainText : (result.title + " " + plainText));
                 if (!containsWholeDirectSearchMatch(searchable, normalizedPhrase)) {
                     return false;
                 }
-                snippetOut = truncateSnippet(plainText.empty() ? result.title : plainText);
+                snippetOut = buildWordSnippetFromSourceText(
+                    plainText, result.title, query, true, false);
                 return true;
             },
             maxResults);
@@ -3036,7 +2895,7 @@ std::vector<SearchResult> SearchIndexer::searchWordDirect(
 
     return searchDirectInternal(
         request,
-        [normalizedTokens = std::move(normalizedTokens)](
+        [normalizedTokens = std::move(normalizedTokens), query](
             const SearchResult& result,
             const std::string& plainText,
             std::string& snippetOut) {
@@ -3048,7 +2907,8 @@ std::vector<SearchResult> SearchIndexer::searchWordDirect(
                     return containsWholeDirectSearchMatch(searchable, token);
                 });
             if (!matched) return false;
-            snippetOut = truncateSnippet(plainText.empty() ? result.title : plainText);
+            snippetOut = buildWordSnippetFromSourceText(
+                plainText, result.title, query, false, false);
             return true;
         },
         maxResults);
@@ -3280,7 +3140,7 @@ std::vector<SearchResult> SearchIndexer::searchRegex(
             SearchResult result = batch[i];
             result.title = titleText.empty() ? result.key : titleText;
             if (includeSnippets) {
-                result.text = buildRegexSnippet(searchableText, match, re);
+                result.text = buildRegexSnippet(searchableText, match);
             }
             results.push_back(std::move(result));
             matches = static_cast<int>(results.size());
@@ -3378,7 +3238,7 @@ std::vector<SearchResult> SearchIndexer::searchRegexDirect(
                 return false;
             }
 
-            snippetOut = buildRegexSnippet(searchableText, match, re);
+            snippetOut = buildRegexSnippet(searchableText, match);
             return true;
         },
         maxResults,

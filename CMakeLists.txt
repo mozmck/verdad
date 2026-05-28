@@ -103,6 +103,7 @@ set(SOURCES
     src/sword/SwordManager.cpp
     src/sword/SwordPaths.cpp
     src/search/SearchIndexer.cpp
+    src/search/SearchSnippet.cpp
     src/search/SmartSearch.cpp
     src/reading/ReadingPlanGenerator.cpp
     src/reading/ReadingPlanManager.cpp
@@ -138,6 +139,7 @@ set(HEADERS
     src/sword/SwordManager.h
     src/sword/SwordPaths.h
     src/search/SearchIndexer.h
+    src/search/SearchSnippet.h
     src/search/SmartSearch.h
     src/reading/DateUtils.h
     src/reading/ReadingPlanGenerator.h
@@ -180,6 +182,7 @@ add_executable(verdad-bench
     src/sword/ScriptureReference.cpp
     src/sword/SwordManager.cpp
     src/sword/SwordPaths.cpp
+    src/search/SearchSnippet.cpp
     src/ui/HtmlWidget.cpp
 )
 
