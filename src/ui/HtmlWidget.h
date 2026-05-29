@@ -367,6 +367,14 @@ private:
     /// Map an FLTK font from a face name
     Fl_Font mapFont(const char* faceName, int weight, bool italic);
 
+    /// Return a fallback Fl_Font for codepoints that the primary font
+    /// is unlikely to cover (e.g. Hebrew).
+    Fl_Font fallbackFont() const { return fallbackFont_; }
+    void findFallbackFont();
+
+    /// True if the Unicode codepoint needs a glyph from fallbackFont_.
+    static bool needsFallbackFont(unsigned cp);
+
     void clearSelection();
     int viewportWidth() const;
     int viewportHeight() const;
@@ -396,6 +404,8 @@ private:
     std::string fragmentWordAt(int fragmentIndex, int charIndex) const;
     std::string wordAtScreenPoint(int screenX, int screenY) const;
     std::string selectedText() const;
+
+    Fl_Font fallbackFont_ = FL_HELVETICA;
 };
 
 } // namespace verdad

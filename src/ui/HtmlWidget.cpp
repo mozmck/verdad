@@ -764,6 +764,8 @@ HtmlWidget::HtmlWidget(int X, int Y, int W, int H, const char* label)
     hScrollbar_->callback(hScrollbarCallback, this);
     hScrollbar_->hide();
 
+    findFallbackFont();
+
     // Default CSS — built-in defaults + minimal overrides
     masterCSS_ = std::string(litehtml::master_css) + "\n"
         "body { font-family: serif; font-size: 14px; }\n"
@@ -2723,6 +2725,59 @@ void HtmlWidget::selectFltkFont(const CachedFont& font) {
     activeFltkFont_ = &font;
 }
 
+static bool needsFallbackCp(unsigned cp) {
+    return (cp >= 0x0590 && cp <= 0x05FF) ||
+           (cp >= 0xFB1D && cp <= 0xFB4F);
+}
+
+static bool textHasFallbackCodepoints(const char* s) {
+    if (!s || !*s) return false;
+    while (*s) {
+        int len = 0;
+        unsigned cp = fl_utf8decode(s, nullptr, &len);
+        if (len < 1) { ++s; continue; }
+        if (needsFallbackCp(cp)) return true;
+        s += len;
+    }
+    return false;
+}
+
+static litehtml::pixel_t measureWithFallback(const char* text,
+                                              Fl_Font primaryFont,
+                                              int size,
+                                              Fl_Font fallbackFont) {
+    litehtml::pixel_t total = 0;
+    const char* p = text;
+    const char* segStart = p;
+    bool inFallback = false;
+
+    while (*p) {
+        int len = 0;
+        unsigned cp = fl_utf8decode(p, nullptr, &len);
+        if (len < 1) { ++p; continue; }
+        bool needFallback = needsFallbackCp(cp);
+
+        if (needFallback != inFallback) {
+            if (p > segStart) {
+                fl_font(inFallback ? fallbackFont : primaryFont, size);
+                total += static_cast<litehtml::pixel_t>(
+                    fl_width(segStart, static_cast<int>(p - segStart)));
+            }
+            inFallback = needFallback;
+            segStart = p;
+        }
+        p += len;
+    }
+    if (p > segStart) {
+        fl_font(inFallback ? fallbackFont : primaryFont, size);
+        total += static_cast<litehtml::pixel_t>(
+            fl_width(segStart, static_cast<int>(p - segStart)));
+    }
+
+    fl_font(primaryFont, size);
+    return total;
+}
+
 litehtml::pixel_t HtmlWidget::text_width(const char* text, litehtml::uint_ptr hFont) {
     auto it = fonts_.find(hFont);
     if (it == fonts_.end()) return 0;
@@ -2744,7 +2799,17 @@ litehtml::pixel_t HtmlWidget::text_width(const char* text, litehtml::uint_ptr hF
     }
 
     selectFltkFont(*cachedFont);
-    litehtml::pixel_t width = static_cast<litehtml::pixel_t>(fl_width(safeText));
+    litehtml::pixel_t width;
+
+    if (fallbackFont_ != FL_HELVETICA &&
+        textHasFallbackCodepoints(safeText)) {
+        width = measureWithFallback(safeText,
+                                     cachedFont->info.flFont,
+                                     cachedFont->info.size,
+                                     fallbackFont_);
+    } else {
+        width = static_cast<litehtml::pixel_t>(fl_width(safeText));
+    }
 
     if (cacheable) {
         if (sharedTextWidthCache().store(static_cast<const void*>(cachedFont.get()),
@@ -2784,8 +2849,49 @@ void HtmlWidget::draw_text(litehtml::uint_ptr hdc, const char* text,
         fragment.parallelColumn = parallelColumnAtDocumentX(docX);
     }
 
+    Fl_Font primaryFlFont = it->second->info.flFont;
+    int primarySize = it->second->info.size;
+
     const int baselineY = static_cast<int>(pos.y + pos.height) - fl_descent();
     int fragmentIndex = findTextFragmentForDrawRun(fragment);
+
+    auto drawSegmented = [&](const char* segText, int segLen,
+                             int startX, Fl_Color fg) {
+        if (!fallbackFont_ || fallbackFont_ == FL_HELVETICA ||
+            !textHasFallbackCodepoints(segText)) {
+            fl_color(fg);
+            fl_draw(segText, segLen, startX, baselineY);
+            return;
+        }
+        const char* p = segText;
+        const char* end = segText + segLen;
+        const char* segStart = p;
+        bool inFallback = false;
+        int curX = startX;
+        while (p < end) {
+            int len = 0;
+            unsigned cp = fl_utf8decode(p, end, &len);
+            if (len < 1) { ++p; continue; }
+            bool needFallback = needsFallbackCp(cp);
+            if (needFallback != inFallback) {
+                if (p > segStart) {
+                    fl_font(inFallback ? fallbackFont_ : primaryFlFont, primarySize);
+                    fl_color(fg);
+                    fl_draw(segStart, static_cast<int>(p - segStart), curX, baselineY);
+                    curX += static_cast<int>(fl_width(segStart, static_cast<int>(p - segStart)));
+                }
+                inFallback = needFallback;
+                segStart = p;
+            }
+            p += len;
+        }
+        if (p > segStart) {
+            fl_font(inFallback ? fallbackFont_ : primaryFlFont, primarySize);
+            fl_color(fg);
+            fl_draw(segStart, static_cast<int>(p - segStart), curX, baselineY);
+        }
+        fl_font(primaryFlFont, primarySize);
+    };
 
     auto drawRun = [&](int startChar,
                        int endChar,
@@ -2805,8 +2911,7 @@ void HtmlWidget::draw_text(litehtml::uint_ptr hdc, const char* text,
                      std::max(1, drawW),
                      static_cast<int>(pos.height));
         }
-        fl_color(fg);
-        fl_draw(chunk.c_str(), static_cast<int>(chunk.size()), drawX, baselineY);
+        drawSegmented(chunk.c_str(), static_cast<int>(chunk.size()), drawX, fg);
     };
 
     int selStart = 0;
@@ -2825,8 +2930,16 @@ void HtmlWidget::draw_text(litehtml::uint_ptr hdc, const char* text,
                 normalColor,
                 false);
     } else {
-        fl_color(color.red, color.green, color.blue);
-        fl_draw(text, static_cast<int>(pos.x), baselineY);
+        Fl_Color textColor = fl_rgb_color(color.red, color.green, color.blue);
+        fl_color(textColor);
+        int startX = static_cast<int>(pos.x);
+        if (fallbackFont_ != FL_HELVETICA &&
+            textHasFallbackCodepoints(text)) {
+            drawSegmented(text, static_cast<int>(std::strlen(text)),
+                          startX, textColor);
+        } else {
+            fl_draw(text, startX, baselineY);
+        }
     }
 
     // Draw decorations
@@ -3134,6 +3247,28 @@ Fl_Font HtmlWidget::mapFont(const char* faceName, int weight, bool italic) {
 
 apply_modifiers:
     return styledFontVariant(base, weight, italic);
+}
+
+void HtmlWidget::findFallbackFont() {
+    if (fallbackFont_ != FL_HELVETICA) return;
+    int count = Fl::set_fonts(nullptr);
+    for (int i = 0; i < count; ++i) {
+        int attrs = 0;
+        const char* name = Fl::get_font_name(i, &attrs);
+        if (!name || attrs != 0) continue;
+        std::string n(name);
+        if (n.find("Hebrew") != std::string::npos ||
+            n.find("Rashi") != std::string::npos) {
+            fallbackFont_ = i;
+            return;
+        }
+    }
+}
+
+bool HtmlWidget::needsFallbackFont(unsigned cp) {
+    // Hebrew
+    return (cp >= 0x0590 && cp <= 0x05FF) ||
+           (cp >= 0xFB1D && cp <= 0xFB4F);
 }
 
 } // namespace verdad
