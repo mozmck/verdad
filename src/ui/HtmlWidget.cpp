@@ -2725,9 +2725,16 @@ void HtmlWidget::selectFltkFont(const CachedFont& font) {
     activeFltkFont_ = &font;
 }
 
-static bool needsFallbackCp(unsigned cp) {
-    return (cp >= 0x0590 && cp <= 0x05FF) ||
-           (cp >= 0xFB1D && cp <= 0xFB4F);
+static int fallbackLevelCp(unsigned cp) {
+    // Hebrew
+    if ((cp >= 0x0590 && cp <= 0x05FF) ||
+        (cp >= 0xFB1D && cp <= 0xFB4F))
+        return 2;
+    // Greek and Coptic
+    if ((cp >= 0x0370 && cp <= 0x03FF) ||
+        (cp >= 0x1F00 && cp <= 0x1FFF))
+        return 1;
+    return 0;
 }
 
 static bool textHasFallbackCodepoints(const char* s) {
@@ -2736,40 +2743,48 @@ static bool textHasFallbackCodepoints(const char* s) {
         int len = 0;
         unsigned cp = fl_utf8decode(s, nullptr, &len);
         if (len < 1) { ++s; continue; }
-        if (needsFallbackCp(cp)) return true;
+        if (fallbackLevelCp(cp)) return true;
         s += len;
     }
     return false;
 }
 
+static Fl_Font pickFontForLevel(int level, Fl_Font primary, Fl_Font fallback, Fl_Font hebrew) {
+    if (level == 0) return primary;
+    if (level == 2 && hebrew != FL_HELVETICA) return hebrew;
+    if (fallback != FL_HELVETICA) return fallback;
+    return primary;
+}
+
 static litehtml::pixel_t measureWithFallback(const char* text,
                                               Fl_Font primaryFont,
                                               int size,
-                                              Fl_Font fallbackFont) {
+                                              Fl_Font fallbackFont,
+                                              Fl_Font hebrewFont) {
     litehtml::pixel_t total = 0;
     const char* p = text;
     const char* segStart = p;
-    bool inFallback = false;
+    int segLevel = 0;
 
     while (*p) {
         int len = 0;
         unsigned cp = fl_utf8decode(p, nullptr, &len);
         if (len < 1) { ++p; continue; }
-        bool needFallback = needsFallbackCp(cp);
+        int level = fallbackLevelCp(cp);
 
-        if (needFallback != inFallback) {
+        if (level != segLevel) {
             if (p > segStart) {
-                fl_font(inFallback ? fallbackFont : primaryFont, size);
+                fl_font(pickFontForLevel(segLevel, primaryFont, fallbackFont, hebrewFont), size);
                 total += static_cast<litehtml::pixel_t>(
                     fl_width(segStart, static_cast<int>(p - segStart)));
             }
-            inFallback = needFallback;
+            segLevel = level;
             segStart = p;
         }
         p += len;
     }
     if (p > segStart) {
-        fl_font(inFallback ? fallbackFont : primaryFont, size);
+        fl_font(pickFontForLevel(segLevel, primaryFont, fallbackFont, hebrewFont), size);
         total += static_cast<litehtml::pixel_t>(
             fl_width(segStart, static_cast<int>(p - segStart)));
     }
@@ -2806,7 +2821,8 @@ litehtml::pixel_t HtmlWidget::text_width(const char* text, litehtml::uint_ptr hF
         width = measureWithFallback(safeText,
                                      cachedFont->info.flFont,
                                      cachedFont->info.size,
-                                     fallbackFont_);
+                                     fallbackFont_,
+                                     hebrewFallbackFont_);
     } else {
         width = static_cast<litehtml::pixel_t>(fl_width(safeText));
     }
@@ -2866,27 +2882,31 @@ void HtmlWidget::draw_text(litehtml::uint_ptr hdc, const char* text,
         const char* p = segText;
         const char* end = segText + segLen;
         const char* segStart = p;
-        bool inFallback = false;
+        int segLevel = 0;
         int curX = startX;
         while (p < end) {
             int len = 0;
             unsigned cp = fl_utf8decode(p, end, &len);
             if (len < 1) { ++p; continue; }
-            bool needFallback = needsFallbackCp(cp);
-            if (needFallback != inFallback) {
+            int level = fallbackLevelCp(cp);
+            if (level != segLevel) {
                 if (p > segStart) {
-                    fl_font(inFallback ? fallbackFont_ : primaryFlFont, primarySize);
+                    fl_font(pickFontForLevel(segLevel, primaryFlFont,
+                                             fallbackFont_, hebrewFallbackFont_),
+                            primarySize);
                     fl_color(fg);
                     fl_draw(segStart, static_cast<int>(p - segStart), curX, baselineY);
                     curX += static_cast<int>(fl_width(segStart, static_cast<int>(p - segStart)));
                 }
-                inFallback = needFallback;
+                segLevel = level;
                 segStart = p;
             }
             p += len;
         }
         if (p > segStart) {
-            fl_font(inFallback ? fallbackFont_ : primaryFlFont, primarySize);
+            fl_font(pickFontForLevel(segLevel, primaryFlFont,
+                                     fallbackFont_, hebrewFallbackFont_),
+                    primarySize);
             fl_color(fg);
             fl_draw(segStart, static_cast<int>(p - segStart), curX, baselineY);
         }
@@ -3252,23 +3272,53 @@ apply_modifiers:
 void HtmlWidget::findFallbackFont() {
     if (fallbackFont_ != FL_HELVETICA) return;
     int count = Fl::set_fonts(nullptr);
+
     for (int i = 0; i < count; ++i) {
         int attrs = 0;
         const char* name = Fl::get_font_name(i, &attrs);
         if (!name || attrs != 0) continue;
         std::string n(name);
-        if (n.find("Hebrew") != std::string::npos ||
-            n.find("Rashi") != std::string::npos) {
+        std::string lower(n);
+        std::transform(lower.begin(), lower.end(), lower.begin(),
+                       [](unsigned char c) { return std::tolower(c); });
+
+        // General fallback — pick the first comprehensive serif+sans pair.
+        if (fallbackFont_ == FL_HELVETICA &&
+            (lower == "noto serif" || lower == "noto sans")) {
             fallbackFont_ = i;
-            return;
+        }
+        // Hebrew-specific fallback.
+        if (hebrewFallbackFont_ == FL_HELVETICA &&
+            (n.find("Hebrew") != std::string::npos ||
+             n.find("Rashi") != std::string::npos)) {
+            hebrewFallbackFont_ = i;
+        }
+        if (fallbackFont_ != FL_HELVETICA &&
+            hebrewFallbackFont_ != FL_HELVETICA)
+            break;
+    }
+    // If no "Noto Serif/Sans", fall back to any non-Hebrew serif.
+    if (fallbackFont_ == FL_HELVETICA) {
+        for (int i = 0; i < count; ++i) {
+            int attrs = 0;
+            const char* name = Fl::get_font_name(i, &attrs);
+            if (!name || attrs != 0) continue;
+            std::string n(name);
+            if (n.find("Serif") != std::string::npos &&
+                n.find("Hebrew") == std::string::npos) {
+                fallbackFont_ = i;
+                break;
+            }
         }
     }
 }
 
-bool HtmlWidget::needsFallbackFont(unsigned cp) {
-    // Hebrew
-    return (cp >= 0x0590 && cp <= 0x05FF) ||
-           (cp >= 0xFB1D && cp <= 0xFB4F);
+int HtmlWidget::fallbackLevel(unsigned cp) {
+    return fallbackLevelCp(cp);
+}
+
+Fl_Font HtmlWidget::fontForLevel(int level) const {
+    return pickFontForLevel(level, FL_HELVETICA, fallbackFont_, hebrewFallbackFont_);
 }
 
 } // namespace verdad
