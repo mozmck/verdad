@@ -41,20 +41,20 @@ Verdad stores user state in `~/.config/verdad/` on Linux:
 
 ## Build and run
 
-Verdad currently builds as a C++17 desktop application with CMake.
+Verdad currently builds as a C++17 desktop application with CMake. The build system defaults to the Ninja generator when Ninja is available, and uses ccache automatically when it is installed.
 
 ```bash
 git submodule update --init --recursive
-cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
-cmake --build build -j$(nproc)
+cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+cmake --build build
 ./build/verdad
 ```
 
 Fresh single-config builds default to `Release` if you do not set `CMAKE_BUILD_TYPE` yourself. Use `Debug` only when you actually need it:
 
 ```bash
-cmake -S . -B build-debug -DCMAKE_BUILD_TYPE=Debug
-cmake --build build-debug -j$(nproc)
+cmake -S . -B build-debug -G Ninja -DCMAKE_BUILD_TYPE=Debug
+cmake --build build-debug
 ```
 
 On a recent Debian/Ubuntu-based distribution, these packages are typically enough to build Verdad from source:
