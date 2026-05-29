@@ -546,6 +546,7 @@ void TagPanel::showAddTagDialog(const TagTarget& target) {
 void TagPanel::showTagsForVerse(const std::string& verseKey) {
     if (!filterInput_) return;
     filterInput_->value(verseKey.c_str());
+    filterTargetsByText_ = false;
     if (resourceFilterChoice_) {
         resourceFilterChoice_->value(1);
     }
@@ -618,6 +619,7 @@ void TagPanel::updateFilterControls() {
 void TagPanel::clearFilter(bool focusInput) {
     if (!filterInput_) return;
 
+    filterTargetsByText_ = true;
     filterInput_->value("");
     updateFilterControls();
     populateTags();
@@ -776,8 +778,9 @@ void TagPanel::populateTargets(const std::string& tagName) {
     auto targets = app_->tagManager().getTargetsWithTag(tagName);
     sortTargetsCanonical(app_->swordManager(), activeBibleModule(), targets);
 
-    const TagFilterQuery filter = buildTagFilterQuery(
-        filterInput_ ? filterInput_->value() : "");
+    const TagFilterQuery filter = filterTargetsByText_
+        ? buildTagFilterQuery(filterInput_ ? filterInput_->value() : "")
+        : TagFilterQuery{};
 
     int selectedLine = 0;
     for (const auto& target : targets) {
@@ -876,6 +879,7 @@ void TagPanel::showItemContextMenu(int screenX, int screenY) {
 void TagPanel::onFilterChange(Fl_Widget* /*w*/, void* data) {
     auto* self = static_cast<TagPanel*>(data);
     if (!self) return;
+    self->filterTargetsByText_ = true;
     self->updateFilterControls();
     self->populateTags();
 }

@@ -1,8 +1,11 @@
 #include "sword/SwordManager.h"
 #include "import/ImportedModuleManager.h"
+#include "sword/ScriptureLink.h"
+#include "sword/ScriptureReference.h"
 #include "sword/SwordPaths.h"
 #include "app/PerfTrace.h"
 #include "reading/DateUtils.h"
+#include "search/SearchSnippet.h"
 
 #include <swmgr.h>
 #include <swconfig.h>
@@ -1157,66 +1160,6 @@ std::string extractStrongsLemmaFromDefinition(const std::string& definition,
     return extractBracketToken(text, '{', '}');
 }
 
-bool isHexDigit(char c) {
-    return std::isdigit(static_cast<unsigned char>(c)) ||
-           (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F');
-}
-
-int hexValue(char c) {
-    if (c >= '0' && c <= '9') return c - '0';
-    if (c >= 'a' && c <= 'f') return 10 + (c - 'a');
-    if (c >= 'A' && c <= 'F') return 10 + (c - 'A');
-    return 0;
-}
-
-std::string urlDecode(const std::string& s) {
-    std::string out;
-    out.reserve(s.size());
-    for (size_t i = 0; i < s.size();) {
-        if (s[i] == '+') {
-            out.push_back(' ');
-            ++i;
-            continue;
-        }
-        if (s[i] == '%' && i + 2 < s.size() &&
-            isHexDigit(s[i + 1]) && isHexDigit(s[i + 2])) {
-            int hi = hexValue(s[i + 1]);
-            int lo = hexValue(s[i + 2]);
-            out.push_back(static_cast<char>((hi << 4) | lo));
-            i += 3;
-            continue;
-        }
-        out.push_back(s[i++]);
-    }
-    return out;
-}
-
-std::string extractQueryValue(const std::string& url, const std::string& key) {
-    std::string decoded = decodeHtmlEntities(url);
-    size_t q = decoded.find('?');
-    std::string query = (q == std::string::npos) ? decoded : decoded.substr(q + 1);
-    std::string keyLower = toLowerAscii(key);
-
-    size_t pos = 0;
-    while (pos <= query.size()) {
-        size_t amp = query.find('&', pos);
-        std::string part = query.substr(
-            pos, (amp == std::string::npos ? query.size() : amp) - pos);
-
-        size_t eq = part.find('=');
-        std::string name = (eq == std::string::npos) ? part : part.substr(0, eq);
-        std::string value = (eq == std::string::npos) ? "" : part.substr(eq + 1);
-
-        if (toLowerAscii(name) == keyLower) {
-            return urlDecode(value);
-        }
-
-        if (amp == std::string::npos) break;
-        pos = amp + 1;
-    }
-    return "";
-}
-
 std::vector<std::string> splitList(const std::string& text, char delim) {
     std::vector<std::string> items;
     size_t start = 0;
@@ -1230,63 +1173,6 @@ std::vector<std::string> splitList(const std::string& text, char delim) {
         start = end + 1;
     }
     return items;
-}
-
-std::string normalizeSingleLinkedVerseRef(const std::string& rawRef) {
-    std::string ref = trimCopy(rawRef);
-    if (ref.empty()) return "";
-
-    std::vector<std::string> parts = splitList(ref, '.');
-    if (parts.size() >= 3) {
-        std::ostringstream out;
-        for (size_t i = 0; i + 2 < parts.size(); ++i) {
-            if (i) out << ' ';
-            out << parts[i];
-        }
-        out << ' ' << parts[parts.size() - 2];
-        out << ':' << parts.back();
-        ref = out.str();
-    }
-
-    if (!ref.empty() &&
-        std::isdigit(static_cast<unsigned char>(ref[0]))) {
-        size_t pos = 1;
-        while (pos < ref.size() &&
-               std::isdigit(static_cast<unsigned char>(ref[pos]))) {
-            ++pos;
-        }
-        if (pos < ref.size() &&
-            std::isalpha(static_cast<unsigned char>(ref[pos])) &&
-            ref[pos - 1] != ' ') {
-            ref.insert(pos, " ");
-        }
-    }
-
-    return trimCopy(ref);
-}
-
-std::string normalizeLinkedVerseRef(const std::string& rawRef) {
-    std::vector<std::string> parts = splitList(rawRef, '-');
-    if (parts.size() <= 1) return normalizeSingleLinkedVerseRef(rawRef);
-
-    std::ostringstream out;
-    for (size_t i = 0; i < parts.size(); ++i) {
-        if (i) out << '-';
-        out << normalizeSingleLinkedVerseRef(parts[i]);
-    }
-    return trimCopy(out.str());
-}
-
-std::string normalizeBookLookupKey(const std::string& text) {
-    std::string out;
-    out.reserve(text.size());
-    for (char c : text) {
-        unsigned char uc = static_cast<unsigned char>(c);
-        if (std::isalnum(uc)) {
-            out.push_back(static_cast<char>(std::tolower(uc)));
-        }
-    }
-    return out;
 }
 
 const sword::VersificationMgr::System* versificationSystemForName(
@@ -1328,7 +1214,7 @@ void forEachBookAlias(const sword::VersificationMgr::System* system,
 
 int resolveBookNumberExact(const std::string& bookName,
                            const sword::VersificationMgr::System* system) {
-    const std::string wanted = normalizeBookLookupKey(bookName);
+    const std::string wanted = scripture::normalizeBookLookupKey(bookName);
     if (wanted.empty()) return -1;
 
     int resolvedBook = -1;
@@ -1336,7 +1222,7 @@ int resolveBookNumberExact(const std::string& bookName,
                      [&](int bookNumber, const char* alias,
                          const sword::VersificationMgr::Book* /*book*/) {
         if (resolvedBook >= 0) return;
-        if (normalizeBookLookupKey(alias) == wanted) {
+        if (scripture::normalizeBookLookupKey(alias) == wanted) {
             resolvedBook = bookNumber;
         }
     });
@@ -1404,7 +1290,7 @@ std::string canonicalBookTokenForNumber(
 }
 
 std::string linkedVerseBookOverride(const std::string& bookName) {
-    const std::string wanted = normalizeBookLookupKey(bookName);
+    const std::string wanted = scripture::normalizeBookLookupKey(bookName);
     if (wanted == "jud") return "Judges";
     return "";
 }
@@ -1428,7 +1314,7 @@ void appendBookCandidate(std::vector<int>& candidates, int bookNumber) {
 int resolveBookNumberByPrefix(const std::string& bookName,
                               int chapter,
                               const sword::VersificationMgr::System* system) {
-    const std::string wanted = normalizeBookLookupKey(bookName);
+    const std::string wanted = scripture::normalizeBookLookupKey(bookName);
     if (wanted.empty() || !system) return -1;
 
     const std::string wantedDigits = leadingDigits(wanted);
@@ -1436,7 +1322,7 @@ int resolveBookNumberByPrefix(const std::string& bookName,
     forEachBookAlias(system,
                      [&](int bookNumber, const char* alias,
                          const sword::VersificationMgr::Book* /*book*/) {
-        std::string aliasKey = normalizeBookLookupKey(alias);
+        std::string aliasKey = scripture::normalizeBookLookupKey(alias);
         if (aliasKey.empty()) return;
         if (!wantedDigits.empty() && leadingDigits(aliasKey) != wantedDigits) {
             return;
@@ -1456,7 +1342,7 @@ int resolveBookNumberByPrefix(const std::string& bookName,
 
 std::string repairSingleLinkedVerseRef(const std::string& rawRef,
                                        const std::string& versificationName) {
-    std::string ref = normalizeSingleLinkedVerseRef(rawRef);
+    std::string ref = scripture::normalizeSingleLinkedVerseRef(rawRef);
     size_t lastSpace = ref.rfind(' ');
     if (lastSpace == std::string::npos) return ref;
 
@@ -1477,7 +1363,7 @@ std::string repairSingleLinkedVerseRef(const std::string& rawRef,
 
     if (std::string overrideBook = linkedVerseBookOverride(parsed.book);
         !overrideBook.empty()) {
-        return normalizeSingleLinkedVerseRef(overrideBook + " " + tail);
+        return scripture::normalizeSingleLinkedVerseRef(overrideBook + " " + tail);
     }
 
     if (resolveBookNumberExact(parsed.book, system) >= 0) return ref;
@@ -1488,11 +1374,11 @@ std::string repairSingleLinkedVerseRef(const std::string& rawRef,
         prefixBook > 0) {
         std::string repairedBook = canonicalBookTokenForNumber(prefixBook, system);
         if (!repairedBook.empty()) {
-            return normalizeSingleLinkedVerseRef(repairedBook + " " + tail);
+            return scripture::normalizeSingleLinkedVerseRef(repairedBook + " " + tail);
         }
     }
 
-    const std::string wanted = normalizeBookLookupKey(parsed.book);
+    const std::string wanted = scripture::normalizeBookLookupKey(parsed.book);
     if (wanted.empty()) return ref;
 
     const std::string wantedDigits = leadingDigits(wanted);
@@ -1506,7 +1392,7 @@ std::string repairSingleLinkedVerseRef(const std::string& rawRef,
     forEachBookAlias(system,
                      [&](int bookNumber, const char* alias,
                          const sword::VersificationMgr::Book* /*book*/) {
-        std::string aliasKey = normalizeBookLookupKey(alias);
+        std::string aliasKey = scripture::normalizeBookLookupKey(alias);
         if (aliasKey.empty()) return;
         if (!wantedDigits.empty() && leadingDigits(aliasKey) != wantedDigits) {
             return;
@@ -1533,7 +1419,7 @@ std::string repairSingleLinkedVerseRef(const std::string& rawRef,
 
     std::string repairedBook = canonicalBookTokenForNumber(bestBook, system);
     if (repairedBook.empty()) return ref;
-    return normalizeSingleLinkedVerseRef(repairedBook + " " + tail);
+    return scripture::normalizeSingleLinkedVerseRef(repairedBook + " " + tail);
 }
 
 std::string repairLinkedVerseRef(const std::string& rawRef,
@@ -1585,8 +1471,8 @@ bool resolvedRefsMatchExpected(const std::vector<std::string>& resolvedRefs,
         return wantedBook == gotBook;
     }
 
-    return normalizeBookLookupKey(wanted.book) ==
-           normalizeBookLookupKey(got.book);
+    return scripture::normalizeBookLookupKey(wanted.book) ==
+           scripture::normalizeBookLookupKey(got.book);
 }
 
 void appendGeneralBookTocEntries(sword::TreeKey* treeKey,
@@ -2510,8 +2396,8 @@ void extractHrefMeta(const std::string& hrefRaw,
 
     if (containsNoCase(lower, "showstrongs")) {
         if (isStrongLink) *isStrongLink = true;
-        std::string value = extractQueryValue(href, "value");
-        std::string type = toLowerAscii(extractQueryValue(href, "type"));
+        std::string value = scripture::extractQueryValue(href, "value");
+        std::string type = toLowerAscii(scripture::extractQueryValue(href, "type"));
         std::string prefix;
         if (type.find("ebrew") != std::string::npos) prefix = "H";
         else if (type.find("reek") != std::string::npos) prefix = "G";
@@ -2520,7 +2406,7 @@ void extractHrefMeta(const std::string& hrefRaw,
 
     if (containsNoCase(lower, "showmorph")) {
         if (isMorphLink) *isMorphLink = true;
-        addMorphToken(meta, extractQueryValue(href, "value"));
+        addMorphToken(meta, scripture::extractQueryValue(href, "value"));
     }
 }
 
@@ -2648,109 +2534,10 @@ void appendSnippetVisibleText(const std::string& rawText,
                                lastWordStart, lastWordEnd, lastWordValid);
 }
 
-struct SearchSnippetData {
-    std::string text;
-    std::vector<bool> mask;
-};
-
-SearchSnippetData collapseSnippetWhitespace(const std::string& text,
-                                            const std::vector<bool>& mask) {
-    SearchSnippetData collapsed;
-    collapsed.text.reserve(text.size());
-    collapsed.mask.reserve(mask.size());
-
-    bool lastWasSpace = true;
-    for (size_t i = 0; i < text.size(); ++i) {
-        unsigned char uc = static_cast<unsigned char>(text[i]);
-        if (std::isspace(uc)) {
-            if (!lastWasSpace) {
-                collapsed.text.push_back(' ');
-                collapsed.mask.push_back(false);
-                lastWasSpace = true;
-            }
-            continue;
-        }
-
-        collapsed.text.push_back(text[i]);
-        collapsed.mask.push_back(i < mask.size() ? mask[i] : false);
-        lastWasSpace = false;
-    }
-
-    while (!collapsed.text.empty() && collapsed.text.back() == ' ') {
-        collapsed.text.pop_back();
-        if (!collapsed.mask.empty()) collapsed.mask.pop_back();
-    }
-    {
-        size_t start = 0;
-        while (start < collapsed.text.size() && collapsed.text[start] == ' ') ++start;
-        if (start > 0) {
-            collapsed.text.erase(0, start);
-            if (collapsed.mask.size() >= start)
-                collapsed.mask.erase(collapsed.mask.begin(),
-                                     collapsed.mask.begin() + static_cast<ptrdiff_t>(start));
-        }
-    }
-
-    return collapsed;
-}
-
-std::string buildMaskedSnippetMarkup(const std::string& text,
-                                     const std::vector<bool>& mask,
-                                     size_t maxLen = 160) {
-    if (text.empty()) return "";
-
-    size_t hitStart = std::string::npos;
-    size_t hitEnd = std::string::npos;
-    for (size_t i = 0; i < mask.size() && i < text.size(); ++i) {
-        if (!mask[i]) continue;
-        hitStart = i;
-        hitEnd = i + 1;
-        while (hitEnd < mask.size() && hitEnd < text.size() && mask[hitEnd]) {
-            ++hitEnd;
-        }
-        break;
-    }
-
-    size_t left = 0;
-    size_t right = text.size();
-    if (text.size() > maxLen) {
-        if (hitStart != std::string::npos) {
-            left = (hitStart > maxLen / 2) ? (hitStart - maxLen / 2) : 0;
-            if (hitEnd > left + maxLen) {
-                left = hitEnd - maxLen;
-            }
-        }
-        if (left > text.size()) left = text.size();
-        right = std::min(text.size(), left + maxLen);
-    }
-
-    std::string out;
-    out.reserve((right - left) + 32);
-    if (left > 0) out += "... ";
-
-    bool inHighlight = false;
-    for (size_t i = left; i < right; ++i) {
-        bool highlight = (i < mask.size()) && mask[i];
-        if (highlight && !inHighlight) {
-            out += "<span class=\"searchhit\">";
-            inHighlight = true;
-        } else if (!highlight && inHighlight) {
-            out += "</span>";
-            inHighlight = false;
-        }
-        out.push_back(text[i]);
-    }
-
-    if (inHighlight) out += "</span>";
-    if (right < text.size()) out += " ...";
-    return out;
-}
-
 std::string buildStrongsSearchSnippet(const std::string& html,
-                                      const std::string& strongsNumber,
-                                      size_t maxLen = 160) {
+                                      const std::string& strongsNumber) {
     std::string wanted = normalizeStrongsKey(strongsNumber);
-    if (wanted.empty()) return trimCopy(stripTags(html));
+    if (wanted.empty()) return search_snippet::truncateWords(stripTags(html));
 
     std::string plain;
     std::vector<bool> mask;
@@ -2859,16 +2646,7 @@ std::string buildStrongsSearchSnippet(const std::string& html,
         pos = tagEnd + 1;
     }
 
-    SearchSnippetData collapsed = collapseSnippetWhitespace(plain, mask);
-    if (collapsed.text.empty()) return "";
-
-    if (std::find(collapsed.mask.begin(), collapsed.mask.end(), true) ==
-        collapsed.mask.end()) {
-        if (collapsed.text.size() <= maxLen) return collapsed.text;
-        return collapsed.text.substr(0, maxLen) + "...";
-    }
-
-    return buildMaskedSnippetMarkup(collapsed.text, collapsed.mask, maxLen);
+    return search_snippet::buildHighlightedMarkup(plain, mask);
 }
 
 bool isInlineStrongMarkerTag(const std::string& rawTag, const std::string& tagName) {
@@ -5600,10 +5378,11 @@ std::string SwordManager::verseReferenceFromLink(const std::string& url) {
     }
 
     if (!containsNoCase(lower, "passagestudy.jsp")) return "";
-    std::string action = toLowerAscii(extractQueryValue(decoded, "action"));
-    std::string type = toLowerAscii(extractQueryValue(decoded, "type"));
+    std::string action = toLowerAscii(scripture::extractQueryValue(decoded, "action"));
+    std::string type = toLowerAscii(scripture::extractQueryValue(decoded, "type"));
     if (action == "showref" && (type.empty() || type == "scripref")) {
-        return normalizeLinkedVerseRef(extractQueryValue(decoded, "value"));
+        return scripture::normalizeLinkedVerseRef(
+            scripture::extractQueryValue(decoded, "value"));
     }
 
     return "";
@@ -5621,10 +5400,10 @@ std::vector<std::string> SwordManager::verseReferencesFromLink(
     if (lower.rfind("sword://", 0) == 0) {
         rawRefs = trimCopy(decoded.substr(8));
     } else if (containsNoCase(lower, "passagestudy.jsp")) {
-        std::string action = toLowerAscii(extractQueryValue(decoded, "action"));
-        std::string type = toLowerAscii(extractQueryValue(decoded, "type"));
+        std::string action = toLowerAscii(scripture::extractQueryValue(decoded, "action"));
+        std::string type = toLowerAscii(scripture::extractQueryValue(decoded, "type"));
         if (action == "showref" && (type.empty() || type == "scripref")) {
-            rawRefs = trimCopy(extractQueryValue(decoded, "value"));
+            rawRefs = trimCopy(scripture::extractQueryValue(decoded, "value"));
         }
     }
 
@@ -5687,7 +5466,7 @@ std::vector<std::string> SwordManager::verseReferencesFromLink(
         if (items.empty()) items.push_back(refText);
 
         for (const auto& item : items) {
-            std::string normalizedItem = normalizeLinkedVerseRef(item);
+            std::string normalizedItem = scripture::normalizeLinkedVerseRef(item);
             if (normalizedItem.empty()) continue;
 
             std::string repairedItem =
@@ -5743,7 +5522,7 @@ std::vector<std::string> SwordManager::verseReferencesFromLink(
         return out;
     };
 
-    std::string normalizedRawRefs = normalizeLinkedVerseRef(rawRefs);
+    std::string normalizedRawRefs = scripture::normalizeLinkedVerseRef(rawRefs);
     std::string repairedRefs =
         repairLinkedVerseRef(normalizedRawRefs, versificationName);
 
@@ -5826,14 +5605,14 @@ std::string SwordManager::buildLinkPreviewHtml(const std::string& sourceModule,
         return "";
     }
 
-    std::string action = toLowerAscii(extractQueryValue(decoded, "action"));
+    std::string action = toLowerAscii(scripture::extractQueryValue(decoded, "action"));
     if (action != "shownote") return "";
 
-    std::string noteModule = trimCopy(extractQueryValue(decoded, "module"));
+    std::string noteModule = trimCopy(scripture::extractQueryValue(decoded, "module"));
     if (noteModule.empty()) noteModule = trimCopy(sourceModule);
-    std::string noteValue = trimCopy(extractQueryValue(decoded, "value"));
-    std::string noteType = toLowerAscii(extractQueryValue(decoded, "type"));
-    std::string passage = trimCopy(extractQueryValue(decoded, "passage"));
+    std::string noteValue = trimCopy(scripture::extractQueryValue(decoded, "value"));
+    std::string noteType = toLowerAscii(scripture::extractQueryValue(decoded, "type"));
+    std::string passage = trimCopy(scripture::extractQueryValue(decoded, "passage"));
     if (passage.empty()) passage = trimCopy(sourceKey);
     if (noteModule.empty() || noteValue.empty() || passage.empty()) return "";
 
@@ -5894,11 +5673,12 @@ std::string SwordManager::buildLinkPreviewHtml(const std::string& sourceModule,
         html << "<div class=\"link-preview crossref-preview\">\n";
         html << "<div class=\"entry-key\">Cross references";
         if (!noteOsisRef.empty()) {
-            html << " for " << htmlEscapeAttr(normalizeLinkedVerseRef(noteOsisRef));
+            html << " for "
+                 << htmlEscapeAttr(scripture::normalizeLinkedVerseRef(noteOsisRef));
         }
         html << "</div>\n";
         for (size_t i = 0; i < shown; ++i) {
-            std::string ref = normalizeLinkedVerseRef(refs[i]);
+            std::string ref = scripture::normalizeLinkedVerseRef(refs[i]);
             if (ref.empty()) continue;
             html << "<div class=\"crossref-item\">\n";
             html << getVerseText(verseModule, ref);
@@ -5920,7 +5700,8 @@ std::string SwordManager::buildLinkPreviewHtml(const std::string& sourceModule,
             html << " " << htmlEscapeAttr(noteLabel);
         }
         if (!noteOsisRef.empty()) {
-            html << " on " << htmlEscapeAttr(normalizeLinkedVerseRef(noteOsisRef));
+            html << " on "
+                 << htmlEscapeAttr(scripture::normalizeLinkedVerseRef(noteOsisRef));
         }
         html << "</div>\n";
         html << renderedBody << "\n";
@@ -5989,11 +5770,6 @@ std::vector<SearchResult> SwordManager::search(
         const char* preview = mod->stripText();
         result.text = preview ? preview : "";
 
-        // Truncate long preview
-        if (result.text.length() > 200) {
-            result.text = result.text.substr(0, 200) + "...";
-        }
-
         results.push_back(result);
     }
 
@@ -6031,10 +5807,7 @@ std::vector<SearchResult> SwordManager::searchStrongs(
         result.text = buildStrongsSearchSnippet(rendered, normalizedStrong);
         if (result.text.empty()) {
             const char* preview = mod->stripText();
-            result.text = preview ? preview : "";
-            if (result.text.size() > 200) {
-                result.text = result.text.substr(0, 200) + "...";
-            }
+            result.text = search_snippet::truncateWords(preview ? preview : "");
         }
 
         results.push_back(std::move(result));

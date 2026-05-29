@@ -251,6 +251,8 @@ private:
 
     bool tabCacheEvictionScheduled_ = false;
     bool statusPollScheduled_ = false;
+    bool dailyDateCheckScheduled_ = false;
+    std::string lastDailyDateIso_;
     std::string lastStatusBarText_;
     std::string transientStatusText_;
     std::chrono::steady_clock::time_point transientStatusUntil_{};
@@ -287,10 +289,16 @@ private:
     void syncBibleHistoryUi();
     void navigateToHistoryIndex(int index);
 
+    /// Capture current shared pane state into the given tab context.
+    void captureStudyTabState(int index);
+
     /// Capture current shared pane state into the active tab context.
     void captureActiveTabState();
 
-    /// Move rendered pane buffers out of the active tab for fast tab restore.
+    /// Move current rendered pane buffers into the given tab context for fast restore.
+    void captureStudyTabDisplayBuffers(int index);
+
+    /// Move current rendered pane buffers into the active tab context for fast restore.
     void captureActiveTabDisplayBuffers();
 
     /// Evict litehtml doc from least-recently-used tabs to limit memory.
@@ -304,6 +312,10 @@ private:
 
     /// Periodic status poll callback.
     static void onStatusPoll(void* data);
+
+    /// Refresh daily devotional/plan dates when the local date changes.
+    void checkDailyDateRollover();
+    static void onDailyDateCheck(void* data);
 
     /// Schedule eviction of old tab render buffers after the current UI work.
     void scheduleTabSnapshotEviction();

@@ -208,6 +208,7 @@ private:
     void updateDisplay();
     bool canUpdateVerseSelectionInPlace() const;
     void syncVerseSelectionInPlace(int oldVerse, int newVerse);
+    void ensureCurrentVerseSelectionStyle();
     void normalizeParallelModules();
     void syncParallelHeader();
     void clearParallelHeader();

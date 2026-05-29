@@ -11,6 +11,8 @@
 #include "ui/TagPanel.h"
 #include "ui/VerseContext.h"
 #include "reading/DateUtils.h"
+#include "sword/ScriptureLink.h"
+#include "sword/ScriptureReference.h"
 #include "sword/SwordManager.h"
 #include "tags/TagManager.h"
 #include "app/PerfTrace.h"
@@ -21,7 +23,6 @@
 
 #include <algorithm>
 #include <cctype>
-#include <cstdlib>
 #include <fstream>
 #include <functional>
 #include <iomanip>
@@ -225,61 +226,6 @@ int findChoiceIndexByLabel(const Fl_Choice* choice, const std::string& label) {
     return -1;
 }
 
-std::string normalizeBookLookupKey(const std::string& text) {
-    std::string out;
-    out.reserve(text.size());
-    for (char c : text) {
-        unsigned char uc = static_cast<unsigned char>(c);
-        if (std::isalnum(uc)) {
-            out.push_back(static_cast<char>(std::tolower(uc)));
-        }
-    }
-    return out;
-}
-
-std::string canonicalBookLabelForModule(VerdadApp* app,
-                                        const std::string& moduleName,
-                                        const std::string& book) {
-    const std::string trimmedBook = module_choice::trimCopy(book);
-    if (!app || moduleName.empty() || trimmedBook.empty()) {
-        return trimmedBook;
-    }
-
-    const std::string wanted = normalizeBookLookupKey(trimmedBook);
-    if (wanted.empty()) return trimmedBook;
-
-    std::vector<std::string> books = app->swordManager().getBookNames(moduleName);
-    std::string uniquePrefixMatch;
-    int prefixMatches = 0;
-
-    for (const auto& candidate : books) {
-        const std::string normalizedCandidate = normalizeBookLookupKey(candidate);
-        if (normalizedCandidate == wanted) {
-            return candidate;
-        }
-
-        std::string shortRef = app->swordManager().getShortReference(moduleName,
-                                                                     candidate + " 1:1");
-        SwordManager::VerseRef shortParsed = SwordManager::parseVerseRef(shortRef);
-        const std::string normalizedShortBook = normalizeBookLookupKey(shortParsed.book);
-        if (!normalizedShortBook.empty() && normalizedShortBook == wanted) {
-            return candidate;
-        }
-
-        const bool prefixMatch =
-            (!normalizedCandidate.empty() &&
-             normalizedCandidate.rfind(wanted, 0) == 0) ||
-            (!normalizedShortBook.empty() &&
-             normalizedShortBook.rfind(wanted, 0) == 0);
-        if (prefixMatch) {
-            uniquePrefixMatch = candidate;
-            ++prefixMatches;
-        }
-    }
-
-    return prefixMatches == 1 ? uniquePrefixMatch : trimmedBook;
-}
-
 std::string htmlEscape(const std::string& text) {
     std::string out;
     out.reserve(text.size());
@@ -339,51 +285,6 @@ std::string monthDayLabel(const std::string& isoDate) {
     std::string month = reading::monthName(date.month);
     if (month.empty()) return isoDate;
     return month + " " + std::to_string(date.day);
-}
-
-std::string urlDecode(const std::string& text) {
-    std::string decoded;
-    decoded.reserve(text.size());
-
-    for (size_t i = 0; i < text.size(); ++i) {
-        char c = text[i];
-        if (c == '%' && i + 2 < text.size()) {
-            const std::string hex = text.substr(i + 1, 2);
-            char* end = nullptr;
-            long value = std::strtol(hex.c_str(), &end, 16);
-            if (end && *end == '\0') {
-                decoded.push_back(static_cast<char>(value));
-                i += 2;
-                continue;
-            }
-        }
-        decoded.push_back(c == '+' ? ' ' : c);
-    }
-
-    return decoded;
-}
-
-std::string extractQueryValue(const std::string& url, const char* key) {
-    if (!key || !*key) return "";
-    const std::string marker = std::string(key) + "=";
-    size_t queryPos = url.find('?');
-    if (queryPos == std::string::npos) return "";
-    size_t pos = url.find(marker, queryPos + 1);
-    if (pos == std::string::npos) return "";
-    pos += marker.size();
-    size_t end = url.find('&', pos);
-    return urlDecode(url.substr(pos, end == std::string::npos ? std::string::npos : end - pos));
-}
-
-std::string firstReadingListItem(const std::string& reference) {
-    std::string ref = module_choice::trimCopy(reference);
-    if (ref.empty()) return ref;
-
-    size_t split = ref.find_first_of(",;");
-    if (split == std::string::npos) return ref;
-
-    std::string first = module_choice::trimCopy(ref.substr(0, split));
-    return first.empty() ? ref : first;
 }
 
 std::string decodeBasicHtmlEntities(const std::string& text) {
@@ -921,7 +822,9 @@ void BiblePane::layoutNavBarControls() {
 
 void BiblePane::navigateTo(const std::string& book, int chapter, int verse) {
     if (moduleName_.empty()) return;
-    const std::string canonicalBook = canonicalBookLabelForModule(app_, moduleName_, book);
+    const std::string canonicalBook = app_
+        ? scripture::canonicalBookLabelForModule(app_->swordManager(), moduleName_, book)
+        : module_choice::trimCopy(book);
     if (canonicalBook.empty()) return;
 
     if (canonicalBook == currentBook_ && chapter == currentChapter_) {
@@ -1105,6 +1008,7 @@ void BiblePane::setHtmlStyleOverride(const std::string& css) {
             canUpdateVerseSelectionInPlace()) {
             syncVerseSelectionInPlace(htmlStoredSelectedVerse_, currentVerse_);
         }
+        ensureCurrentVerseSelectionStyle();
     }
 }
 
@@ -1381,7 +1285,7 @@ void BiblePane::setStudyState(const std::string& module,
 
     currentBook_ = book.empty()
         ? currentBook_
-        : canonicalBookLabelForModule(app_, moduleName_, book);
+        : scripture::canonicalBookLabelForModule(app_->swordManager(), moduleName_, book);
     if (currentBook_.empty()) currentBook_ = "Genesis";
 
     currentChapter_ = std::max(1, chapter);
@@ -1493,6 +1397,7 @@ void BiblePane::restoreDisplayBuffer(const DisplayBuffer& buffer) {
         canUpdateVerseSelectionInPlace()) {
         syncVerseSelectionInPlace(htmlStoredSelectedVerse_, currentVerse_);
     }
+    ensureCurrentVerseSelectionStyle();
 }
 
 void BiblePane::restoreDisplayBuffer(DisplayBuffer&& buffer) {
@@ -1514,6 +1419,7 @@ void BiblePane::restoreDisplayBuffer(DisplayBuffer&& buffer) {
         canUpdateVerseSelectionInPlace()) {
         syncVerseSelectionInPlace(htmlStoredSelectedVerse_, currentVerse_);
     }
+    ensureCurrentVerseSelectionStyle();
 }
 
 void BiblePane::buildNavBar() {
@@ -1753,6 +1659,7 @@ void BiblePane::updateDisplay() {
 
     htmlWidget_->setHtml(html);
     htmlStoredSelectedVerse_ = hasVerseMarkup ? currentVerse_ : 0;
+    ensureCurrentVerseSelectionStyle();
     perf::logf("BiblePane::updateDisplay htmlWidget_->setHtml: %.3f ms", step.elapsedMs());
     step.reset();
     if (currentVerse_ > 0) {
@@ -1777,13 +1684,19 @@ bool BiblePane::canUpdateVerseSelectionInPlace() const {
 void BiblePane::syncVerseSelectionInPlace(int oldVerse, int newVerse) {
     perf::ScopeTimer timer("BiblePane::syncVerseSelectionInPlace");
     if (!htmlWidget_) return;
-    htmlWidget_->updateElementClassById(verseElementId(oldVerse),
-                                        verseElementId(newVerse),
-                                        "verse-selected",
-                                        false);
-    htmlWidget_->updateElementTreeStyleSnippetById(
+    htmlWidget_->updateElementClassAndStyleSnippetById(
         verseElementId(oldVerse),
         verseElementId(newVerse),
+        "verse-selected",
+        selectedVerseInlineStyleSnippet(),
+        false);
+}
+
+void BiblePane::ensureCurrentVerseSelectionStyle() {
+    if (!htmlWidget_ || currentVerse_ <= 0) return;
+    htmlWidget_->updateElementTreeStyleSnippetById(
+        "",
+        verseElementId(currentVerse_),
         selectedVerseInlineStyleSnippet(),
         false);
 }
@@ -2107,10 +2020,15 @@ void BiblePane::openDailyReadingPlanWorkspace() {
 }
 
 void BiblePane::onDailyReadingBarLink(const std::string& url) {
-    if (url.rfind("verdad-plan://open", 0) == 0) {
-        const std::string ref = firstReadingListItem(extractQueryValue(url, "ref"));
+    if (scripture::isReadingPlanOpenUrl(url)) {
+        const std::string ref =
+            scripture::firstReadingListItem(scripture::readingPlanOpenReference(url));
         if (!ref.empty()) {
-            navigateToReference(ref);
+            if (app_ && app_->mainWindow()) {
+                app_->mainWindow()->navigateTo(ref);
+            } else {
+                navigateToReference(ref);
+            }
         }
         return;
     }

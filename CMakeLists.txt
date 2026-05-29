@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(Verdad VERSION 0.7.5 LANGUAGES CXX)
+project(Verdad VERSION 0.7.6 LANGUAGES CXX)
 
 include(GNUInstallDirs)
 
@@ -98,9 +98,12 @@ set(SOURCES
     src/app/VerdadApp.cpp
     src/app/PlatformPaths.cpp
     src/import/ImportedModuleManager.cpp
+    src/sword/ScriptureLink.cpp
+    src/sword/ScriptureReference.cpp
     src/sword/SwordManager.cpp
     src/sword/SwordPaths.cpp
     src/search/SearchIndexer.cpp
+    src/search/SearchSnippet.cpp
     src/search/SmartSearch.cpp
     src/reading/ReadingPlanGenerator.cpp
     src/reading/ReadingPlanManager.cpp
@@ -131,9 +134,12 @@ set(HEADERS
     src/app/PerfTrace.h
     src/app/PlatformPaths.h
     src/import/ImportedModuleManager.h
+    src/sword/ScriptureLink.h
+    src/sword/ScriptureReference.h
     src/sword/SwordManager.h
     src/sword/SwordPaths.h
     src/search/SearchIndexer.h
+    src/search/SearchSnippet.h
     src/search/SmartSearch.h
     src/reading/DateUtils.h
     src/reading/ReadingPlanGenerator.h
@@ -172,8 +178,11 @@ add_executable(verdad-bench
     src/bench_main.cpp
     src/app/PlatformPaths.cpp
     src/import/ImportedModuleManager.cpp
+    src/sword/ScriptureLink.cpp
+    src/sword/ScriptureReference.cpp
     src/sword/SwordManager.cpp
     src/sword/SwordPaths.cpp
+    src/search/SearchSnippet.cpp
     src/ui/HtmlWidget.cpp
 )
 

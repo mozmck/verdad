@@ -26,6 +26,7 @@ public:
     };
 
     using VerseTextProvider = std::function<std::string(const std::string&)>;
+    using ReferenceClickCallback = std::function<void(const std::string&)>;
 
     struct CharFormat {
         bool bold = false;
@@ -92,6 +93,9 @@ public:
     void setVerseTextProvider(VerseTextProvider provider) {
         verseTextProvider_ = std::move(provider);
     }
+    void setReferenceClickCallback(ReferenceClickCallback cb) {
+        referenceClickCallback_ = std::move(cb);
+    }
 
     void setChangeCallback(std::function<void()> cb) {
         changeCallback_ = std::move(cb);
@@ -139,6 +143,7 @@ private:
     int textSize_ = 14;
     std::function<void()> changeCallback_;
     VerseTextProvider verseTextProvider_;
+    ReferenceClickCallback referenceClickCallback_;
 
     void buildToolbar();
     void layoutChildren();

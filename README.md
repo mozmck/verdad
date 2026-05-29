@@ -1,7 +1,7 @@
 # Verdad Bible Study
 
-Verdad is a desktop Bible study application for CrossWire SWORD modules. It keeps Bible reading, commentary, dictionaries, general books, search, tags, and notes in one window.
-NOTE: This progra mwas made using AI and is in active development. There may (will) be bugs. Spelling errors are all belong to kg5zsu :-)
+Verdad is a desktop Bible study application using CrossWire SWORD modules. It keeps Bible reading, commentary, dictionaries, general books, search, tags, and notes in one window.
+NOTE: This program was made using AI and is in active development.
 
 ## Features
 

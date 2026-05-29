@@ -60,6 +60,22 @@ public:
         int maxResults = 0;
     };
 
+    struct SmartSearchOptions {
+        SmartSearchOptions(bool spelling = true,
+                           bool synonyms = true,
+                           bool partialWords = true,
+                           bool fuzzy = true)
+            : spellingCorrection(spelling)
+            , includeSynonyms(synonyms)
+            , partialWordMatching(partialWords)
+            , fuzzyExpansion(fuzzy) {}
+
+        bool spellingCorrection;
+        bool includeSynonyms;
+        bool partialWordMatching;
+        bool fuzzyExpansion;
+    };
+
     struct RegexSearchProgress {
         int scanned = 0;
         int total = 0;
@@ -67,6 +83,14 @@ public:
     };
 
     using RegexProgressCallback = std::function<bool(const RegexSearchProgress&)>;
+
+    enum class SnippetKind {
+        Word,
+        ExactPhrase,
+        Regex,
+        Strongs,
+        Smart
+    };
 
     explicit SearchIndexer(const std::string& dbPath,
                            const ImportedModuleManager* importedModuleMgr = nullptr);
@@ -113,6 +137,9 @@ public:
     /// Return the last indexing error for a module, if any.
     std::string moduleIndexError(const std::string& moduleName) const;
 
+    /// True when a module has a recorded indexing error.
+    bool hasModuleIndexError(const std::string& moduleName) const;
+
     /// Pause background indexing until the returned guard is destroyed.
     [[nodiscard]] ScopedSuspend suspendBackgroundIndexing();
 
@@ -121,7 +148,8 @@ public:
     std::vector<SearchResult> searchWord(const SearchRequest& request,
                                          const std::string& query,
                                          bool exactPhrase = false,
-                                         int maxResults = 0) const;
+                                         int maxResults = 0,
+                                         bool includeSnippets = true) const;
 
     /// Search module content directly without relying on the SQLite index.
     std::vector<SearchResult> searchWordDirect(const SearchRequest& request,
@@ -129,19 +157,21 @@ public:
                                                bool exactPhrase = false,
                                                int maxResults = 0) const;
 
-    /// Search for Strong's/Lemma references in indexed XHTML.
+    /// Search for Strong's/Lemma references in the compact lemma token index.
     /// maxResults <= 0 means no result limit.
     std::vector<SearchResult> searchStrongs(const SearchRequest& request,
                                             const std::string& strongsQuery,
-                                            int maxResults = 0) const;
+                                            int maxResults = 0,
+                                            bool includeSnippets = true) const;
 
-    /// Search indexed plain text using a regex pattern.
+    /// Search source plain text using a regex pattern, with indexed prefiltering when possible.
     /// maxResults <= 0 means no result limit.
     std::vector<SearchResult> searchRegex(const SearchRequest& request,
                                           const std::string& pattern,
                                           bool caseSensitive = false,
                                           int maxResults = 0,
-                                          RegexProgressCallback progressCallback = {}) const;
+                                          RegexProgressCallback progressCallback = {},
+                                          bool includeSnippets = true) const;
 
     /// Search module content directly with a regex scan and progress reporting.
     std::vector<SearchResult> searchRegexDirect(const SearchRequest& request,
@@ -151,12 +181,26 @@ public:
                                                 RegexProgressCallback progressCallback = {}) const;
 
     /// Smart/fuzzy search: expands query with synonyms, phonetic variants,
-    /// and edit-distance matching.  Results are ranked by combined relevance.
+    /// and edit-distance matching. Results are ranked by indexed FTS relevance.
     /// `language` is an ISO 639-1 code (e.g. "en") for synonym expansion.
     std::vector<SearchResult> searchSmart(const SearchRequest& request,
                                           const std::string& query,
                                           const std::string& language = "en",
-                                          int maxResults = 0) const;
+                                          int maxResults = 0,
+                                          bool includeSnippets = true,
+                                          SmartSearchOptions options = SmartSearchOptions()) const;
+
+    /// Fill snippets for existing indexed search rows by reading source module text.
+    std::vector<SearchResult> buildResultSnippets(
+        const std::vector<SearchResult>& results,
+        SnippetKind kind,
+        const std::string& query,
+        const std::string& language = "en",
+        bool caseSensitive = false,
+        SmartSearchOptions smartOptions = SmartSearchOptions()) const;
+
+    /// Return indexed dictionary keys for fast dropdown filtering.
+    std::vector<std::string> dictionaryKeys(const std::string& moduleName) const;
 
 private:
     struct IndexTask {
@@ -171,6 +215,13 @@ private:
         std::string signature;
     };
 
+    struct SourceText {
+        bool found = false;
+        std::string title;
+        std::string plainText;
+        std::string xhtml;
+    };
+
     void workerLoop();
     void indexModuleNow(const std::string& moduleName);
     void resumeBackgroundIndexing();
@@ -183,13 +234,19 @@ private:
                                  std::string&)>& matcher,
         int maxResults,
         RegexProgressCallback progressCallback = {}) const;
+    std::vector<SourceText> fetchSourceTextsForResults(
+        const std::vector<SearchResult>& results,
+        bool includeXhtml) const;
 
-    static std::string buildFilterFtsQuery(const SearchRequest& request);
     static std::string buildWordFtsQuery(const SearchRequest& request,
                                          const std::string& query,
                                          bool exactPhrase);
     static std::string buildStrongsFtsQuery(const SearchRequest& request,
                                             const std::string& query);
+    std::unordered_map<std::string, std::vector<std::string>>
+    buildSmartSpellingAlternatives(const SearchRequest& request,
+                                   const std::string& query,
+                                   SmartSearchOptions options = SmartSearchOptions()) const;
 
     static void applyPragmas(sqlite3* db);
     static bool ensureSchema(sqlite3* db);

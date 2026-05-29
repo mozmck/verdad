@@ -17,6 +17,7 @@ class ModulePanel;
 class SearchPanel;
 class TagPanel;
 class HtmlWidget;
+enum class SearchAssistanceMode;
 
 /// Left pane with search box, tabs (modules/search/tags),
 /// and a preview area at the bottom.
@@ -75,6 +76,9 @@ public:
     /// Set extra line spacing for search results and tagged-verse lists.
     void setBrowserLineSpacing(int pixels);
 
+    /// Set the persisted search assistance mode selector.
+    void setSearchAssistanceMode(SearchAssistanceMode mode);
+
     /// Current preview widget height in pixels.
     int previewHeight() const;
 
@@ -106,6 +110,11 @@ private:
     Fl_Group* searchGroup_;
     Fl_Input* searchInput_;
     Fl_Button* searchButton_;
+    Fl_Group* searchModeGroup_;
+    Fl_Button* exactSearchModeButton_;
+    Fl_Button* spellingSearchModeButton_;
+    Fl_Button* synonymsSearchModeButton_;
+    Fl_Button* smartSearchModeButton_;
 
     // Splitter area (tabs + preview)
     Fl_Tile* contentTile_;
@@ -125,12 +134,14 @@ private:
 
     /// Show only the active tab panel to avoid cross-tab redraw artifacts.
     void syncTabPanelVisibility();
+    void syncSearchAssistanceButtons();
 
     void onPreviewLink(const std::string& url);
 
     // Callbacks
     static void onSearch(Fl_Widget* w, void* data);
     static void onSearchInput(Fl_Widget* w, void* data);
+    static void onSearchMode(Fl_Widget* w, void* data);
     static void onTabChanged(Fl_Widget* w, void* data);
 };
 

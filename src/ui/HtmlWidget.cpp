@@ -683,6 +683,29 @@ bool updateElementTreeStyleSnippetRecursive(const std::shared_ptr<litehtml::elem
     return changed;
 }
 
+bool applyStyleSnippetToElementTreeRecursive(const std::shared_ptr<litehtml::element>& root,
+                                              const std::string& styleSnippet,
+                                              bool enable) {
+    if (!root) return false;
+
+    bool changed = false;
+    const char* current = root->get_attr("style", "");
+    const std::string currentStyle = current ? current : "";
+    const std::string normalizedCurrent = normalizeInlineStyle(currentStyle);
+    const std::string updatedStyle = enable
+        ? addInlineStyleSnippet(currentStyle, styleSnippet)
+        : removeInlineStyleSnippet(currentStyle, styleSnippet);
+    if (updatedStyle != normalizedCurrent) {
+        root->set_attr("style", updatedStyle.c_str());
+        changed = true;
+    }
+
+    for (const auto& child : root->children()) {
+        changed = applyStyleSnippetToElementTreeRecursive(child, styleSnippet, enable) || changed;
+    }
+    return changed;
+}
+
 int parseVerseNumberValue(const char* text) {
     if (!text || !*text) return 0;
 
@@ -925,6 +948,116 @@ bool HtmlWidget::isWordCharAt(int fragmentIndex, int charIndex) const {
            first == '-';
 }
 
+void HtmlWidget::populateTextFragmentMetrics(TextFragment& fragment,
+                                             litehtml::uint_ptr hFont) {
+    fragment.byteOffsets.clear();
+    fragment.xOffsets.clear();
+    fragment.byteOffsets.push_back(0);
+    fragment.xOffsets.push_back(0);
+
+    auto fontIt = fonts_.find(hFont);
+    if (fontIt != fonts_.end()) {
+        selectFltkFont(*fontIt->second);
+    } else {
+        fl_font(FL_TIMES, static_cast<int>(get_default_font_size()));
+    }
+
+    int cursorX = 0;
+    for (size_t i = 0; i < fragment.text.size();) {
+        int len = fl_utf8len1(static_cast<unsigned char>(fragment.text[i]));
+        if (len <= 0 || i + static_cast<size_t>(len) > fragment.text.size()) {
+            len = 1;
+        }
+        cursorX += static_cast<int>(fl_width(fragment.text.data() + i, len));
+        i += static_cast<size_t>(len);
+        fragment.byteOffsets.push_back(static_cast<int>(i));
+        fragment.xOffsets.push_back(cursorX);
+    }
+}
+
+void HtmlWidget::rebuildTextFragments() {
+    textFragments_.clear();
+    parallelBoundariesComputed_ = false;
+    parallelColumnBoundaries_.clear();
+
+    if (!doc_ || !doc_->root_render()) return;
+
+    std::vector<std::shared_ptr<litehtml::render_item>> stack;
+    stack.push_back(doc_->root_render());
+    while (!stack.empty()) {
+        std::shared_ptr<litehtml::render_item> ri = stack.back();
+        stack.pop_back();
+        if (!ri || !ri->is_visible() || !ri->src_el()) continue;
+
+        auto& children = ri->children();
+        for (auto it = children.rbegin(); it != children.rend(); ++it) {
+            stack.push_back(*it);
+        }
+
+        auto el = ri->src_el();
+        if (!el->is_text()) continue;
+
+        litehtml::string text;
+        el->get_text(text);
+        if (text.empty()) continue;
+
+        litehtml::uint_ptr font = el->css().get_font();
+        auto parent = el->parent();
+        if (!font && parent) font = parent->css().get_font();
+        if (!font) continue;
+
+        auto fontIt = fonts_.find(font);
+        if (el->is_white_space() &&
+            fontIt != fonts_.end() &&
+            !fontIt->second->metrics.draw_spaces) {
+            continue;
+        }
+
+        TextFragment fragment;
+        fragment.text = text;
+        fragment.pos = ri->get_placement();
+        fragment.pos.round();
+        fragment.parallelColumn = -1;
+        populateTextFragmentMetrics(fragment, font);
+
+        if (isParallelDocument()) {
+            int docX = static_cast<int>(fragment.pos.x) +
+                       static_cast<int>(fragment.pos.width / 2);
+            fragment.parallelColumn = parallelColumnAtDocumentX(docX);
+        }
+
+        textFragments_.push_back(std::move(fragment));
+    }
+}
+
+int HtmlWidget::findTextFragmentForDrawRun(
+        const TextFragment& fragment) const {
+    int bestIndex = -1;
+    long bestScore = std::numeric_limits<long>::max();
+
+    for (size_t i = 0; i < textFragments_.size(); ++i) {
+        const TextFragment& candidate = textFragments_[i];
+        int dx = std::abs(static_cast<int>(candidate.pos.x - fragment.pos.x));
+        int dy = std::abs(static_cast<int>(candidate.pos.y - fragment.pos.y));
+        if (dx > 2 || dy > 2) continue;
+
+        bool textMatch = candidate.text == fragment.text ||
+                         candidate.text.rfind(fragment.text, 0) == 0 ||
+                         fragment.text.rfind(candidate.text, 0) == 0;
+        long textPenalty = textMatch ? 0L : 1000L;
+        long score = textPenalty +
+                     static_cast<long>(dy) * 100L +
+                     static_cast<long>(dx) * 10L;
+        if (score >= bestScore) continue;
+
+        bestScore = score;
+        bestIndex = static_cast<int>(i);
+        if (score == 0) break;
+    }
+
+    return bestIndex;
+}
+
 HtmlWidget::SelectionPoint HtmlWidget::nextSelectionPoint(
         const SelectionPoint& point) const {
     if (!point.valid) return SelectionPoint{};
@@ -1016,9 +1149,11 @@ bool HtmlWidget::screenPointForSelectionBoundary(const SelectionPoint& point,
     drawChar = std::clamp(drawChar, 0, charCount - 1);
     int startX = fragment.xOffsets[drawChar];
     int endX = fragment.xOffsets[drawChar + 1];
-    screenX = static_cast<int>(fragment.pos.x) +
+    screenX = x() - scrollX_ +
+              static_cast<int>(fragment.pos.x) +
               startX + std::max(0, (endX - startX) / 2);
-    screenY = static_cast<int>(fragment.pos.y + fragment.pos.height / 2);
+    screenY = y() - scrollY_ +
+              static_cast<int>(fragment.pos.y + fragment.pos.height / 2);
     return true;
 }
 
@@ -1028,6 +1163,8 @@ HtmlWidget::SelectionPoint HtmlWidget::hitTestSelectionPoint(int screenX,
     SelectionPoint best;
     if (textFragments_.empty()) return best;
 
+    int docX = screenX - x() + scrollX_;
+    int docY = screenY - y() + scrollY_;
     long bestScore = std::numeric_limits<long>::max();
 
     for (size_t i = 0; i < textFragments_.size(); ++i) {
@@ -1044,12 +1181,12 @@ HtmlWidget::SelectionPoint HtmlWidget::hitTestSelectionPoint(int screenX,
         int bottom = static_cast<int>(fragment.pos.y + fragment.pos.height);
 
         int verticalDistance = 0;
-        if (screenY < top) verticalDistance = top - screenY;
-        else if (screenY > bottom) verticalDistance = screenY - bottom;
+        if (docY < top) verticalDistance = top - docY;
+        else if (docY > bottom) verticalDistance = docY - bottom;
 
         int horizontalDistance = 0;
-        if (screenX < left) horizontalDistance = left - screenX;
-        else if (screenX > right) horizontalDistance = screenX - right;
+        if (docX < left) horizontalDistance = left - docX;
+        else if (docX > right) horizontalDistance = docX - right;
 
         long score = static_cast<long>(verticalDistance) * 100000L +
                      static_cast<long>(horizontalDistance) * 100L +
@@ -1058,12 +1195,12 @@ HtmlWidget::SelectionPoint HtmlWidget::hitTestSelectionPoint(int screenX,
 
         int charCount = static_cast<int>(fragment.byteOffsets.size()) - 1;
         int charIndex = 0;
-        if (screenX <= left) {
+        if (docX <= left) {
             charIndex = 0;
-        } else if (screenX >= right) {
+        } else if (docX >= right) {
             charIndex = charCount;
         } else {
-            int localX = screenX - left;
+            int localX = docX - left;
             charIndex = charCount;
             for (int ch = 0; ch < charCount; ++ch) {
                 int startX = fragment.xOffsets[ch];
@@ -1092,6 +1229,8 @@ bool HtmlWidget::hitTextFragmentAtPoint(int screenX, int screenY,
     charIndex = -1;
     if (textFragments_.empty()) return false;
 
+    int docX = screenX - x() + scrollX_;
+    int docY = screenY - y() + scrollY_;
     long bestArea = std::numeric_limits<long>::max();
     for (size_t i = 0; i < textFragments_.size(); ++i) {
         const TextFragment& fragment = textFragments_[i];
@@ -1103,12 +1242,12 @@ bool HtmlWidget::hitTextFragmentAtPoint(int screenX, int screenY,
         int right = static_cast<int>(fragment.pos.x + fragment.pos.width);
         int top = static_cast<int>(fragment.pos.y);
         int bottom = static_cast<int>(fragment.pos.y + fragment.pos.height);
-        if (screenX < left || screenX >= right ||
-            screenY < top || screenY >= bottom) {
+        if (docX < left || docX >= right ||
+            docY < top || docY >= bottom) {
             continue;
         }
 
-        int localX = screenX - left;
+        int localX = docX - left;
         int chars = static_cast<int>(fragment.byteOffsets.size()) - 1;
         int hitChar = -1;
         for (int ch = 0; ch < chars; ++ch) {
@@ -1600,8 +1739,50 @@ void HtmlWidget::updateElementTreeStyleSnippetById(const std::string& removeId,
     int oldScroll = scrollY_;
     int oldContentWidth = contentWidth_;
     int oldContentHeight = contentHeight_;
+    renderDocument();
     if (relayout) {
-        renderDocument();
+        if (contentWidth_ != oldContentWidth || contentHeight_ != oldContentHeight) {
+            updateScrollbar(true);
+        }
+        setScrollX(oldScrollX);
+        setScrollY(oldScroll);
+    }
+    redraw();
+}
+
+void HtmlWidget::updateElementClassAndStyleSnippetById(const std::string& removeId,
+                                                       const std::string& addId,
+                                                       const std::string& className,
+                                                       const std::string& styleSnippet,
+                                                       bool relayout) {
+    if (!doc_) return;
+    auto root = doc_->root();
+    if (!root) return;
+
+    bool changed = false;
+    auto processElement = [&](const std::string& id, bool enable) {
+        if (id.empty()) return;
+        auto el = findElementByIdRecursive(root, id);
+        if (!el) return;
+        if (!className.empty())
+            changed = el->set_class(className.c_str(), enable) || changed;
+        if (!styleSnippet.empty())
+            changed = applyStyleSnippetToElementTreeRecursive(el, styleSnippet, enable) || changed;
+    };
+    processElement(removeId, false);
+    processElement(addId, true);
+
+    if (!changed) return;
+
+    root->refresh_styles();
+    root->compute_styles();
+
+    int oldScrollX = scrollX_;
+    int oldScroll = scrollY_;
+    int oldContentWidth = contentWidth_;
+    int oldContentHeight = contentHeight_;
+    renderDocument();
+    if (relayout) {
         if (contentWidth_ != oldContentWidth || contentHeight_ != oldContentHeight) {
             updateScrollbar(true);
         }
@@ -1802,6 +1983,8 @@ void HtmlWidget::restoreSnapshot(const Snapshot& snapshot) {
             renderDocument();
         }
         updateScrollbar(true);
+    } else {
+        rebuildTextFragments();
     }
     setScrollX(scrollX_);
     setScrollY(scrollY_);
@@ -1879,6 +2062,8 @@ void HtmlWidget::restoreSnapshot(Snapshot&& snapshot) {
             renderDocument();
         }
         updateScrollbar(true);
+    } else {
+        rebuildTextFragments();
     }
     setScrollX(scrollX_);
     setScrollY(scrollY_);
@@ -1888,12 +2073,15 @@ void HtmlWidget::renderDocument() {
     perf::ScopeTimer timer("HtmlWidget::renderDocument");
     if (!doc_) return;
 
+    parallelBoundariesComputed_ = false;
+    parallelColumnBoundaries_.clear();
     int renderWidth = viewportWidth();
     lastRenderWidth_ = renderWidth;
 
     doc_->render(renderWidth);
     contentWidth_ = std::max(0, static_cast<int>(doc_->width()));
     contentHeight_ = std::max(0, static_cast<int>(doc_->height()));
+    rebuildTextFragments();
 }
 
 void HtmlWidget::applyScrollbarState(bool needV, bool needH) {
@@ -2017,9 +2205,7 @@ void HtmlWidget::draw() {
     fl_rectf(x(), y(), w(), h());
 
     if (doc_) {
-        textFragments_.clear();
-        parallelBoundariesComputed_ = false;
-        parallelColumnBoundaries_.clear();
+        if (textFragments_.empty()) rebuildTextFragments();
         // Set up clip for content area (exclude scrollbar)
         int viewW = viewportWidth();
         int viewH = viewportHeight();
@@ -2430,7 +2616,6 @@ int HtmlWidget::handle(int event) {
 void HtmlWidget::resize(int X, int Y, int W, int H) {
     Fl_Widget::resize(X, Y, W, H);
     clearSelection();
-    textFragments_.clear();
 
     if (scrollbar_) {
         scrollbar_->resize(X + W - kScrollbarExtent, Y,
@@ -2586,38 +2771,28 @@ void HtmlWidget::draw_text(litehtml::uint_ptr hdc, const char* text,
     TextFragment fragment;
     fragment.text = text ? text : "";
     fragment.pos = pos;
-    fragment.byteOffsets.push_back(0);
-    fragment.xOffsets.push_back(0);
+    fragment.pos.x = fragment.pos.x - x() + scrollX_;
+    fragment.pos.y = fragment.pos.y - y() + scrollY_;
     fragment.parallelColumn = -1;
-
-    int cursorX = 0;
-    for (size_t i = 0; i < fragment.text.size();) {
-        int len = fl_utf8len1(static_cast<unsigned char>(fragment.text[i]));
-        if (len <= 0 || i + static_cast<size_t>(len) > fragment.text.size()) len = 1;
-        cursorX += static_cast<int>(fl_width(fragment.text.data() + i, len));
-        i += static_cast<size_t>(len);
-        fragment.byteOffsets.push_back(static_cast<int>(i));
-        fragment.xOffsets.push_back(cursorX);
-    }
+    populateTextFragmentMetrics(fragment, hFont);
 
     if (isParallelDocument() && doc_ && doc_->root_render()) {
         // Use the text run midpoint so line starts near a gutter don't fall
         // into the previous column.
-        int docX = static_cast<int>(pos.x) - x() + scrollX_ +
-                   static_cast<int>(pos.width / 2);
+        int docX = static_cast<int>(fragment.pos.x) +
+                   static_cast<int>(fragment.pos.width / 2);
         fragment.parallelColumn = parallelColumnAtDocumentX(docX);
     }
 
     const int baselineY = static_cast<int>(pos.y + pos.height) - fl_descent();
-    int fragmentIndex = static_cast<int>(textFragments_.size());
-    textFragments_.push_back(fragment);
+    int fragmentIndex = findTextFragmentForDrawRun(fragment);
 
     auto drawRun = [&](int startChar,
                        int endChar,
                        Fl_Color fg,
                        bool selected) {
         if (startChar >= endChar) return;
-        const TextFragment& current = textFragments_.back();
+        const TextFragment& current = fragment;
         int byteStart = current.byteOffsets[startChar];
         int byteEnd = current.byteOffsets[endChar];
         std::string chunk = current.text.substr(byteStart, byteEnd - byteStart);
@@ -2636,13 +2811,17 @@ void HtmlWidget::draw_text(litehtml::uint_ptr hdc, const char* text,
 
     int selStart = 0;
     int selEnd = 0;
-    if (fragmentSelectionRange(fragmentIndex, selStart, selEnd)) {
+    int drawCharCount = static_cast<int>(fragment.byteOffsets.size()) - 1;
+    if (fragmentIndex >= 0 &&
+        fragmentSelectionRange(fragmentIndex, selStart, selEnd)) {
+        selStart = std::clamp(selStart, 0, drawCharCount);
+        selEnd = std::clamp(selEnd, 0, drawCharCount);
         Fl_Color normalColor = fl_rgb_color(color.red, color.green, color.blue);
         Fl_Color selectedColor = fl_contrast(FL_FOREGROUND_COLOR, FL_SELECTION_COLOR);
         drawRun(0, selStart, normalColor, false);
         drawRun(selStart, selEnd, selectedColor, true);
         drawRun(selEnd,
-                static_cast<int>(fragment.byteOffsets.size()) - 1,
+                drawCharCount,
                 normalColor,
                 false);
     } else {

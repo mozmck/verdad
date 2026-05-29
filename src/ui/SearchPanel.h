@@ -79,6 +79,15 @@ private:
 
     VerdadApp* app_;
 
+    struct LazySnippetContext {
+        bool active = false;
+        SearchIndexer::SnippetKind kind = SearchIndexer::SnippetKind::Word;
+        std::string query;
+        std::string language = "en";
+        bool caseSensitive = false;
+        SearchIndexer::SmartSearchOptions smartOptions;
+    };
+
     struct AsyncSearchState {
         bool active = false;
         bool completed = false;
@@ -87,11 +96,18 @@ private:
         bool usedDirectFallback = false;
         bool indexingPending = false;
         bool fallbackDeferred = false;
+        bool lazySnippets = false;
+        LazySnippetContext lazyContext;
         std::string moduleName;
         int scanned = 0;
         int total = 0;
         int matches = 0;
         std::vector<SearchResult> results;
+    };
+
+    struct LazySnippetUpdate {
+        size_t index = 0;
+        SearchResult result;
     };
 
     // Module to search in
@@ -121,6 +137,9 @@ private:
     std::vector<std::string> resultDisplayKeys_;
     std::vector<int> resultLineWidths_;
     int resultRefColumnWidth_ = 100;
+    size_t displayedResultCount_ = 0;
+    bool resultAppendScheduled_ = false;
+    bool singleModuleResultLabels_ = false;
 
     // Indexing indicator state
     bool indexingIndicatorActive_ = false;
@@ -147,6 +166,14 @@ private:
     std::atomic<bool> cancelAsyncSearch_{false};
     AsyncSearchState asyncSearchState_;
     int statusResultCountOverride_ = -1;
+    LazySnippetContext lazySnippetContext_;
+    std::vector<unsigned char> lazySnippetStates_;
+    std::thread lazySnippetThread_;
+    std::mutex lazySnippetMutex_;
+    std::atomic<bool> cancelLazySnippets_{false};
+    bool lazySnippetWorkerActive_ = false;
+    int lazySnippetGeneration_ = 0;
+    std::vector<LazySnippetUpdate> lazySnippetUpdates_;
 
     /// Populate module choices
     void populateModules();
@@ -173,12 +200,20 @@ private:
                                bool indexingPending,
                                bool fallbackDeferred);
     void cancelActiveSearch();
+    void cancelLazySnippetLoading();
+    void cancelPendingResultAppend();
+    void prepareLazySnippetLoading(const LazySnippetContext& context);
+    void requestLazySnippetsForVisibleResults();
+    bool updateLazySnippetUi();
+    void appendResultBrowserBatch();
     void startAsyncRegexSearch(const SearchIndexer::SearchRequest& request,
                                const std::string& moduleName,
                                const std::string& query,
                                bool usedDirectFallback,
                                bool indexingPending,
-                               SearchIndexer* indexer);
+                               SearchIndexer* indexer,
+                               bool lazySnippets,
+                               const LazySnippetContext& lazyContext);
     bool updateSearchProgressUi();
     void applyCompletedAsyncSearch();
     void startIndexingIndicator(const std::string& moduleName);
@@ -192,7 +227,10 @@ private:
     void showVerseListContextMenu(int screenX, int screenY);
     void resetHighlightState();
     std::string applyPreviewHighlights(const std::string& html) const;
+    int measureMarkupWidth(const std::string& markup) const;
+    void ensureResultDisplayLabel(size_t index);
     void rebuildResultMetrics();
+    void rebuildResultMetric(size_t index);
     void rebuildResultBrowserItems();
     int resultLineWidth(int line) const;
 
@@ -201,6 +239,7 @@ private:
     static void onResultDoubleClick(Fl_Widget* w, void* data);
     static void onIndexingPoll(void* data);
     static void onDeferredPreviewUpdate(void* data);
+    static void onDeferredResultAppend(void* data);
     static void onFilterChoiceChanged(Fl_Widget* w, void* data);
     static void onSortChoiceChanged(Fl_Widget* w, void* data);
 };
