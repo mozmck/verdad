@@ -45,6 +45,7 @@ public:
 
     bool load(const std::string& filepath);
     bool save();
+    bool checkpoint();
 
     std::vector<ReadingPlanSummary> listPlans() const;
     bool getPlan(int planId, ReadingPlan& out) const;

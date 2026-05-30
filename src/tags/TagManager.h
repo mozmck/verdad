@@ -57,6 +57,9 @@ public:
     /// Save to the last loaded database
     bool save();
 
+    /// Checkpoint pending SQLite journal data before copying the database file.
+    bool checkpoint();
+
     /// Create a new tag. Returns true if created (false if already exists).
     bool createTag(const std::string& name, const std::string& color = "#4a86c8");
 

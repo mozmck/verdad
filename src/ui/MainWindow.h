@@ -11,6 +11,7 @@
 #include <string>
 #include <vector>
 #include <chrono>
+#include <unordered_map>
 
 #include "ui/DailyWorkspaceState.h"
 
@@ -252,10 +253,16 @@ private:
     bool tabCacheEvictionScheduled_ = false;
     bool statusPollScheduled_ = false;
     bool dailyDateCheckScheduled_ = false;
+    bool userDataSyncPollScheduled_ = false;
     std::string lastDailyDateIso_;
     std::string lastStatusBarText_;
     std::string transientStatusText_;
     std::chrono::steady_clock::time_point transientStatusUntil_{};
+    std::unordered_map<std::string, std::string> userDataSnapshot_;
+    std::unordered_map<std::string, std::string> pendingUserDataSnapshot_;
+    std::vector<std::string> pendingUserDataChangedPaths_;
+    std::chrono::steady_clock::time_point pendingUserDataChangeSince_{};
+    bool pendingUserDataChange_ = false;
 
     /// Add a new Bible/Commentary workspace tab.
     void addStudyTab(const std::string& module,
@@ -316,6 +323,10 @@ private:
     /// Refresh daily devotional/plan dates when the local date changes.
     void checkDailyDateRollover();
     static void onDailyDateCheck(void* data);
+    void resetUserDataMonitorSnapshot();
+    void pollUserDataSyncChanges();
+    void applyUserDataSyncChanges();
+    static void onUserDataSyncPoll(void* data);
 
     /// Schedule eviction of old tab render buffers after the current UI work.
     void scheduleTabSnapshotEviction();

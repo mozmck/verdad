@@ -47,6 +47,7 @@
 #include <set>
 #include <sstream>
 #include <system_error>
+#include <unordered_map>
 #include <unordered_set>
 #include <vector>
 
@@ -57,6 +58,8 @@ namespace fs = std::filesystem;
 constexpr const char* kVerdadProjectUrl = "https://github.com/mozmck/verdad";
 constexpr int kDefaultMaxCachedTabDocs = 4;
 constexpr double kDailyDateCheckSeconds = 60.0 * 60.0;
+constexpr double kDefaultUserDataSyncPollSeconds = 120.0;
+constexpr double kDefaultUserDataSyncDebounceSeconds = 60.0;
 
 std::string trimCopy(const std::string& s) {
     size_t start = 0;
@@ -100,6 +103,37 @@ int configuredMaxCachedTabDocs() {
         if (parsed > 1024) return 1024;
         return static_cast<int>(parsed);
     }();
+    return value;
+}
+
+double configuredSeconds(const char* envName,
+                         double fallback,
+                         double minValue,
+                         double maxValue) {
+    const char* env = std::getenv(envName);
+    if (!env || !*env) return fallback;
+
+    char* end = nullptr;
+    double parsed = std::strtod(env, &end);
+    if (end == env) return fallback;
+    return std::clamp(parsed, minValue, maxValue);
+}
+
+double userDataSyncPollSeconds() {
+    static const double value = configuredSeconds(
+        "VERDAD_USER_DATA_SYNC_POLL_SECONDS",
+        kDefaultUserDataSyncPollSeconds,
+        5.0,
+        60.0 * 60.0 * 12.0);
+    return value;
+}
+
+double userDataSyncDebounceSeconds() {
+    static const double value = configuredSeconds(
+        "VERDAD_USER_DATA_SYNC_DEBOUNCE_SECONDS",
+        kDefaultUserDataSyncDebounceSeconds,
+        1.0,
+        60.0 * 60.0);
     return value;
 }
 
@@ -618,6 +652,149 @@ std::string pathLeaf(const std::string& path) {
     return path.substr(slash + 1);
 }
 
+std::string normalizePath(const std::string& path) {
+    if (path.empty()) return "";
+
+    std::error_code ec;
+    fs::path normalized(path);
+    fs::path absolute = fs::absolute(normalized, ec);
+    if (!ec) normalized = absolute;
+    normalized = normalized.lexically_normal();
+    return normalized.string();
+}
+
+bool pathsEqual(const std::string& a, const std::string& b) {
+    if (a.empty() || b.empty()) return a.empty() && b.empty();
+
+    std::string left = normalizePath(a);
+    std::string right = normalizePath(b);
+#ifdef _WIN32
+    std::transform(left.begin(), left.end(), left.begin(),
+                   [](unsigned char c) {
+                       return static_cast<char>(std::tolower(c));
+                   });
+    std::transform(right.begin(), right.end(), right.begin(),
+                   [](unsigned char c) {
+                       return static_cast<char>(std::tolower(c));
+                   });
+#endif
+    return left == right;
+}
+
+bool pathIsInsideDirectory(const std::string& path, const std::string& directory) {
+    if (path.empty() || directory.empty()) return false;
+
+    fs::path target(normalizePath(path));
+    fs::path base(normalizePath(directory));
+    auto targetIt = target.begin();
+    auto baseIt = base.begin();
+    for (; baseIt != base.end(); ++baseIt, ++targetIt) {
+        if (targetIt == target.end() || *targetIt != *baseIt) return false;
+    }
+    return true;
+}
+
+bool filenameLooksLikeSyncConflict(const fs::path& path) {
+    return path.filename().string().find(".sync-conflict-") != std::string::npos;
+}
+
+std::string pathStateStamp(const fs::path& path) {
+    std::error_code ec;
+    if (!fs::exists(path, ec) || ec) return "missing";
+
+    std::string type = "other";
+    uintmax_t size = 0;
+    if (fs::is_directory(path, ec) && !ec) {
+        type = "dir";
+    } else if (fs::is_regular_file(path, ec) && !ec) {
+        type = "file";
+        size = fs::file_size(path, ec);
+        if (ec) size = 0;
+    }
+
+    ec.clear();
+    auto writeTime = fs::last_write_time(path, ec);
+    long long writeTicks = ec ? 0 : writeTime.time_since_epoch().count();
+    return type + ":" + std::to_string(size) + ":" + std::to_string(writeTicks);
+}
+
+void addRequiredSnapshotPath(std::unordered_map<std::string, std::string>& snapshot,
+                             const fs::path& path) {
+    snapshot[normalizePath(path.string())] = pathStateStamp(path);
+}
+
+void addOptionalSnapshotPath(std::unordered_map<std::string, std::string>& snapshot,
+                             const fs::path& path) {
+    std::error_code ec;
+    if (!fs::exists(path, ec) || ec) return;
+    snapshot[normalizePath(path.string())] = pathStateStamp(path);
+}
+
+std::unordered_map<std::string, std::string> buildUserDataSnapshot(VerdadApp* app) {
+    std::unordered_map<std::string, std::string> snapshot;
+    if (!app) return snapshot;
+
+    fs::path userDataDir(app->getUserDataDir());
+    fs::path studypadDir(app->getStudypadDir());
+
+    addRequiredSnapshotPath(snapshot, userDataDir / "tags.db");
+    addRequiredSnapshotPath(snapshot, userDataDir / "reading_plans.db");
+    addRequiredSnapshotPath(snapshot, studypadDir);
+
+    std::error_code ec;
+    fs::directory_iterator studypadIt(studypadDir, ec);
+    fs::directory_iterator end;
+    while (!ec && studypadIt != end) {
+        if (fs::is_regular_file(studypadIt->path(), ec) && !ec) {
+            addOptionalSnapshotPath(snapshot, studypadIt->path());
+        }
+        ec.clear();
+        studypadIt.increment(ec);
+    }
+
+    ec.clear();
+    fs::directory_iterator dataIt(userDataDir, ec);
+    while (!ec && dataIt != end) {
+        if (fs::is_regular_file(dataIt->path(), ec) &&
+            !ec &&
+            filenameLooksLikeSyncConflict(dataIt->path())) {
+            addOptionalSnapshotPath(snapshot, dataIt->path());
+        }
+        ec.clear();
+        dataIt.increment(ec);
+    }
+
+    return snapshot;
+}
+
+std::vector<std::string> changedSnapshotPaths(
+    const std::unordered_map<std::string, std::string>& oldSnapshot,
+    const std::unordered_map<std::string, std::string>& newSnapshot) {
+    std::vector<std::string> changed;
+    for (const auto& kv : oldSnapshot) {
+        auto it = newSnapshot.find(kv.first);
+        if (it == newSnapshot.end() || it->second != kv.second) {
+            changed.push_back(kv.first);
+        }
+    }
+    for (const auto& kv : newSnapshot) {
+        if (oldSnapshot.find(kv.first) == oldSnapshot.end()) {
+            changed.push_back(kv.first);
+        }
+    }
+    std::sort(changed.begin(), changed.end());
+    changed.erase(std::unique(changed.begin(), changed.end()), changed.end());
+    return changed;
+}
+
+bool snapshotHasSyncConflict(
+    const std::unordered_map<std::string, std::string>& snapshot) {
+    return std::any_of(snapshot.begin(), snapshot.end(),
+                       [](const auto& kv) {
+                           return filenameLooksLikeSyncConflict(fs::path(kv.first));
+                       });
+}
+
 bool ensureDirectoryExists(const std::string& path) {
     if (path.empty()) return false;
 
@@ -957,6 +1134,9 @@ MainWindow::MainWindow(VerdadApp* app, int W, int H, const char* title)
     lastDailyDateIso_ = reading::formatIsoDate(reading::today());
     Fl::add_timeout(kDailyDateCheckSeconds, onDailyDateCheck, this);
     dailyDateCheckScheduled_ = true;
+    resetUserDataMonitorSnapshot();
+    Fl::add_timeout(userDataSyncPollSeconds(), onUserDataSyncPoll, this);
+    userDataSyncPollScheduled_ = true;
 }
 
 MainWindow::~MainWindow() {
@@ -979,6 +1159,10 @@ MainWindow::~MainWindow() {
     if (dailyDateCheckScheduled_) {
         Fl::remove_timeout(onDailyDateCheck, this);
         dailyDateCheckScheduled_ = false;
+    }
+    if (userDataSyncPollScheduled_) {
+        Fl::remove_timeout(onUserDataSyncPoll, this);
+        userDataSyncPollScheduled_ = false;
     }
     if (searchHelpWindow_) {
         searchHelpWindow_->hide();
@@ -2463,6 +2647,135 @@ void MainWindow::onDailyDateCheck(void* data) {
     self->dailyDateCheckScheduled_ = true;
 }
 
+void MainWindow::resetUserDataMonitorSnapshot() {
+    userDataSnapshot_ = buildUserDataSnapshot(app_);
+    pendingUserDataSnapshot_.clear();
+    pendingUserDataChangedPaths_.clear();
+    pendingUserDataChange_ = false;
+}
+
+void MainWindow::pollUserDataSyncChanges() {
+    auto currentSnapshot = buildUserDataSnapshot(app_);
+    std::vector<std::string> changed =
+        changedSnapshotPaths(userDataSnapshot_, currentSnapshot);
+    if (changed.empty()) {
+        pendingUserDataSnapshot_.clear();
+        pendingUserDataChangedPaths_.clear();
+        pendingUserDataChange_ = false;
+        return;
+    }
+
+    auto now = std::chrono::steady_clock::now();
+    if (!pendingUserDataChange_ ||
+        pendingUserDataSnapshot_ != currentSnapshot) {
+        pendingUserDataSnapshot_ = std::move(currentSnapshot);
+        pendingUserDataChangedPaths_ = std::move(changed);
+        pendingUserDataChangeSince_ = now;
+        pendingUserDataChange_ = true;
+        return;
+    }
+
+    auto quietFor = std::chrono::duration<double>(now - pendingUserDataChangeSince_).count();
+    if (quietFor < userDataSyncDebounceSeconds()) return;
+
+    applyUserDataSyncChanges();
+}
+
+void MainWindow::applyUserDataSyncChanges() {
+    if (!app_ || !pendingUserDataChange_) return;
+
+    bool tagsChanged = false;
+    bool readingPlansChanged = false;
+    bool studypadChanged = false;
+    bool currentDocumentChanged = false;
+
+    fs::path userDataDir(app_->getUserDataDir());
+    fs::path studypadDir(app_->getStudypadDir());
+    std::string currentDocumentPath =
+        rightPane_ ? rightPane_->currentDocumentPath() : std::string();
+    currentDocumentPath = normalizePath(currentDocumentPath);
+
+    for (const std::string& pathText : pendingUserDataChangedPaths_) {
+        fs::path path(pathText);
+        if (pathsEqual(pathText, (userDataDir / "tags.db").string())) {
+            tagsChanged = true;
+        } else if (pathsEqual(pathText, (userDataDir / "reading_plans.db").string())) {
+            readingPlansChanged = true;
+        }
+
+        if (pathIsInsideDirectory(pathText, studypadDir.string())) {
+            studypadChanged = true;
+            if (!currentDocumentPath.empty() && pathsEqual(pathText, currentDocumentPath)) {
+                currentDocumentChanged = true;
+            }
+        }
+
+        if (filenameLooksLikeSyncConflict(path)) {
+            studypadChanged = studypadChanged ||
+                              pathIsInsideDirectory(pathText, studypadDir.string());
+        }
+    }
+
+    bool conflictDetected = snapshotHasSyncConflict(pendingUserDataSnapshot_);
+    bool dirtyDocumentConflict = false;
+    std::string conflictCopyPath;
+    if (currentDocumentChanged && rightPane_ &&
+        rightPane_->currentDocumentHasUnsavedChanges()) {
+        dirtyDocumentConflict = true;
+        conflictCopyPath = rightPane_->saveCurrentDocumentConflictCopy();
+    }
+
+    if (tagsChanged) {
+        if (!app_->tagManager().load((userDataDir / "tags.db").string())) {
+            showTransientStatus("Failed to reload synced tags.", 8.0);
+        }
+    }
+    if (readingPlansChanged) {
+        if (!app_->readingPlanManager().load((userDataDir / "reading_plans.db").string())) {
+            showTransientStatus("Failed to reload synced reading plans.", 8.0);
+        }
+    }
+
+    if (tagsChanged || readingPlansChanged) {
+        refresh();
+    }
+    if (studypadChanged && rightPane_) {
+        rightPane_->refreshDocumentsForExternalChange(
+            currentDocumentChanged && !dirtyDocumentConflict);
+    }
+
+    if (dirtyDocumentConflict) {
+        if (!conflictCopyPath.empty()) {
+            showTransientStatus("Synced studypad changed; local edits were saved as a conflict copy.",
+                                8.0);
+        } else {
+            showTransientStatus("Synced studypad changed; unsaved local edits were kept.",
+                                8.0);
+        }
+    } else if (conflictDetected) {
+        showTransientStatus("Syncthing conflict file detected in user data folder.", 8.0);
+    } else if (tagsChanged || readingPlansChanged || studypadChanged) {
+        showTransientStatus("Reloaded synced user data.", 3.5);
+    }
+
+    userDataSnapshot_ = buildUserDataSnapshot(app_);
+    pendingUserDataSnapshot_.clear();
+    pendingUserDataChangedPaths_.clear();
+    pendingUserDataChange_ = false;
+}
+
+void MainWindow::onUserDataSyncPoll(void* data) {
+    auto* self = static_cast<MainWindow*>(data);
+    if (!self) return;
+
+    self->userDataSyncPollScheduled_ = false;
+    if (!self->shown()) return;
+
+    self->pollUserDataSyncChanges();
+    Fl::repeat_timeout(userDataSyncPollSeconds(), onUserDataSyncPoll, self);
+    self->userDataSyncPollScheduled_ = true;
+}
+
 void MainWindow::scheduleTabSnapshotEviction() {
     if (tabCacheEvictionScheduled_) return;
     Fl::add_timeout(0.0, onDeferredTabSnapshotEviction, this);
@@ -2616,13 +2929,16 @@ bool MainWindow::exportSettingsArchive(const std::string& archivePath,
 
     app_->tagManager().save();
     app_->readingPlanManager().save();
+    app_->tagManager().checkpoint();
+    app_->readingPlanManager().checkpoint();
     app_->savePreferences();
 
     fs::path configDir(app_->getConfigDir());
+    fs::path userDataDir(app_->getUserDataDir());
     fs::path prefsPath = configDir / "preferences.conf";
-    fs::path tagsPath = configDir / "tags.db";
-    fs::path readingPlansPath = configDir / "reading_plans.db";
-    fs::path studypadPath = configDir / "studypad";
+    fs::path tagsPath = userDataDir / "tags.db";
+    fs::path readingPlansPath = userDataDir / "reading_plans.db";
+    fs::path studypadPath = userDataDir / "studypad";
 
     std::error_code ec;
     if (!fs::exists(prefsPath, ec) || ec) {
@@ -2738,9 +3054,15 @@ bool MainWindow::importSettingsArchive(const std::string& archivePath,
     }
 
     fs::path configDir(app_->getConfigDir());
+    fs::path userDataDir(app_->getUserDataDir());
     if (!ensureDirectoryExists(configDir.string())) {
         cleanup();
         errorMessage = "Failed to prepare the application config directory.";
+        return false;
+    }
+    if (!ensureDirectoryExists(userDataDir.string())) {
+        cleanup();
+        errorMessage = "Failed to prepare the user data directory.";
         return false;
     }
 
@@ -2753,38 +3075,38 @@ bool MainWindow::importSettingsArchive(const std::string& archivePath,
 
     if (fs::exists(extractedTags, ec) && !ec) {
         if (!copyBinaryFile(extractedTags.string(),
-                            (configDir / "tags.db").string())) {
+                            (userDataDir / "tags.db").string())) {
             cleanup();
-            errorMessage = "Failed to copy tags.db into the config directory.";
+            errorMessage = "Failed to copy tags.db into the user data directory.";
             return false;
         }
     }
 
     if (fs::exists(extractedReadingPlans, ec) && !ec) {
         if (!copyBinaryFile(extractedReadingPlans.string(),
-                            (configDir / "reading_plans.db").string())) {
+                            (userDataDir / "reading_plans.db").string())) {
             cleanup();
-            errorMessage = "Failed to copy reading_plans.db into the config directory.";
+            errorMessage = "Failed to copy reading_plans.db into the user data directory.";
             return false;
         }
     }
 
     if (fs::exists(extractedStudypad, ec) && !ec) {
         if (!copyDirectoryRecursive(extractedStudypad.string(),
-                                    (configDir / "studypad").string())) {
+                                    (userDataDir / "studypad").string())) {
             cleanup();
-            errorMessage = "Failed to copy the studypad directory into the config directory.";
+            errorMessage = "Failed to copy the studypad directory into the user data directory.";
             return false;
         }
     }
 
     cleanup();
 
-    fs::path tagsPath = configDir / "tags.db";
+    fs::path tagsPath = userDataDir / "tags.db";
     if (fs::exists(tagsPath, ec) && !ec) {
         app_->tagManager().load(tagsPath.string());
     }
-    fs::path readingPlansPath = configDir / "reading_plans.db";
+    fs::path readingPlansPath = userDataDir / "reading_plans.db";
     if (fs::exists(readingPlansPath, ec) && !ec) {
         app_->readingPlanManager().load(readingPlansPath.string());
     }
@@ -2796,6 +3118,7 @@ bool MainWindow::importSettingsArchive(const std::string& archivePath,
 
     refresh();
     app_->savePreferences();
+    resetUserDataMonitorSnapshot();
     return true;
 }
 
@@ -2959,6 +3282,7 @@ void MainWindow::onViewSettings(Fl_Widget* /*w*/, void* data) {
 
     auto current = self->app_->appearanceSettings();
     auto currentPreview = self->app_->previewDictionarySettings();
+    std::string currentUserDataDir = self->app_->getUserDataDir();
     std::vector<std::string> greekDictionaryModules =
         self->app_->strongsDictionaryModules('G');
     std::vector<std::string> hebrewDictionaryModules =
@@ -2981,7 +3305,11 @@ void MainWindow::onViewSettings(Fl_Widget* /*w*/, void* data) {
     int appearanceRowCount = 8;
     int dictionaryRowCount = 2 + static_cast<int>(languageCodes.size());
     int editorRowCount = 2;
-    int maxRowCount = std::max({appearanceRowCount, dictionaryRowCount, editorRowCount});
+    int dataRowCount = 1;
+    int maxRowCount = std::max({appearanceRowCount,
+                                dictionaryRowCount,
+                                editorRowCount,
+                                dataRowCount});
     int tabsH = tabsHeaderH + (groupPadY * 2) + (maxRowCount * rowStep);
     int buttonsY = tabsY + tabsH + 12;
     int dialogH = buttonsY + 44;
@@ -3160,6 +3488,22 @@ void MainWindow::onViewSettings(Fl_Widget* /*w*/, void* data) {
 
     editorTab->end();
 
+    Fl_Group* dataTab =
+        new Fl_Group(groupX, groupY, groupW, groupH, "Data");
+    dataTab->begin();
+
+    rowY = groupY + groupPadY;
+    Fl_Box* userDataDirLabel = new Fl_Box(labelX, rowY, labelW, 24, "User data folder:");
+    userDataDirLabel->align(FL_ALIGN_LEFT | FL_ALIGN_INSIDE);
+    constexpr int browseButtonW = 68;
+    Fl_Input* userDataDirInput =
+        new Fl_Input(fieldX, rowY, fieldW - browseButtonW - 8, 24);
+    userDataDirInput->value(currentUserDataDir.c_str());
+    Fl_Button* userDataBrowseButton =
+        new Fl_Button(fieldX + fieldW - browseButtonW, rowY, browseButtonW, 24, "Browse");
+
+    dataTab->end();
+
     tabs->end();
     tabs->value(appearanceTab);
 
@@ -3171,6 +3515,11 @@ void MainWindow::onViewSettings(Fl_Widget* /*w*/, void* data) {
         bool accepted = false;
     };
     auto* state = new DialogState();
+
+    struct BrowseState {
+        Fl_Input* input = nullptr;
+    };
+    auto* browseState = new BrowseState{userDataDirInput};
 
     cancelBtn->callback(
         [](Fl_Widget* w, void* data) {
@@ -3188,6 +3537,23 @@ void MainWindow::onViewSettings(Fl_Widget* /*w*/, void* data) {
         },
         state);
 
+    userDataBrowseButton->callback(
+        [](Fl_Widget*, void* data) {
+            auto* st = static_cast<BrowseState*>(data);
+            if (!st || !st->input) return;
+
+            Fl_Native_File_Chooser chooser;
+            chooser.title("Choose User Data Folder");
+            chooser.type(Fl_Native_File_Chooser::BROWSE_DIRECTORY);
+            const char* currentValue = st->input->value();
+            if (currentValue && currentValue[0]) {
+                chooser.directory(currentValue);
+            }
+            if (chooser.show() != 0 || !chooser.filename()) return;
+            st->input->value(chooser.filename());
+        },
+        browseState);
+
     dlg->end();
     ui_font::applyCurrentAppUiFont(dlg);
     dlg->show();
@@ -3198,6 +3564,16 @@ void MainWindow::onViewSettings(Fl_Widget* /*w*/, void* data) {
     if (state->accepted) {
         VerdadApp::AppearanceSettings updated = current;
         VerdadApp::PreviewDictionarySettings updatedPreview = currentPreview;
+        std::string requestedUserDataDir =
+            trimCopy(userDataDirInput->value() ? userDataDirInput->value() : "");
+
+        if (requestedUserDataDir.empty()) {
+            fl_alert("Choose a user data folder.");
+            delete browseState;
+            delete state;
+            delete dlg;
+            return;
+        }
 
         updated.themeMode =
             (themeChoice->value() == 1)
@@ -3239,10 +3615,61 @@ void MainWindow::onViewSettings(Fl_Widget* /*w*/, void* data) {
             }
         }
 
+        if (!pathsEqual(requestedUserDataDir, currentUserDataDir)) {
+            if (self->rightPane_ && !self->rightPane_->maybeSaveDocumentChanges()) {
+                delete browseState;
+                delete state;
+                delete dlg;
+                return;
+            }
+
+            VerdadApp::UserDataDirectoryMode dataMode =
+                VerdadApp::UserDataDirectoryMode::CopyCurrentData;
+            if (self->app_->userDataDirectoryHasData(requestedUserDataDir)) {
+                int choice = fl_choice(
+                    "The selected folder already contains Verdad user data.",
+                    "Cancel",
+                    "Use Existing",
+                    "Replace");
+                if (choice == 0) {
+                    delete browseState;
+                    delete state;
+                    delete dlg;
+                    return;
+                }
+                dataMode = (choice == 1)
+                               ? VerdadApp::UserDataDirectoryMode::UseExisting
+                               : VerdadApp::UserDataDirectoryMode::CopyCurrentData;
+            }
+
+            std::string oldUserDataDir = self->app_->getUserDataDir();
+            std::string errorMessage;
+            if (!self->app_->setUserDataDir(requestedUserDataDir,
+                                            dataMode,
+                                            errorMessage)) {
+                fl_alert("%s", errorMessage.c_str());
+                delete browseState;
+                delete state;
+                delete dlg;
+                return;
+            }
+
+            if (self->rightPane_) {
+                self->rightPane_->onUserDataDirectoryChanged(
+                    oldUserDataDir,
+                    self->app_->getUserDataDir());
+            }
+            self->refresh();
+            self->resetUserDataMonitorSnapshot();
+            self->showTransientStatus("User data folder updated.", 3.0);
+        }
+
         self->app_->setPreviewDictionarySettings(updatedPreview);
         self->app_->setAppearanceSettings(updated);
+        self->app_->savePreferences();
     }
 
+    delete browseState;
     delete state;
     delete dlg;
 }

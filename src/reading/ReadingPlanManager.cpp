@@ -50,7 +50,7 @@ void applyPragmas(sqlite3* db) {
     if (!db) return;
     sqlite3_busy_timeout(db, 5000);
     execSql(db, "PRAGMA foreign_keys=ON;");
-    execSql(db, "PRAGMA journal_mode=WAL;");
+    execSql(db, "PRAGMA journal_mode=DELETE;");
     execSql(db, "PRAGMA synchronous=NORMAL;");
 }
 
@@ -1013,11 +1013,19 @@ ReadingPlanManager::~ReadingPlanManager() {
 }
 
 bool ReadingPlanManager::load(const std::string& filepath) {
+    if (db_ && filepath_ == filepath) {
+        closeDatabase();
+    }
     return openDatabase(filepath);
 }
 
 bool ReadingPlanManager::save() {
     return db_ != nullptr;
+}
+
+bool ReadingPlanManager::checkpoint() {
+    if (!db_) return false;
+    return execSql(db_, "PRAGMA wal_checkpoint(TRUNCATE);");
 }
 
 std::vector<ReadingPlanSummary> ReadingPlanManager::listPlans() const {

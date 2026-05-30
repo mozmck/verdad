@@ -26,6 +26,11 @@ enum class SearchAssistanceMode {
 /// Main application class - owns all managers and the main window
 class VerdadApp {
 public:
+    enum class UserDataDirectoryMode {
+        UseExisting,
+        CopyCurrentData,
+    };
+
     enum class ThemeMode {
         Light,
         Dark,
@@ -146,6 +151,29 @@ public:
     /// Get application config directory
     std::string getConfigDir() const;
 
+    /// Get syncable user-generated data directory.
+    std::string getUserDataDir() const;
+
+    /// Return the default user-generated data directory.
+    std::string getDefaultUserDataDir() const;
+
+    /// Get studypad directory under the user-generated data directory.
+    std::string getStudypadDir() const;
+
+    /// Return true if a directory appears to contain Verdad user data.
+    bool userDataDirectoryHasData(const std::string& directory) const;
+
+    /// Make a stored session path absolute under the current user-data directory.
+    std::string resolveUserDataPath(const std::string& storedPath) const;
+
+    /// Store a path relative to the current user-data directory when possible.
+    std::string makeUserDataRelativePath(const std::string& path) const;
+
+    /// Switch the active user-data directory.
+    bool setUserDataDir(const std::string& directory,
+                        UserDataDirectoryMode mode,
+                        std::string& errorMessage);
+
     /// Get the singleton instance
     static VerdadApp* instance() { return instance_; }
 
@@ -251,6 +279,7 @@ private:
     OptionDisplaySettings optionDisplaySettings_;
     ModuleManagerSettings moduleManagerSettings_;
     SearchSettings searchSettings_;
+    std::string userDataDir_;
     ThemePalette themePalette_;
     std::vector<std::string> systemFontFamilies_;
     /// Map from family name (lowercase) to FLTK font index
@@ -260,6 +289,12 @@ private:
 
     /// Ensure config directory exists
     void ensureConfigDir();
+
+    /// Ensure the configured user-data directory exists.
+    bool ensureUserDataDir();
+
+    /// Load only the user-data directory preference before opening user DBs.
+    void loadUserDataDirPreference();
 
     /// Enumerate all system fonts (called once during init)
     void enumerateSystemFonts();

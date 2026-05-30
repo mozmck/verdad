@@ -127,7 +127,7 @@ void applyPragmas(sqlite3* db) {
     if (!db) return;
     sqlite3_busy_timeout(db, 5000);
     execSql(db, "PRAGMA foreign_keys=ON;");
-    execSql(db, "PRAGMA journal_mode=WAL;");
+    execSql(db, "PRAGMA journal_mode=DELETE;");
     execSql(db, "PRAGMA synchronous=NORMAL;");
 }
 
@@ -201,6 +201,10 @@ TagManager::~TagManager() {
 }
 
 bool TagManager::load(const std::string& filepath) {
+    if (db_ && filepath_ == filepath) {
+        closeDatabase();
+    }
+
     tags_.clear();
     targetTags_.clear();
     tagTargets_.clear();
@@ -239,6 +243,11 @@ bool TagManager::save() {
         return false;
     }
     return persistToDatabase();
+}
+
+bool TagManager::checkpoint() {
+    if (!db_) return false;
+    return execSql(db_, "PRAGMA wal_checkpoint(TRUNCATE);");
 }
 
 bool TagManager::createTag(const std::string& name, const std::string& color) {

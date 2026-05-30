@@ -37,10 +37,146 @@
 namespace verdad {
 namespace {
 
+namespace fs = std::filesystem;
 using PreferenceMap = std::unordered_map<std::string, std::string>;
 
 std::string joinPath(const std::string& base, const std::string& leaf) {
-    return (std::filesystem::path(base) / leaf).string();
+    return (fs::path(base) / leaf).string();
+}
+
+std::string normalizePath(const std::string& path) {
+    if (path.empty()) return "";
+
+    std::error_code ec;
+    fs::path normalized(path);
+    fs::path absolute = fs::absolute(normalized, ec);
+    if (!ec) normalized = absolute;
+    normalized = normalized.lexically_normal();
+    return normalized.string();
+}
+
+bool pathsEqual(const std::string& a, const std::string& b) {
+    if (a.empty() || b.empty()) return a.empty() && b.empty();
+
+    std::string left = normalizePath(a);
+    std::string right = normalizePath(b);
+#ifdef _WIN32
+    std::transform(left.begin(), left.end(), left.begin(),
+                   [](unsigned char c) {
+                       return static_cast<char>(std::tolower(c));
+                   });
+    std::transform(right.begin(), right.end(), right.begin(),
+                   [](unsigned char c) {
+                       return static_cast<char>(std::tolower(c));
+                   });
+#endif
+    return left == right;
+}
+
+bool pathIsInsideDirectory(const std::string& path, const std::string& directory) {
+    if (path.empty() || directory.empty()) return false;
+
+    fs::path target(normalizePath(path));
+    fs::path base(normalizePath(directory));
+    auto targetIt = target.begin();
+    auto baseIt = base.begin();
+    for (; baseIt != base.end(); ++baseIt, ++targetIt) {
+        if (targetIt == target.end() || *targetIt != *baseIt) return false;
+    }
+    return true;
+}
+
+bool ensureDirectoryExists(const std::string& path) {
+    if (path.empty()) return false;
+
+    std::error_code ec;
+    fs::create_directories(fs::path(path), ec);
+    if (ec) return false;
+    return fs::is_directory(fs::path(path), ec) && !ec;
+}
+
+bool copyBinaryFileReplacing(const fs::path& fromPath,
+                             const fs::path& toPath,
+                             std::string& errorMessage) {
+    std::error_code ec;
+    if (!fs::exists(fromPath, ec) || ec) {
+        ec.clear();
+        fs::remove(toPath, ec);
+        if (ec) {
+            errorMessage = "Failed to remove " + toPath.string() + ": " + ec.message();
+            return false;
+        }
+        return true;
+    }
+    if (!ensureDirectoryExists(toPath.parent_path().string())) {
+        errorMessage = "Failed to prepare " + toPath.parent_path().string();
+        return false;
+    }
+    fs::copy_file(fromPath, toPath, fs::copy_options::overwrite_existing, ec);
+    if (ec) {
+        errorMessage = "Failed to copy " + fromPath.string() +
+                       " to " + toPath.string() + ": " + ec.message();
+        return false;
+    }
+    return true;
+}
+
+bool copyDirectoryReplacing(const fs::path& fromPath,
+                            const fs::path& toPath,
+                            std::string& errorMessage) {
+    std::error_code ec;
+    if (!fs::exists(fromPath, ec) || ec) {
+        ec.clear();
+        fs::remove_all(toPath, ec);
+        if (ec) {
+            errorMessage = "Failed to clear " + toPath.string() + ": " + ec.message();
+            return false;
+        }
+        if (!ensureDirectoryExists(toPath.string())) {
+            errorMessage = "Failed to prepare " + toPath.string();
+            return false;
+        }
+        return true;
+    }
+
+    fs::remove_all(toPath, ec);
+    if (ec) {
+        errorMessage = "Failed to clear " + toPath.string() + ": " + ec.message();
+        return false;
+    }
+
+    fs::copy(fromPath,
+             toPath,
+             fs::copy_options::recursive | fs::copy_options::overwrite_existing,
+             ec);
+    if (ec) {
+        errorMessage = "Failed to copy " + fromPath.string() +
+                       " to " + toPath.string() + ": " + ec.message();
+        return false;
+    }
+    return true;
+}
+
+bool copyUserDataDirectory(const std::string& fromDirectory,
+                           const std::string& toDirectory,
+                           std::string& errorMessage) {
+    fs::path from(fromDirectory);
+    fs::path to(toDirectory);
+
+    if (!ensureDirectoryExists(to.string())) {
+        errorMessage = "Failed to prepare " + to.string();
+        return false;
+    }
+
+    if (!copyBinaryFileReplacing(from / "tags.db", to / "tags.db", errorMessage)) {
+        return false;
+    }
+    if (!copyBinaryFileReplacing(from / "reading_plans.db",
+                                 to / "reading_plans.db",
+                                 errorMessage)) {
+        return false;
+    }
+    return copyDirectoryReplacing(from / "studypad", to / "studypad", errorMessage);
 }
 
 std::string trimCopy(const std::string& s) {
@@ -581,6 +717,8 @@ bool VerdadApp::initialize(int argc, char* argv[]) {
 
     // Ensure config directory exists
     ensureConfigDir();
+    loadUserDataDirPreference();
+    ensureUserDataDir();
 
     // Initialize SWORD
     if (!swordMgr_->initialize()) {
@@ -590,8 +728,8 @@ bool VerdadApp::initialize(int argc, char* argv[]) {
     }
 
     // Load tags from the SQLite tag database.
-    tagMgr_->load(joinPath(getConfigDir(), "tags.db"));
-    readingPlanMgr_->load(joinPath(getConfigDir(), "reading_plans.db"));
+    tagMgr_->load(joinPath(getUserDataDir(), "tags.db"));
+    readingPlanMgr_->load(joinPath(getUserDataDir(), "reading_plans.db"));
     importedModuleMgr_->load(joinPath(getConfigDir(), "imports.db"),
                              joinPath(getConfigDir(), "imports"));
     swordMgr_->setImportedModuleManager(importedModuleMgr_.get());
@@ -716,10 +854,166 @@ std::string VerdadApp::getConfigDir() const {
 #endif
 }
 
+std::string VerdadApp::getDefaultUserDataDir() const {
+    return getConfigDir();
+}
+
+std::string VerdadApp::getUserDataDir() const {
+    if (!userDataDir_.empty()) return userDataDir_;
+    return getDefaultUserDataDir();
+}
+
+std::string VerdadApp::getStudypadDir() const {
+    return joinPath(getUserDataDir(), "studypad");
+}
+
+bool VerdadApp::userDataDirectoryHasData(const std::string& directory) const {
+    std::string normalized = normalizePath(directory);
+    if (normalized.empty()) return false;
+
+    fs::path dir(normalized);
+    std::error_code ec;
+    if (fs::exists(dir / "tags.db", ec) && !ec) return true;
+    ec.clear();
+    if (fs::exists(dir / "reading_plans.db", ec) && !ec) return true;
+    ec.clear();
+
+    fs::path studypadDir = dir / "studypad";
+    fs::directory_iterator it(studypadDir, ec);
+    fs::directory_iterator end;
+    while (!ec && it != end) {
+        return true;
+    }
+    return false;
+}
+
+std::string VerdadApp::resolveUserDataPath(const std::string& storedPath) const {
+    std::string path = trimCopy(storedPath);
+    if (path.empty()) return "";
+
+    fs::path stored(path);
+    if (stored.is_relative()) {
+        return normalizePath((fs::path(getUserDataDir()) / stored).string());
+    }
+
+    std::string extension = stored.extension().string();
+    std::transform(extension.begin(), extension.end(), extension.begin(),
+                   [](unsigned char c) {
+                       return static_cast<char>(std::tolower(c));
+                   });
+    if (extension == ".studypad" && !stored.filename().empty()) {
+        fs::path candidate = fs::path(getStudypadDir()) / stored.filename();
+        std::error_code ec;
+        if (fs::exists(candidate, ec) && !ec) {
+            return normalizePath(candidate.string());
+        }
+    }
+
+    std::string normalized = normalizePath(path);
+    std::error_code ec;
+    if (fs::exists(fs::path(normalized), ec) && !ec) {
+        return normalized;
+    }
+
+    if (extension == ".studypad" && !stored.filename().empty()) {
+        return normalizePath((fs::path(getStudypadDir()) / stored.filename()).string());
+    }
+
+    return normalized;
+}
+
+std::string VerdadApp::makeUserDataRelativePath(const std::string& path) const {
+    std::string normalized = normalizePath(path);
+    if (normalized.empty()) return "";
+    if (!pathIsInsideDirectory(normalized, getUserDataDir())) return normalized;
+
+    std::error_code ec;
+    fs::path relative = fs::relative(fs::path(normalized),
+                                    fs::path(getUserDataDir()),
+                                    ec);
+    if (ec || relative.empty()) return normalized;
+    return relative.generic_string();
+}
+
+bool VerdadApp::setUserDataDir(const std::string& directory,
+                               UserDataDirectoryMode mode,
+                               std::string& errorMessage) {
+    errorMessage.clear();
+
+    std::string target = normalizePath(trimCopy(directory));
+    if (target.empty()) {
+        errorMessage = "Choose a user data directory.";
+        return false;
+    }
+
+    std::string current = getUserDataDir();
+    if (pathsEqual(target, current)) {
+        userDataDir_ = normalizePath(current);
+        return true;
+    }
+
+    if (!ensureDirectoryExists(target)) {
+        errorMessage = "Failed to prepare " + target;
+        return false;
+    }
+
+    if (mode == UserDataDirectoryMode::CopyCurrentData) {
+        tagMgr_->save();
+        readingPlanMgr_->save();
+        tagMgr_->checkpoint();
+        readingPlanMgr_->checkpoint();
+        if (!copyUserDataDirectory(current, target, errorMessage)) {
+            return false;
+        }
+    } else if (!ensureDirectoryExists((fs::path(target) / "studypad").string())) {
+        errorMessage = "Failed to prepare " + (fs::path(target) / "studypad").string();
+        return false;
+    }
+
+    const std::string targetTags = joinPath(target, "tags.db");
+    const std::string targetPlans = joinPath(target, "reading_plans.db");
+    const std::string currentTags = joinPath(current, "tags.db");
+    const std::string currentPlans = joinPath(current, "reading_plans.db");
+
+    bool tagsLoaded = tagMgr_->load(targetTags);
+    bool plansLoaded = tagsLoaded && readingPlanMgr_->load(targetPlans);
+    if (!tagsLoaded || !plansLoaded) {
+        tagMgr_->load(currentTags);
+        readingPlanMgr_->load(currentPlans);
+        errorMessage = "Failed to reopen user data from " + target;
+        return false;
+    }
+
+    userDataDir_ = target;
+    return true;
+}
+
 void VerdadApp::ensureConfigDir() {
     std::string dir = getConfigDir();
     std::error_code ec;
-    std::filesystem::create_directories(dir, ec);
+    fs::create_directories(dir, ec);
+}
+
+bool VerdadApp::ensureUserDataDir() {
+    if (!ensureDirectoryExists(getUserDataDir())) return false;
+    return ensureDirectoryExists(getStudypadDir());
+}
+
+void VerdadApp::loadUserDataDirPreference() {
+    userDataDir_ = normalizePath(getDefaultUserDataDir());
+
+    PreferenceMap prefs;
+    if (!readPreferencesFile(joinPath(getConfigDir(), "preferences.conf"), prefs)) {
+        return;
+    }
+
+    auto it = prefs.find("user_data_dir");
+    if (it == prefs.end()) return;
+
+    std::string configured = trimCopy(it->second);
+    if (!configured.empty()) {
+        userDataDir_ = normalizePath(configured);
+    }
 }
 
 bool VerdadApp::loadPreferences() {
@@ -878,6 +1172,7 @@ bool VerdadApp::applyPreferencesMap(const PreferenceMap& prefs,
     // New session format: restore full window/tabs/splitter state.
     if (prefs.find("study_tab_count") != prefs.end()) {
         MainWindow::SessionState state = sessionStateFromPreferences(prefs);
+        state.documentPath = resolveUserDataPath(state.documentPath);
         if (preserveLayout && mainWindow_) {
             preserveCurrentLayout(state, mainWindow_->captureSessionState());
         }
@@ -987,7 +1282,8 @@ void VerdadApp::savePreferences() {
         file << "rightpane_tab=" << rightPaneTabToken(state.rightPaneTab) << "\n";
         file << "general_book_module=" << state.generalBookModule << "\n";
         file << "general_book_key=" << state.generalBookKey << "\n";
-        file << "document_path=" << state.documentPath << "\n";
+        file << "document_path=" << makeUserDataRelativePath(state.documentPath) << "\n";
+        file << "user_data_dir=" << getUserDataDir() << "\n";
         file << "daily_workspace_mode="
              << dailyWorkspaceModeToken(state.dailyWorkspace.mode) << "\n";
         file << "daily_workspace_devotional_module="
