@@ -46,6 +46,26 @@ bool bindText(sqlite3_stmt* stmt, int index, const std::string& value) {
     return sqlite3_bind_text(stmt, index, value.c_str(), -1, SQLITE_TRANSIENT) == SQLITE_OK;
 }
 
+int userVersion(sqlite3* db) {
+    if (!db) return 0;
+
+    sqlite3_stmt* stmt = nullptr;
+    if (sqlite3_prepare_v2(db, "PRAGMA user_version;", -1, &stmt, nullptr) != SQLITE_OK) {
+        return 0;
+    }
+
+    int version = 0;
+    if (sqlite3_step(stmt) == SQLITE_ROW) {
+        version = sqlite3_column_int(stmt, 0);
+    }
+    sqlite3_finalize(stmt);
+    return version;
+}
+
+bool setUserVersion(sqlite3* db, int version) {
+    return execSql(db, ("PRAGMA user_version = " + std::to_string(version) + ";").c_str());
+}
+
 std::string kindToken(TagTarget::Kind kind) {
     switch (kind) {
     case TagTarget::Kind::Verse:
@@ -116,11 +136,10 @@ bool ensureSchema(sqlite3* db) {
 
         CREATE INDEX IF NOT EXISTS idx_verse_tags_tag_name
             ON verse_tags(tag_name, verse_key);
-
-        PRAGMA user_version = 2;
     )SQL";
 
-    return execSql(db, kSchemaSql);
+    return execSql(db, kSchemaSql) &&
+           (userVersion(db) >= 2 || setUserVersion(db, 2));
 }
 
 void applyPragmas(sqlite3* db) {

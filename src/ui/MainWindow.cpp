@@ -17,6 +17,8 @@
 #include "app/PerfTrace.h"
 #include "tags/TagManager.h"
 
+#include <sqlite3.h>
+
 #include <FL/Fl.H>
 #include <FL/Fl_Native_File_Chooser.H>
 #include <FL/fl_ask.H>
@@ -41,6 +43,7 @@
 #include <cctype>
 #include <chrono>
 #include <cstdlib>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <regex>
@@ -698,7 +701,7 @@ bool filenameLooksLikeSyncConflict(const fs::path& path) {
     return path.filename().string().find(".sync-conflict-") != std::string::npos;
 }
 
-std::string pathStateStamp(const fs::path& path) {
+std::string fileMetadataStamp(const fs::path& path) {
     std::error_code ec;
     if (!fs::exists(path, ec) || ec) return "missing";
 
@@ -716,6 +719,124 @@ std::string pathStateStamp(const fs::path& path) {
     auto writeTime = fs::last_write_time(path, ec);
     long long writeTicks = ec ? 0 : writeTime.time_since_epoch().count();
     return type + ":" + std::to_string(size) + ":" + std::to_string(writeTicks);
+}
+
+void hashBytes(uint64_t& hash, const void* data, size_t size) {
+    static constexpr uint64_t kFnvPrime = 1099511628211ULL;
+    const auto* bytes = static_cast<const unsigned char*>(data);
+    for (size_t i = 0; i < size; ++i) {
+        hash ^= static_cast<uint64_t>(bytes[i]);
+        hash *= kFnvPrime;
+    }
+}
+
+void hashText(uint64_t& hash, const char* text) {
+    if (!text) {
+        const char marker = '\0';
+        hashBytes(hash, &marker, 1);
+        return;
+    }
+    hashBytes(hash, text, std::strlen(text));
+    const char marker = '\xff';
+    hashBytes(hash, &marker, 1);
+}
+
+std::string sqliteContentStamp(const fs::path& path,
+                               const std::vector<const char*>& queries) {
+    std::error_code ec;
+    if (!fs::exists(path, ec) || ec) return "missing";
+
+    sqlite3* db = nullptr;
+    int rc = sqlite3_open_v2(path.string().c_str(),
+                             &db,
+                             SQLITE_OPEN_READONLY | SQLITE_OPEN_FULLMUTEX,
+                             nullptr);
+    if (rc != SQLITE_OK || !db) {
+        if (db) sqlite3_close(db);
+        return "db-unreadable:" + fileMetadataStamp(path);
+    }
+
+    uint64_t hash = 1469598103934665603ULL;
+    int64_t rowCount = 0;
+    bool ok = true;
+
+    for (const char* sql : queries) {
+        sqlite3_stmt* stmt = nullptr;
+        if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) != SQLITE_OK) {
+            ok = false;
+            if (stmt) sqlite3_finalize(stmt);
+            break;
+        }
+
+        hashText(hash, sql);
+        int stepRc = SQLITE_ROW;
+        while ((stepRc = sqlite3_step(stmt)) == SQLITE_ROW) {
+            ++rowCount;
+            const char rowMarker = '\x1e';
+            hashBytes(hash, &rowMarker, 1);
+            int columnCount = sqlite3_column_count(stmt);
+            for (int i = 0; i < columnCount; ++i) {
+                const char columnMarker = '\x1f';
+                hashBytes(hash, &columnMarker, 1);
+                if (sqlite3_column_type(stmt, i) == SQLITE_NULL) {
+                    hashText(hash, nullptr);
+                } else {
+                    const auto* text =
+                        reinterpret_cast<const char*>(sqlite3_column_text(stmt, i));
+                    hashText(hash, text ? text : "");
+                }
+            }
+        }
+        if (stepRc != SQLITE_DONE) ok = false;
+        sqlite3_finalize(stmt);
+        if (!ok) break;
+    }
+
+    sqlite3_close(db);
+    if (!ok) return "db-error:" + fileMetadataStamp(path);
+
+    std::ostringstream out;
+    out << "sqlite-content:" << rowCount << ':' << std::hex << hash;
+    return out.str();
+}
+
+std::string tagsDbContentStamp(const fs::path& path) {
+    return sqliteContentStamp(path, {
+        "SELECT name, color FROM tags ORDER BY name;",
+        "SELECT resource_kind, module_name, source_key, selection_text, tag_name "
+        "FROM tag_items ORDER BY resource_kind, module_name, source_key, selection_text, tag_name;",
+        "SELECT verse_key, tag_name FROM verse_tags ORDER BY verse_key, tag_name;",
+    });
+}
+
+std::string readingPlansDbContentStamp(const fs::path& path) {
+    return sqliteContentStamp(path, {
+        "SELECT id, name, description, color FROM reading_plans ORDER BY id;",
+        "SELECT id, plan_id, day_number, title, completed "
+        "FROM reading_plan_days ORDER BY id;",
+        "SELECT id, day_id, sort_order, reference "
+        "FROM reading_plan_day_passages ORDER BY id;",
+        "SELECT plan_id, start_date FROM reading_plan_schedules ORDER BY plan_id;",
+        "SELECT id, plan_id, day_number, start_date "
+        "FROM reading_plan_schedule_offsets ORDER BY id;",
+        "SELECT module_name, start_date FROM sword_reading_plan_schedules ORDER BY module_name;",
+        "SELECT id, module_name, day_number, start_date "
+        "FROM sword_reading_plan_schedule_offsets ORDER BY id;",
+        "SELECT module_name, day_number, completed "
+        "FROM sword_reading_plan_progress ORDER BY module_name, day_number;",
+    });
+}
+
+std::string pathStateStamp(const fs::path& path) {
+    const std::string filename = path.filename().string();
+    if (filename == "tags.db") {
+        return tagsDbContentStamp(path);
+    }
+    if (filename == "reading_plans.db") {
+        return readingPlansDbContentStamp(path);
+    }
+
+    return fileMetadataStamp(path);
 }
 
 void addRequiredSnapshotPath(std::unordered_map<std::string, std::string>& snapshot,

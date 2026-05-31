@@ -1495,8 +1495,7 @@ bool ReadingPlanManager::ensureSchema() {
 
     const int version = userVersion(db_);
     if (version >= 5) {
-        if (!createSchemaV5(db_)) return false;
-        return setUserVersion(db_, 5);
+        return createSchemaV5(db_);
     }
 
     std::vector<ReadingPlan> migratedPlans;

@@ -311,7 +311,7 @@ const std::vector<SynonymGroup>& englishSynonyms() {
 
         // Nature / animals
         {{"lamb", "sheep", "ewe", "ram", "flock"}},
-        {{"lion", "beast", "predator"}},
+        //{{"lion", "beast", "predator"}},
         {{"dove", "pigeon", "turtledove"}},
         {{"serpent", "snake", "viper", "dragon"}},
         {{"ox", "bull", "bullock", "calf", "cattle", "herd"}},
