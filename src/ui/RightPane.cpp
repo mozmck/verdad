@@ -5763,7 +5763,7 @@ void RightPane::onCommentaryHover(const std::string& word,
                                   const std::string& href,
                                   const std::string& strong,
                                   const std::string& morph,
-                                  const std::string& /*module*/,
+                                  const std::string& module,
                                   int x, int y) {
     if (!app_ || !app_->mainWindow()) return;
 
@@ -5772,8 +5772,14 @@ void RightPane::onCommentaryHover(const std::string& word,
         return;
     }
 
-    if (!strong.empty() || !morph.empty() || !href.empty()) {
-        app_->mainWindow()->showWordInfo(word, href, strong, morph, x, y);
+    std::string sourceModule =
+        module.empty() ? currentCommentaryModule() : module;
+    bool translationEligible =
+        app_->offlineTranslationSettings().enabled && !word.empty();
+    if (!strong.empty() || !morph.empty() || !href.empty() ||
+        translationEligible) {
+        app_->mainWindow()->showWordInfo(
+            word, href, strong, morph, x, y, sourceModule);
     } else {
         app_->mainWindow()->hideWordInfo();
     }
@@ -5827,7 +5833,7 @@ void RightPane::onGeneralBookHover(const std::string& word,
                                    const std::string& href,
                                    const std::string& strong,
                                    const std::string& morph,
-                                   const std::string& /*module*/,
+                                   const std::string& module,
                                    int x, int y) {
     if (!app_ || !app_->mainWindow()) return;
 
@@ -5836,8 +5842,14 @@ void RightPane::onGeneralBookHover(const std::string& word,
         return;
     }
 
-    if (!strong.empty() || !morph.empty() || !href.empty()) {
-        app_->mainWindow()->showWordInfo(word, href, strong, morph, x, y);
+    std::string sourceModule =
+        module.empty() ? currentGeneralBookModule() : module;
+    bool translationEligible =
+        app_->offlineTranslationSettings().enabled && !word.empty();
+    if (!strong.empty() || !morph.empty() || !href.empty() ||
+        translationEligible) {
+        app_->mainWindow()->showWordInfo(
+            word, href, strong, morph, x, y, sourceModule);
     } else {
         app_->mainWindow()->hideWordInfo();
     }

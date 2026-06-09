@@ -700,7 +700,8 @@ VerdadApp::VerdadApp()
     , searchIndexer_(nullptr)
     , tagMgr_(std::make_unique<TagManager>())
     , readingPlanMgr_(std::make_unique<ReadingPlanManager>())
-    , importedModuleMgr_(std::make_unique<ImportedModuleManager>()) {
+    , importedModuleMgr_(std::make_unique<ImportedModuleManager>())
+    , wikDictMgr_(std::make_unique<WikDictManager>()) {
     instance_ = this;
 }
 
@@ -733,6 +734,7 @@ bool VerdadApp::initialize(int argc, char* argv[]) {
     importedModuleMgr_->load(joinPath(getConfigDir(), "imports.db"),
                              joinPath(getConfigDir(), "imports"));
     swordMgr_->setImportedModuleManager(importedModuleMgr_.get());
+    refreshModuleLanguageCache();
 
     // Initialize FTS5 index database (separate from tags/settings data).
     searchIndexer_ = std::make_unique<SearchIndexer>(
@@ -757,6 +759,7 @@ bool VerdadApp::initialize(int argc, char* argv[]) {
         if (mainWindow_) {
             mainWindow_->ensureDefaultStudyTab();
         }
+        rescanOfflineTranslations();
     }
 
     return true;
@@ -795,6 +798,13 @@ void VerdadApp::refreshSearchIndexCatalog(bool prioritizeActiveBible) {
     if (!searchIndexer_ || !swordMgr_) return;
 
     std::vector<ModuleInfo> modules = swordMgr_->getModules();
+    moduleLanguageByName_.clear();
+    moduleLanguageByName_.reserve(modules.size());
+    for (const auto& module : modules) {
+        if (!module.name.empty()) {
+            moduleLanguageByName_[module.name] = module.language;
+        }
+    }
     searchIndexer_->synchronizeModules(modules);
 
     std::string activeModule;
@@ -1129,6 +1139,14 @@ bool VerdadApp::applyPreferencesMap(const PreferenceMap& prefs,
         }
     }
 
+    OfflineTranslationSettings importedOfflineTranslation =
+        offlineTranslationSettings_;
+    importedOfflineTranslation.enabled = parseBoolOr(
+        lookup("offline_translation_hover_enabled"),
+        importedOfflineTranslation.enabled);
+    importedOfflineTranslation.dictionaryDirectory = trimCopy(
+        lookup("offline_translation_dictionary_dir"));
+
     ModuleManagerSettings importedModuleManager = moduleManagerSettings_;
     {
         std::string languageFilter = trimCopy(lookup("module_manager_language"));
@@ -1164,6 +1182,7 @@ bool VerdadApp::applyPreferencesMap(const PreferenceMap& prefs,
     }
 
     setPreviewDictionarySettings(importedPreview);
+    setOfflineTranslationSettings(importedOfflineTranslation);
     setOptionDisplaySettings(importedOptions);
     setSearchSettings(importedSearch);
     setAppearanceSettings(importedAppearance);
@@ -1240,6 +1259,10 @@ void VerdadApp::savePreferences() {
              << (searchSettings_.assistanceMode == SearchAssistanceMode::Smart ? 1 : 0) << "\n";
         file << "preview_dict_greek=" << previewDictionarySettings_.greekModule << "\n";
         file << "preview_dict_hebrew=" << previewDictionarySettings_.hebrewModule << "\n";
+        file << "offline_translation_hover_enabled="
+             << (offlineTranslationSettings_.enabled ? 1 : 0) << "\n";
+        file << "offline_translation_dictionary_dir="
+             << offlineTranslationSettings_.dictionaryDirectory << "\n";
         std::vector<std::string> languageCodes;
         languageCodes.reserve(previewDictionarySettings_.languageModules.size());
         for (const auto& kv : previewDictionarySettings_.languageModules) {
@@ -1414,6 +1437,47 @@ void VerdadApp::setPreviewDictionarySettings(
     previewDictionarySettings_.greekModule = std::move(normalized.greekModule);
     previewDictionarySettings_.hebrewModule = std::move(normalized.hebrewModule);
     previewDictionarySettings_.languageModules = std::move(normalizedLanguageModules);
+}
+
+void VerdadApp::setOfflineTranslationSettings(
+        const OfflineTranslationSettings& settings) {
+    offlineTranslationSettings_.enabled = settings.enabled;
+    offlineTranslationSettings_.dictionaryDirectory =
+        trimCopy(settings.dictionaryDirectory);
+    rescanOfflineTranslations();
+}
+
+std::string VerdadApp::effectiveOfflineTranslationDictionaryDirectory() const {
+    std::string configured = trimCopy(
+        offlineTranslationSettings_.dictionaryDirectory);
+    if (!configured.empty()) return configured;
+    return joinPath(getConfigDir(), "dictionaries");
+}
+
+const WikDictScanReport& VerdadApp::rescanOfflineTranslations() {
+    offlineTranslationScanReport_ = wikDictMgr_->scan(
+        effectiveOfflineTranslationDictionaryDirectory());
+    return offlineTranslationScanReport_;
+}
+
+std::string VerdadApp::sourceLanguageForModule(
+        const std::string& moduleName) const {
+    std::string name = trimCopy(moduleName);
+    auto it = moduleLanguageByName_.find(name);
+    return it != moduleLanguageByName_.end() ? it->second : std::string();
+}
+
+void VerdadApp::refreshModuleLanguageCache() {
+    moduleLanguageByName_.clear();
+    if (!swordMgr_) return;
+
+    std::vector<ModuleInfo> modules = swordMgr_->getModules();
+    moduleLanguageByName_.reserve(modules.size());
+    for (const auto& module : modules) {
+        if (!module.name.empty()) {
+            moduleLanguageByName_[module.name] = module.language;
+        }
+    }
 }
 
 void VerdadApp::setOptionDisplaySettings(

@@ -7,6 +7,8 @@
 #include <vector>
 #include <FL/Enumerations.H>
 
+#include "translation/WikDictManager.h"
+
 namespace verdad {
 
 class SwordManager;
@@ -200,6 +202,30 @@ public:
     /// Update default Greek/Hebrew Strong's preview dictionaries.
     void setPreviewDictionarySettings(const PreviewDictionarySettings& settings);
 
+    /// Current offline hover-translation preferences.
+    const OfflineTranslationSettings& offlineTranslationSettings() const {
+        return offlineTranslationSettings_;
+    }
+
+    /// Update offline hover-translation preferences and rescan dictionaries.
+    void setOfflineTranslationSettings(const OfflineTranslationSettings& settings);
+
+    /// Return the configured folder or the platform default when unset.
+    std::string effectiveOfflineTranslationDictionaryDirectory() const;
+
+    /// Rescan the effective offline dictionary folder.
+    const WikDictScanReport& rescanOfflineTranslations();
+
+    /// Current WikDict manager and latest scan status.
+    WikDictManager& wikDictManager() { return *wikDictMgr_; }
+    const WikDictManager& wikDictManager() const { return *wikDictMgr_; }
+    const WikDictScanReport& offlineTranslationScanReport() const {
+        return offlineTranslationScanReport_;
+    }
+
+    /// Return the cached language metadata for an installed module.
+    std::string sourceLanguageForModule(const std::string& moduleName) const;
+
     /// Return the effective preview dictionary for a Strong's language prefix.
     std::string preferredPreviewDictionary(char strongPrefix) const;
 
@@ -273,9 +299,12 @@ private:
     std::unique_ptr<TagManager> tagMgr_;
     std::unique_ptr<ReadingPlanManager> readingPlanMgr_;
     std::unique_ptr<ImportedModuleManager> importedModuleMgr_;
+    std::unique_ptr<WikDictManager> wikDictMgr_;
     std::unique_ptr<MainWindow> mainWindow_;
     AppearanceSettings appearanceSettings_;
     PreviewDictionarySettings previewDictionarySettings_;
+    OfflineTranslationSettings offlineTranslationSettings_;
+    WikDictScanReport offlineTranslationScanReport_;
     OptionDisplaySettings optionDisplaySettings_;
     ModuleManagerSettings moduleManagerSettings_;
     SearchSettings searchSettings_;
@@ -286,6 +315,7 @@ private:
     std::unordered_map<std::string, Fl_Font> fontFamilyMap_;
     /// Map from regular font index to bold font index
     std::unordered_map<Fl_Font, Fl_Font> boldVariantMap_;
+    std::unordered_map<std::string, std::string> moduleLanguageByName_;
 
     /// Ensure config directory exists
     void ensureConfigDir();
@@ -308,6 +338,9 @@ private:
     /// Apply parsed preference data to the running app.
     bool applyPreferencesMap(const std::unordered_map<std::string, std::string>& prefs,
                              bool preserveLayout);
+
+    /// Refresh cached module language metadata after SWORD catalog changes.
+    void refreshModuleLanguageCache();
 };
 
 } // namespace verdad

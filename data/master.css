@@ -321,6 +321,27 @@ div.mag-lite .mag-defline {
     color: #333;
 }
 
+div.mag-lite .mag-translation-label {
+    margin-top: 5px;
+    font-weight: bold;
+    color: #555;
+}
+
+div.mag-lite .mag-translation-gloss {
+    color: #333;
+}
+
+div.mag-lite .mag-translation-metadata {
+    margin-top: 3px;
+    color: #555;
+}
+
+div.mag-lite .mag-translation-attribution {
+    margin-top: 7px;
+    font-size: 10px;
+    color: #777;
+}
+
 div.mag-lite .mag-gap {
     height: 0.45em;
 }

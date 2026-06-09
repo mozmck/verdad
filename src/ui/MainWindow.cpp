@@ -46,6 +46,7 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <optional>
 #include <regex>
 #include <set>
 #include <sstream>
@@ -1046,6 +1047,66 @@ std::string languageDisplayName(const std::string& languageCode) {
                        return static_cast<char>(std::toupper(c));
                    });
     return label;
+}
+
+std::string offlineTranslationPairsLabel(const WikDictScanReport& report) {
+    std::ostringstream label;
+    label << "Detected: ";
+    bool hasDetectedResource = false;
+    for (const auto& pair : report.pairs) {
+        if (hasDetectedResource) label << ", ";
+        label << pair.sourceLanguage << " -> " << pair.targetLanguage;
+        hasDetectedResource = true;
+    }
+    for (const auto& language : report.analysisLanguages) {
+        if (hasDetectedResource) label << ", ";
+        label << language << " analysis";
+        hasDetectedResource = true;
+    }
+    if (!hasDetectedResource) label << "No WikDict resources";
+    return label.str();
+}
+
+std::string joinDisplayValues(const std::vector<std::string>& values) {
+    std::ostringstream joined;
+    for (size_t i = 0; i < values.size(); ++i) {
+        if (i) joined << ", ";
+        joined << values[i];
+    }
+    return joined.str();
+}
+
+std::string offlineTranslationIssuesLabel(const WikDictScanReport& report) {
+    if (report.issues.empty()) return "Errors: None";
+
+    std::ostringstream label;
+    label << "Errors: ";
+    constexpr size_t kDisplayedIssues = 3;
+    const size_t count = std::min(report.issues.size(), kDisplayedIssues);
+    for (size_t i = 0; i < count; ++i) {
+        if (i) label << "; ";
+        if (!report.issues[i].fileName.empty()) {
+            label << report.issues[i].fileName << ": ";
+        }
+        label << report.issues[i].message;
+    }
+    if (report.issues.size() > count) {
+        label << "; plus " << (report.issues.size() - count) << " more";
+    }
+    return label.str();
+}
+
+void updateOfflineTranslationScanLabels(Fl_Box* detectedBox,
+                                        Fl_Box* issuesBox,
+                                        const WikDictScanReport& report) {
+    if (detectedBox) {
+        detectedBox->copy_label(offlineTranslationPairsLabel(report).c_str());
+        detectedBox->redraw();
+    }
+    if (issuesBox) {
+        issuesBox->copy_label(offlineTranslationIssuesLabel(report).c_str());
+        issuesBox->redraw();
+    }
 }
 
 std::vector<std::string> dictionaryLanguageCodes(
@@ -2212,11 +2273,13 @@ void MainWindow::showGeneralBookEntry(const std::string& module,
 
 void MainWindow::showWordInfo(const std::string& word, const std::string& href,
                                const std::string& strong, const std::string& morph,
-                               int /*screenX*/, int /*screenY*/) {
+                               int /*screenX*/, int /*screenY*/,
+                               const std::string& sourceModule) {
     pendingWordInfo_.word = word;
     pendingWordInfo_.href = href;
     pendingWordInfo_.strong = strong;
     pendingWordInfo_.morph = morph;
+    pendingWordInfo_.sourceModule = sourceModule;
     pendingWordInfo_.tabIndex = activeStudyTab_;
 
     if (hoverDelayScheduled_) {
@@ -2235,7 +2298,8 @@ void MainWindow::showWordInfo(const std::string& word, const std::string& href,
 void MainWindow::showWordInfoNow(const std::string& word,
                                  const std::string& href,
                                  const std::string& strong,
-                                 const std::string& morph) {
+                                 const std::string& morph,
+                                 const std::string& sourceModule) {
     if (hoverDelayScheduled_) {
         Fl::remove_timeout(onHoverDelayTimeout, this);
         hoverDelayScheduled_ = false;
@@ -2245,6 +2309,7 @@ void MainWindow::showWordInfoNow(const std::string& word,
     pendingWordInfo_.href = href;
     pendingWordInfo_.strong = strong;
     pendingWordInfo_.morph = morph;
+    pendingWordInfo_.sourceModule = sourceModule;
     pendingWordInfo_.tabIndex = activeStudyTab_;
     applyPendingWordInfo();
 }
@@ -2286,7 +2351,67 @@ void MainWindow::applyPendingWordInfo() {
 
     std::vector<std::string> strongTokens = extractStrongsTokens(strongNum);
     std::string morphKey = trimCopy(morphCode);
-    if (strongTokens.empty() && morphKey.empty()) return;
+    if (strongTokens.empty() && morphKey.empty()) {
+        if (!app_ || !app_->offlineTranslationSettings().enabled ||
+            !pendingWordInfo_.href.empty()) {
+            return;
+        }
+
+        std::string sourceLanguage = app_->sourceLanguageForModule(
+            pendingWordInfo_.sourceModule);
+        std::optional<OfflineTranslationResult> translation =
+            app_->wikDictManager().lookup(
+                sourceLanguage, "en", pendingWordInfo_.word);
+        if (!translation) return;
+
+        std::ostringstream translationHtml;
+        translationHtml << "<div class=\"mag-lite mag-translation\">";
+        translationHtml << "<span class=\"mag-line mag-wordline\">"
+                        << htmlEscape(translation->sourceWord) << "</span>";
+        translationHtml << "<span class=\"mag-line mag-translation-label\">"
+                        << htmlEscape(languageDisplayName(
+                               translation->targetLanguage))
+                        << "</span>";
+        for (const auto& gloss : translation->glosses) {
+            translationHtml
+                << "<span class=\"mag-line mag-translation-gloss\">"
+                << htmlEscape(gloss) << "</span>";
+        }
+        if (!translation->lemmas.empty()) {
+            translationHtml
+                << "<span class=\"mag-line mag-translation-metadata\"><b>"
+                << (translation->inferredAnalysis ? "Lemma (inferred): "
+                                                  : "Lemma: ")
+                << "</b>"
+                << htmlEscape(joinDisplayValues(translation->lemmas))
+                << "</span>";
+        }
+        if (!translation->partsOfSpeech.empty()) {
+            translationHtml
+                << "<span class=\"mag-line mag-translation-metadata\"><b>"
+                << "Part of speech: </b>"
+                << htmlEscape(joinDisplayValues(translation->partsOfSpeech))
+                << "</span>";
+        }
+        for (const auto& detail : translation->grammaticalDetails) {
+            translationHtml
+                << "<span class=\"mag-line mag-translation-metadata\">"
+                << htmlEscape(detail)
+                << (translation->inferredAnalysis &&
+                            detail.rfind("Form:", 0) == 0
+                        ? " (inferred)"
+                        : "")
+                << "</span>";
+        }
+        translationHtml
+            << "<span class=\"mag-line mag-translation-attribution\">"
+            << htmlEscape(translation->attribution) << "</span></div>";
+
+        if (leftPane_) {
+            leftPane_->setPreviewText(translationHtml.str());
+        }
+        return;
+    }
 
     std::ostringstream html;
     html << "<div class=\"mag-lite\">";
@@ -3403,6 +3528,12 @@ void MainWindow::onViewSettings(Fl_Widget* /*w*/, void* data) {
 
     auto current = self->app_->appearanceSettings();
     auto currentPreview = self->app_->previewDictionarySettings();
+    auto currentOfflineTranslation =
+        self->app_->offlineTranslationSettings();
+    std::string defaultOfflineTranslationDirectory =
+        (fs::path(self->app_->getConfigDir()) / "dictionaries").string();
+    std::string currentOfflineTranslationDirectory =
+        self->app_->effectiveOfflineTranslationDictionaryDirectory();
     std::string currentUserDataDir = self->app_->getUserDataDir();
     std::vector<std::string> greekDictionaryModules =
         self->app_->strongsDictionaryModules('G');
@@ -3411,20 +3542,20 @@ void MainWindow::onViewSettings(Fl_Widget* /*w*/, void* data) {
     std::vector<std::string> languageCodes =
         dictionaryLanguageCodes(self->app_, currentPreview);
 
-    constexpr int dialogW = 520;
+    constexpr int dialogW = 720;
     constexpr int rowStep = 34;
     constexpr int tabsX = 12;
     constexpr int tabsY = 12;
     constexpr int tabsHeaderH = 28;
     constexpr int groupPadX = 20;
     constexpr int groupPadY = 18;
-    constexpr int labelW = 150;
-    constexpr int fieldW = 300;
-    constexpr int fieldXOffset = 180;
+    constexpr int labelW = 170;
+    constexpr int fieldW = 470;
+    constexpr int fieldXOffset = 190;
     constexpr int spinnerW = 90;
 
     int appearanceRowCount = 8;
-    int dictionaryRowCount = 2 + static_cast<int>(languageCodes.size());
+    int dictionaryRowCount = 7 + static_cast<int>(languageCodes.size());
     int editorRowCount = 2;
     int dataRowCount = 1;
     int maxRowCount = std::max({appearanceRowCount,
@@ -3581,6 +3712,101 @@ void MainWindow::onViewSettings(Fl_Widget* /*w*/, void* data) {
         rowY += rowStep;
     }
 
+    auto* offlineTranslationCheck = new Fl_Check_Button(
+        labelX,
+        rowY,
+        groupW - (groupPadX * 2),
+        24,
+        "Show offline English translations on word hover");
+    offlineTranslationCheck->value(currentOfflineTranslation.enabled ? 1 : 0);
+    rowY += rowStep;
+
+    constexpr int dictionaryButtonW = 70;
+    constexpr int dictionaryButtonGap = 8;
+    Fl_Box* offlineDirectoryLabel =
+        new Fl_Box(labelX, rowY, labelW, 24, "Dictionary folder:");
+    offlineDirectoryLabel->align(FL_ALIGN_LEFT | FL_ALIGN_INSIDE);
+    const int dictionaryInputW = fieldW - (dictionaryButtonW * 2) -
+                                 (dictionaryButtonGap * 2);
+    auto* offlineDirectoryInput =
+        new Fl_Input(fieldX, rowY, dictionaryInputW, 24);
+    offlineDirectoryInput->value(currentOfflineTranslationDirectory.c_str());
+    auto* offlineBrowseButton = new Fl_Button(
+        fieldX + dictionaryInputW + dictionaryButtonGap,
+        rowY,
+        dictionaryButtonW,
+        24,
+        "Browse");
+    auto* offlineRescanButton = new Fl_Button(
+        fieldX + dictionaryInputW + dictionaryButtonGap + dictionaryButtonW +
+            dictionaryButtonGap,
+        rowY,
+        dictionaryButtonW,
+        24,
+        "Rescan");
+    rowY += rowStep;
+
+    auto* offlineDetectedBox = new Fl_Box(
+        labelX, rowY, groupW - (groupPadX * 2), 24);
+    offlineDetectedBox->align(FL_ALIGN_LEFT | FL_ALIGN_INSIDE);
+    rowY += rowStep;
+
+    auto* offlineIssuesBox = new Fl_Box(
+        labelX, rowY, groupW - (groupPadX * 2), (rowStep * 2) - 8);
+    offlineIssuesBox->align(FL_ALIGN_LEFT | FL_ALIGN_INSIDE | FL_ALIGN_WRAP);
+
+    struct OfflineTranslationUiState {
+        Fl_Input* directoryInput = nullptr;
+        Fl_Box* detectedBox = nullptr;
+        Fl_Box* issuesBox = nullptr;
+        std::string defaultDirectory;
+        WikDictManager manager;
+    };
+    OfflineTranslationUiState offlineTranslationUiState{
+        offlineDirectoryInput,
+        offlineDetectedBox,
+        offlineIssuesBox,
+        defaultOfflineTranslationDirectory,
+        WikDictManager{}};
+    WikDictScanReport initialOfflineReport =
+        offlineTranslationUiState.manager.scan(
+            currentOfflineTranslationDirectory);
+    updateOfflineTranslationScanLabels(
+        offlineDetectedBox, offlineIssuesBox, initialOfflineReport);
+
+    offlineBrowseButton->callback(
+        [](Fl_Widget*, void* data) {
+            auto* state = static_cast<OfflineTranslationUiState*>(data);
+            if (!state || !state->directoryInput) return;
+
+            Fl_Native_File_Chooser chooser;
+            chooser.title("Choose Offline Dictionary Folder");
+            chooser.type(Fl_Native_File_Chooser::BROWSE_DIRECTORY);
+            const char* currentValue = state->directoryInput->value();
+            if (currentValue && currentValue[0]) {
+                chooser.directory(currentValue);
+            }
+            if (chooser.show() != 0 || !chooser.filename()) return;
+            state->directoryInput->value(chooser.filename());
+        },
+        &offlineTranslationUiState);
+
+    offlineRescanButton->callback(
+        [](Fl_Widget*, void* data) {
+            auto* state = static_cast<OfflineTranslationUiState*>(data);
+            if (!state || !state->directoryInput) return;
+
+            std::string directory = trimCopy(
+                state->directoryInput->value()
+                    ? state->directoryInput->value()
+                    : "");
+            if (directory.empty()) directory = state->defaultDirectory;
+            WikDictScanReport report = state->manager.scan(directory);
+            updateOfflineTranslationScanLabels(
+                state->detectedBox, state->issuesBox, report);
+        },
+        &offlineTranslationUiState);
+
     dictionariesTab->end();
 
     Fl_Group* editorTab =
@@ -3685,6 +3911,8 @@ void MainWindow::onViewSettings(Fl_Widget* /*w*/, void* data) {
     if (state->accepted) {
         VerdadApp::AppearanceSettings updated = current;
         VerdadApp::PreviewDictionarySettings updatedPreview = currentPreview;
+        OfflineTranslationSettings updatedOfflineTranslation =
+            currentOfflineTranslation;
         std::string requestedUserDataDir =
             trimCopy(userDataDirInput->value() ? userDataDirInput->value() : "");
 
@@ -3734,6 +3962,22 @@ void MainWindow::onViewSettings(Fl_Widget* /*w*/, void* data) {
             if (item && item->label()) {
                 updatedPreview.languageModules[row.languageCode] = item->label();
             }
+        }
+
+        updatedOfflineTranslation.enabled =
+            offlineTranslationCheck->value() != 0;
+        std::string requestedOfflineDirectory = trimCopy(
+            offlineDirectoryInput->value()
+                ? offlineDirectoryInput->value()
+                : "");
+        if (requestedOfflineDirectory.empty() ||
+            (currentOfflineTranslation.dictionaryDirectory.empty() &&
+             pathsEqual(requestedOfflineDirectory,
+                        currentOfflineTranslationDirectory))) {
+            updatedOfflineTranslation.dictionaryDirectory.clear();
+        } else {
+            updatedOfflineTranslation.dictionaryDirectory =
+                requestedOfflineDirectory;
         }
 
         if (!pathsEqual(requestedUserDataDir, currentUserDataDir)) {
@@ -3786,6 +4030,7 @@ void MainWindow::onViewSettings(Fl_Widget* /*w*/, void* data) {
         }
 
         self->app_->setPreviewDictionarySettings(updatedPreview);
+        self->app_->setOfflineTranslationSettings(updatedOfflineTranslation);
         self->app_->setAppearanceSettings(updated);
         self->app_->savePreferences();
     }

@@ -115,11 +115,13 @@ public:
     /// Queue Mag viewer info update in the left pane preview.
     void showWordInfo(const std::string& word, const std::string& href,
                       const std::string& strong, const std::string& morph,
-                      int screenX, int screenY);
+                      int screenX, int screenY,
+                      const std::string& sourceModule = "");
 
     /// Immediately render Strong's/morph info into the left preview pane.
     void showWordInfoNow(const std::string& word, const std::string& href,
-                         const std::string& strong, const std::string& morph);
+                         const std::string& strong, const std::string& morph,
+                         const std::string& sourceModule = "");
 
     /// Cancel pending hover update (does not clear current MAG content).
     void hideWordInfo();
@@ -202,6 +204,7 @@ private:
         std::string href;
         std::string strong;
         std::string morph;
+        std::string sourceModule;
         int tabIndex = -1;
     };
 

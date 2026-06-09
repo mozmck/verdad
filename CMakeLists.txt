@@ -109,6 +109,7 @@ set(SOURCES
     src/reading/ReadingPlanManager.cpp
     src/reading/ReadingPlanUtils.cpp
     src/tags/TagManager.cpp
+    src/translation/WikDictManager.cpp
     src/ui/MainWindow.cpp
     src/ui/BibleBookChoice.cpp
     src/ui/FilterableChoiceWidget.cpp
@@ -146,6 +147,7 @@ set(HEADERS
     src/reading/ReadingPlanManager.h
     src/reading/ReadingPlanUtils.h
     src/tags/TagManager.h
+    src/translation/WikDictManager.h
     src/ui/MainWindow.h
     src/ui/BibleBookChoice.h
     src/ui/FilterableChoiceWidget.h
