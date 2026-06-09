@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(Verdad VERSION 0.7.6 LANGUAGES CXX)
+project(Verdad VERSION 0.8.0 LANGUAGES CXX)
 
 include(GNUInstallDirs)
 include(CTest)
@@ -263,9 +263,14 @@ if(BUILD_TESTING)
     find_package(Python3 COMPONENTS Interpreter)
     if(Python3_Interpreter_FOUND)
         add_test(
-            NAME morphology-importer
+            NAME spanish-morphology-importer
             COMMAND ${Python3_EXECUTABLE}
                     ${CMAKE_SOURCE_DIR}/tests/test_import_apertium_spanish_morphology.py
+        )
+        add_test(
+            NAME german-morphology-importer
+            COMMAND ${Python3_EXECUTABLE}
+                    ${CMAKE_SOURCE_DIR}/tests/test_import_apertium_german_morphology.py
         )
     endif()
 endif()

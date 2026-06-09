@@ -1069,9 +1069,14 @@ std::string offlineTranslationPairsLabel(const WikDictScanReport& report) {
 
 std::string joinDisplayValues(const std::vector<std::string>& values) {
     std::ostringstream joined;
-    for (size_t i = 0; i < values.size(); ++i) {
+    constexpr size_t kDisplayedValues = 6;
+    const size_t count = std::min(values.size(), kDisplayedValues);
+    for (size_t i = 0; i < count; ++i) {
         if (i) joined << ", ";
         joined << values[i];
+    }
+    if (values.size() > count) {
+        joined << ", +" << (values.size() - count) << " variants";
     }
     return joined.str();
 }
@@ -2372,31 +2377,38 @@ void MainWindow::applyPendingWordInfo() {
                         << htmlEscape(languageDisplayName(
                                translation->targetLanguage))
                         << "</span>";
-        if (!translation->lemmas.empty()) {
-            translationHtml
-                << "<span class=\"mag-line mag-translation-metadata\"><b>"
-                << (translation->morphologyDerived ? "From: " : "Lemma: ")
-                << "</b>"
-                << htmlEscape(joinDisplayValues(translation->lemmas))
-                << "</span>";
-        }
-        std::vector<std::string> grammar = translation->partsOfSpeech;
-        for (const auto& detail : translation->grammaticalDetails) {
-            if (std::find(grammar.begin(), grammar.end(), detail) == grammar.end()) {
-                grammar.push_back(detail);
+        if (translation->morphologyDerived) {
+            for (const auto& analysis : translation->morphologyAnalyses) {
+                translationHtml
+                    << "<span class=\"mag-line mag-translation-metadata\"><b>"
+                    << "From: </b>" << htmlEscape(analysis.lemma);
+                if (!analysis.partOfSpeech.empty()) {
+                    translationHtml << " ("
+                                    << htmlEscape(analysis.partOfSpeech)
+                                    << ")";
+                }
+                translationHtml << "</span>";
+                if (!analysis.grammaticalVariants.empty()) {
+                    translationHtml
+                        << "<span class=\"mag-line mag-translation-metadata\">"
+                        << htmlEscape(joinDisplayValues(
+                               analysis.grammaticalVariants))
+                        << "</span>";
+                }
+                for (const auto& gloss : analysis.glosses) {
+                    translationHtml
+                        << "<span class=\"mag-line mag-translation-gloss\">"
+                        << htmlEscape(gloss)
+                        << "</span>";
+                }
             }
-        }
-        if (!grammar.empty()) {
-            translationHtml
-                << "<span class=\"mag-line mag-translation-metadata\">"
-                << htmlEscape(joinDisplayValues(grammar))
-                << "</span>";
-        }
-        for (const auto& gloss : translation->glosses) {
-            translationHtml
-                << "<span class=\"mag-line mag-translation-gloss\">"
-                << htmlEscape(gloss)
-                << "</span>";
+        } else {
+            for (const auto& gloss : translation->glosses) {
+                translationHtml
+                    << "<span class=\"mag-line mag-translation-gloss\">"
+                    << htmlEscape(gloss)
+                    << "</span>";
+            }
         }
         translationHtml
             << "<span class=\"mag-line mag-translation-attribution\">"

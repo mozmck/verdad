@@ -83,6 +83,22 @@ std::vector<std::string> splitGlosses(const std::string& translations) {
     return glosses;
 }
 
+void appendMorphologyVariants(std::vector<std::string>& variants,
+                              const std::string& features) {
+    static const std::string delimiter = " | ";
+    size_t start = 0;
+    while (start <= features.size()) {
+        size_t end = features.find(delimiter, start);
+        appendUnique(
+            variants,
+            features.substr(
+                start,
+                end == std::string::npos ? std::string::npos : end - start));
+        if (end == std::string::npos) break;
+        start = end + delimiter.size();
+    }
+}
+
 std::string sqliteMessage(sqlite3* db, const std::string& fallback) {
     if (!db) return fallback;
     const char* message = sqlite3_errmsg(db);
@@ -186,6 +202,60 @@ void collectTranslationCandidates(const fs::path& directory,
     if (ec) {
         report.issues.push_back({directory.filename().string(),
                                  "Dictionary folder scan stopped: " +
+                                     ec.message()});
+    }
+}
+
+void collectMorphologyCandidates(const fs::path& directory,
+                                 std::vector<fs::path>& candidates,
+                                 WikDictScanReport& report) {
+    std::error_code ec;
+    bool exists = fs::exists(directory, ec);
+    if (ec) {
+        report.issues.push_back({directory.filename().string(),
+                                 "Cannot access morphology folder: " +
+                                     ec.message()});
+        return;
+    }
+    if (!exists) return;
+
+    bool isDirectory = fs::is_directory(directory, ec);
+    if (ec) {
+        report.issues.push_back({directory.filename().string(),
+                                 "Cannot inspect morphology folder: " +
+                                     ec.message()});
+        return;
+    }
+    if (!isDirectory) return;
+
+    static const std::regex filePattern(
+        R"(^([A-Za-z]{2,3})-morph-([A-Za-z0-9][A-Za-z0-9._-]*)\.sqlite3$)");
+    fs::directory_iterator iterator(directory, ec);
+    fs::directory_iterator end;
+    if (ec) {
+        report.issues.push_back({directory.filename().string(),
+                                 "Cannot read morphology folder: " +
+                                     ec.message()});
+        return;
+    }
+
+    for (; iterator != end; iterator.increment(ec)) {
+        if (ec) break;
+        bool isRegularFile = iterator->is_regular_file(ec);
+        if (ec) {
+            report.issues.push_back({iterator->path().filename().string(),
+                                     "Cannot inspect file: " + ec.message()});
+            ec.clear();
+            continue;
+        }
+        if (!isRegularFile) continue;
+        if (std::regex_match(iterator->path().filename().string(), filePattern)) {
+            candidates.push_back(iterator->path());
+        }
+    }
+    if (ec) {
+        report.issues.push_back({directory.filename().string(),
+                                 "Morphology folder scan stopped: " +
                                      ec.message()});
     }
 }
@@ -391,33 +461,30 @@ WikDictScanReport WikDictManager::scan(const std::string& directory) {
         report.pairs.push_back({sourceLanguage, targetLanguage});
     }
 
-    const std::vector<fs::path> morphologyCandidates = {
-        directoryPath / "morphology" / "es-morph-apertium.sqlite3",
-        directoryPath / "es-morph-apertium.sqlite3",
-    };
-    bool morphologyLoaded = false;
-    for (const fs::path& path : morphologyCandidates) {
-        ec.clear();
-        bool exists = fs::exists(path, ec);
-        if (ec) {
-            report.issues.push_back({path.filename().string(),
-                                     "Cannot access morphology database: " +
-                                         ec.message()});
-            continue;
-        }
-        if (!exists) continue;
+    std::vector<fs::path> morphologyCandidates;
+    collectMorphologyCandidates(directoryPath, morphologyCandidates, report);
+    collectMorphologyCandidates(
+        directoryPath / "morphology", morphologyCandidates, report);
+    std::sort(morphologyCandidates.begin(), morphologyCandidates.end(),
+              [](const fs::path& left, const fs::path& right) {
+                  return left.string() < right.string();
+              });
 
-        bool isRegularFile = fs::is_regular_file(path, ec);
-        if (ec) {
+    static const std::regex morphologyPattern(
+        R"(^([A-Za-z]{2,3})-morph-([A-Za-z0-9][A-Za-z0-9._-]*)\.sqlite3$)");
+    std::set<std::string> loadedMorphologyPacks;
+    std::set<std::string> reportedMorphologyLanguages;
+    for (const fs::path& path : morphologyCandidates) {
+        std::smatch match;
+        const std::string fileName = path.filename().string();
+        if (!std::regex_match(fileName, match, morphologyPattern)) continue;
+        const std::string language = normalizeLanguageCode(match[1].str());
+        const std::string providerName = match[2].str();
+        const std::string packKey = language + "\n" + providerName;
+        if (loadedMorphologyPacks.find(packKey) != loadedMorphologyPacks.end()) {
             report.issues.push_back({path.filename().string(),
-                                     "Cannot inspect morphology database: " +
-                                         ec.message()});
-            continue;
-        }
-        if (!isRegularFile) continue;
-        if (morphologyLoaded) {
-            report.issues.push_back({path.filename().string(),
-                                     "Duplicate Spanish morphology pack"});
+                                     "Duplicate morphology pack for " +
+                                         language + ": " + providerName});
             continue;
         }
 
@@ -428,15 +495,18 @@ WikDictScanReport WikDictManager::scan(const std::string& directory) {
                                          provider->error()});
             continue;
         }
-        if (!provider->supportsLanguage("es")) {
+        if (!provider->supportsLanguage(language)) {
             report.issues.push_back({path.filename().string(),
-                                     "Morphology database has no Spanish forms"});
+                                     "Morphology database has no " +
+                                         language + " forms"});
             continue;
         }
 
         impl_->morphology.addProvider(std::move(provider));
-        report.morphologyLanguages.push_back("es");
-        morphologyLoaded = true;
+        loadedMorphologyPacks.insert(packKey);
+        if (reportedMorphologyLanguages.insert(language).second) {
+            report.morphologyLanguages.push_back(language);
+        }
     }
 
     return report;
@@ -497,30 +567,44 @@ std::optional<OfflineTranslationResult> WikDictManager::lookup(
 
     if (!impl_->morphology.supportsLanguage(source)) return std::nullopt;
 
-    size_t acceptedAnalyses = 0;
-    std::set<std::string> acceptedLemmas;
+    std::map<std::string, size_t> acceptedGroups;
     for (const MorphAnalysis& analysis :
          impl_->morphology.analyze(source, word)) {
         const std::string lemmaNorm = normalizeLookupToken(analysis.lemma);
-        if (lemmaNorm.empty() || !acceptedLemmas.insert(lemmaNorm).second) continue;
+        if (lemmaNorm.empty()) continue;
 
         std::vector<std::string> lemmaGlosses =
             impl_->queryWithNormalization(key, analysis.lemma);
         if (lemmaGlosses.empty()) continue;
 
+        const std::string groupKey = lemmaNorm + "\n" + analysis.pos;
+        auto groupIt = acceptedGroups.find(groupKey);
+        if (groupIt == acceptedGroups.end()) {
+            if (result.morphologyAnalyses.size() >= kMaxMorphologyAnalyses) {
+                continue;
+            }
+            OfflineMorphologyAnalysis grouped;
+            grouped.lemma = analysis.lemma;
+            grouped.partOfSpeech = analysis.pos;
+            result.morphologyAnalyses.push_back(std::move(grouped));
+            size_t index = result.morphologyAnalyses.size() - 1;
+            groupIt = acceptedGroups.emplace(groupKey, index).first;
+        }
+
+        OfflineMorphologyAnalysis& grouped =
+            result.morphologyAnalyses[groupIt->second];
+        appendMorphologyVariants(
+            grouped.grammaticalVariants, analysis.features);
+        appendUnique(grouped.providers, analysis.provider);
+
         for (const auto& gloss : lemmaGlosses) {
-            appendUnique(result.glosses, gloss);
-            if (result.glosses.size() >= kMaxGlosses) break;
+            appendUnique(grouped.glosses, gloss);
+            if (result.glosses.size() < kMaxGlosses) {
+                appendUnique(result.glosses, gloss);
+            }
+            if (grouped.glosses.size() >= kMaxGlosses) break;
         }
-        appendUnique(result.lemmas, analysis.lemma);
-        appendUnique(result.partsOfSpeech, analysis.pos);
-        appendUnique(result.grammaticalDetails, analysis.features);
         appendUnique(result.morphologyProviders, analysis.provider);
-        ++acceptedAnalyses;
-        if (acceptedAnalyses >= kMaxMorphologyAnalyses ||
-            result.glosses.size() >= kMaxGlosses) {
-            break;
-        }
     }
 
     if (result.glosses.empty()) return std::nullopt;

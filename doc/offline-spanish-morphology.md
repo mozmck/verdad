@@ -71,6 +71,8 @@ python3 tools/import_apertium_spanish_morphology.py \
 The importer writes source version, URL, license, generation time, schema
 version, and generator version into the database. It also writes a neighboring
 `es-morph-apertium.NOTICE`; preserve that file when redistributing the pack.
+Morphology databases are user-managed and are not included in Verdad releases
+or settings exports.
 
 The locally verified `apertium-spa` package version is `1.1.0~r79716-2.1`, and
 its language data is licensed under GPL-2 according to

@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<dictionary>
+  <pardefs>
+    <pardef n="Frau__n_f">
+      <e><p><l></l><r><s n="n"/><s n="f"/><s n="sg"/><s n="nom"/></r></p></e>
+      <e><p><l>en</l><r><s n="n"/><s n="f"/><s n="pl"/><s n="nom"/></r></p></e>
+      <e><p><l>en</l><r><s n="n"/><s n="f"/><s n="pl"/><s n="gen"/></r></p></e>
+      <e><p><l>en</l><r><s n="n"/><s n="f"/><s n="pl"/><s n="dat"/></r></p></e>
+      <e><p><l>en</l><r><s n="n"/><s n="f"/><s n="pl"/><s n="acc"/></r></p></e>
+    </pardef>
+  </pardefs>
+  <section id="main" type="standard">
+    <e lm="Frau"><i>Frau</i><par n="Frau__n_f"/></e>
+    <e lm="Frau"><i>frau</i><par n="Frau__n_f"/></e>
+    <e lm="Haus"><p><l>Häuser</l><r>Haus<s n="n"/><s n="nt"/><s n="pl"/><s n="nom"/></r></p></e>
+    <e lm="Kind"><p><l>Kindern</l><r>Kind<s n="n"/><s n="nt"/><s n="pl"/><s n="dat"/></r></p></e>
+    <e lm="gehen"><p><l>gegangen</l><r>gehen<s n="vblex"/><s n="pp"/></r></p></e>
+    <e lm="sein"><p><l>war</l><r>sein<s n="vbser"/><s n="pii"/><s n="p3"/><s n="sg"/></r></p></e>
+    <e lm="groß"><p><l>größeren</l><r>groß<s n="adj"/><s n="sint"/><s n="comp"/><s n="m"/><s n="sg"/><s n="acc"/><s n="mix"/></r></p></e>
+    <e lm="aufstehen"><p><l>aufgestanden</l><r>aufstehen<s n="vblex"/><s n="sep"/><s n="pp"/></r></p></e>
+    <e lm="aufstehen"><p><l>steht<b/>auf</l><r>aufstehen<s n="vblex"/><s n="sep"/><s n="fm"/><s n="p3"/><s n="sg"/></r></p></e>
+    <e lm="Band"><p><l>band</l><r>Band<s n="n"/><s n="nt"/><s n="sg"/><s n="nom"/></r></p></e>
+    <e lm="binden"><p><l>band</l><r>binden<s n="vblex"/><s n="pii"/><s n="p3"/><s n="sg"/></r></p></e>
+    <e lm="Heuristik"><p><l>Heuristiken</l><r>Heuristik<s n="n"/><s n="f"/><s n="pl"/><s n="heur"/></r></p></e>
+    <e lm="Haus"><p><l>haus</l><r>Haus<s n="n"/><s n="nt"/><s n="cmp"/></r></p></e>
+    <e r="RL" lm="nur-erzeugen"><p><l>erzeugt</l><r>nur-erzeugen<s n="vblex"/></r></p></e>
+    <e lm="Zahl"><re>[0-9]+</re><p><l></l><r>Zahl<s n="n"/></r></p></e>
+  </section>
+</dictionary>

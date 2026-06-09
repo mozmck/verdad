@@ -18,14 +18,20 @@ struct TranslationLanguagePair {
     std::string targetLanguage;
 };
 
+struct OfflineMorphologyAnalysis {
+    std::string lemma;
+    std::string partOfSpeech;
+    std::vector<std::string> grammaticalVariants;
+    std::vector<std::string> glosses;
+    std::vector<std::string> providers;
+};
+
 struct OfflineTranslationResult {
     std::string sourceWord;
     std::string sourceLanguage;
     std::string targetLanguage;
     std::vector<std::string> glosses;
-    std::vector<std::string> lemmas;
-    std::vector<std::string> partsOfSpeech;
-    std::vector<std::string> grammaticalDetails;
+    std::vector<OfflineMorphologyAnalysis> morphologyAnalyses;
     bool morphologyDerived = false;
     std::vector<std::string> morphologyProviders;
     std::string attribution;
