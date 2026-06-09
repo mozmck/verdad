@@ -66,3 +66,37 @@ tools/appimage-tools/
 .cache
 .codex
 
+tools/data/
+
+# Python tooling
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+coverage.xml
+htmlcov/
+
+# Additional generated build files
+build.ninja
+rules.ninja
+.ninja_deps
+.ninja_log
+CPackConfig.cmake
+CPackSourceConfig.cmake
+_CPack_Packages/
+install_manifest.txt
+Testing/
+
+# Generated local data and release artifacts
+/dictionaries/
+/release-assets/
+*.sqlite3-journal
+*.sqlite3-shm
+*.sqlite3-wal
+*.sqlite3.tmp
+
+# Platform metadata
+.DS_Store
+Thumbs.db

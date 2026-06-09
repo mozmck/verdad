@@ -2,6 +2,7 @@ cmake_minimum_required(VERSION 3.16)
 project(Verdad VERSION 0.7.6 LANGUAGES CXX)
 
 include(GNUInstallDirs)
+include(CTest)
 
 if(NOT CMAKE_CONFIGURATION_TYPES AND NOT CMAKE_BUILD_TYPE)
     set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)
@@ -109,6 +110,9 @@ set(SOURCES
     src/reading/ReadingPlanManager.cpp
     src/reading/ReadingPlanUtils.cpp
     src/tags/TagManager.cpp
+    src/translation/MorphologyProvider.cpp
+    src/translation/SqliteMorphologyProvider.cpp
+    src/translation/TranslationNormalization.cpp
     src/translation/WikDictManager.cpp
     src/ui/MainWindow.cpp
     src/ui/BibleBookChoice.cpp
@@ -147,6 +151,9 @@ set(HEADERS
     src/reading/ReadingPlanManager.h
     src/reading/ReadingPlanUtils.h
     src/tags/TagManager.h
+    src/translation/MorphologyProvider.h
+    src/translation/SqliteMorphologyProvider.h
+    src/translation/TranslationNormalization.h
     src/translation/WikDictManager.h
     src/ui/MainWindow.h
     src/ui/BibleBookChoice.h
@@ -232,6 +239,36 @@ target_link_libraries(verdad-bench PRIVATE
 )
 
 target_compile_definitions(verdad-bench PRIVATE VERDAD_NO_APP_FONT_LOOKUP)
+
+if(BUILD_TESTING)
+    add_executable(verdad-morphology-tests
+        tests/MorphologyTests.cpp
+        src/translation/MorphologyProvider.cpp
+        src/translation/SqliteMorphologyProvider.cpp
+        src/translation/TranslationNormalization.cpp
+        src/translation/WikDictManager.cpp
+    )
+    target_include_directories(verdad-morphology-tests PRIVATE
+        ${CMAKE_SOURCE_DIR}/src
+    )
+    target_link_libraries(verdad-morphology-tests PRIVATE
+        fltk::fltk
+        SQLite::SQLite3
+    )
+    if(WIN32)
+        target_compile_definitions(verdad-morphology-tests PRIVATE NOMINMAX)
+    endif()
+    add_test(NAME morphology-provider COMMAND verdad-morphology-tests)
+
+    find_package(Python3 COMPONENTS Interpreter)
+    if(Python3_Interpreter_FOUND)
+        add_test(
+            NAME morphology-importer
+            COMMAND ${Python3_EXECUTABLE}
+                    ${CMAKE_SOURCE_DIR}/tests/test_import_apertium_spanish_morphology.py
+        )
+    endif()
+endif()
 
 if(APPLE)
     target_link_libraries(verdad PRIVATE

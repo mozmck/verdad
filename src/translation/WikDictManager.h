@@ -26,7 +26,8 @@ struct OfflineTranslationResult {
     std::vector<std::string> lemmas;
     std::vector<std::string> partsOfSpeech;
     std::vector<std::string> grammaticalDetails;
-    bool inferredAnalysis = false;
+    bool morphologyDerived = false;
+    std::vector<std::string> morphologyProviders;
     std::string attribution;
 };
 
@@ -37,7 +38,7 @@ struct WikDictScanIssue {
 
 struct WikDictScanReport {
     std::vector<TranslationLanguagePair> pairs;
-    std::vector<std::string> analysisLanguages;
+    std::vector<std::string> morphologyLanguages;
     std::vector<WikDictScanIssue> issues;
 };
 

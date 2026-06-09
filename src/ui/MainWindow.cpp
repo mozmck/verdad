@@ -1058,12 +1058,12 @@ std::string offlineTranslationPairsLabel(const WikDictScanReport& report) {
         label << pair.sourceLanguage << " -> " << pair.targetLanguage;
         hasDetectedResource = true;
     }
-    for (const auto& language : report.analysisLanguages) {
+    for (const auto& language : report.morphologyLanguages) {
         if (hasDetectedResource) label << ", ";
-        label << language << " analysis";
+        label << language << " Apertium morphology";
         hasDetectedResource = true;
     }
-    if (!hasDetectedResource) label << "No WikDict resources";
+    if (!hasDetectedResource) label << "No offline translation resources";
     return label.str();
 }
 
@@ -2372,35 +2372,30 @@ void MainWindow::applyPendingWordInfo() {
                         << htmlEscape(languageDisplayName(
                                translation->targetLanguage))
                         << "</span>";
-        for (const auto& gloss : translation->glosses) {
-            translationHtml
-                << "<span class=\"mag-line mag-translation-gloss\">"
-                << htmlEscape(gloss) << "</span>";
-        }
         if (!translation->lemmas.empty()) {
             translationHtml
                 << "<span class=\"mag-line mag-translation-metadata\"><b>"
-                << (translation->inferredAnalysis ? "Lemma (inferred): "
-                                                  : "Lemma: ")
+                << (translation->morphologyDerived ? "From: " : "Lemma: ")
                 << "</b>"
                 << htmlEscape(joinDisplayValues(translation->lemmas))
                 << "</span>";
         }
-        if (!translation->partsOfSpeech.empty()) {
-            translationHtml
-                << "<span class=\"mag-line mag-translation-metadata\"><b>"
-                << "Part of speech: </b>"
-                << htmlEscape(joinDisplayValues(translation->partsOfSpeech))
-                << "</span>";
-        }
+        std::vector<std::string> grammar = translation->partsOfSpeech;
         for (const auto& detail : translation->grammaticalDetails) {
+            if (std::find(grammar.begin(), grammar.end(), detail) == grammar.end()) {
+                grammar.push_back(detail);
+            }
+        }
+        if (!grammar.empty()) {
             translationHtml
                 << "<span class=\"mag-line mag-translation-metadata\">"
-                << htmlEscape(detail)
-                << (translation->inferredAnalysis &&
-                            detail.rfind("Form:", 0) == 0
-                        ? " (inferred)"
-                        : "")
+                << htmlEscape(joinDisplayValues(grammar))
+                << "</span>";
+        }
+        for (const auto& gloss : translation->glosses) {
+            translationHtml
+                << "<span class=\"mag-line mag-translation-gloss\">"
+                << htmlEscape(gloss)
                 << "</span>";
         }
         translationHtml
