@@ -195,15 +195,19 @@ FLTK 1.4.4 is built statically from `libs/fltk`, and litehtml is built from
 `libs/litehtml`. `data/master.css` and `data/help.html` are copied into the
 build tree automatically.
 
-Typical Linux runtime dependencies are:
+Linux packages and prebuilt bundles include the SWORD shared library and its
+common runtime data. They still use the host system for SWORD's lower-level
+dependencies and Verdad's other runtime libraries. On Debian and Ubuntu, a
+typical runtime set is:
 
 ```bash
-sudo apt install libsword1.9.0 libsword-common libsqlite3-0 \
+sudo apt install libsqlite3-0 \
     libx11-6 libxext6 libxinerama1 libxfixes3 \
     libxcursor1 libxrender1 libxft2 libfontconfig1
 ```
 
-The exact `libsword` runtime package name varies by distribution release.
+The generated Debian package declares the exact additional dependencies needed
+by the bundled SWORD build on the packaging host.
 
 ## Packaging
 
@@ -221,23 +225,33 @@ cmake --build build --target bundle
 cmake --build build --target deb
 ```
 
-The Linux AppImage bundles the SWORD runtime and common data but not Bible or
-other SWORD modules. The archive and Debian package use the host's runtime
-libraries. GitHub Actions builds and packages Linux, macOS, and Windows
-artifacts.
+The Linux AppImage, archive, and Debian package bundle the SWORD runtime and
+common data but not Bible or other SWORD modules. Verdad still discovers
+modules in the standard system and user SWORD locations. The private library is
+installed under `lib/verdad`; Debian common data is kept under
+`share/verdad/sword` to avoid colliding with `libsword-common`. Other
+applications continue using the system SWORD library. GitHub Actions builds and
+packages Linux, macOS, and Windows artifacts.
 
-## Install from source
+## Install on Linux
 
-Use the repository installer after building:
+To install directly from a source build:
 
 ```bash
-./install.sh
+cmake --install build --prefix "$HOME/.local"
 ```
 
-It installs under `~/.local` by default. Run it with `sudo` for a system-wide
-installation under `/usr/local`.
+To use the standalone installer, build and unpack the prebuilt bundle, then run
+`install.sh` from inside the unpacked directory:
 
-Useful options:
+```bash
+cmake --build build --target bundle
+tar -xzf build/verdad-*.tar.gz -C /tmp
+/tmp/verdad-*/install.sh
+```
+
+The standalone installer uses `~/.local` by default. Run it with `sudo` for a
+system-wide installation under `/usr/local`. Useful options:
 
 - `./install.sh --user`
 - `./install.sh --system`
