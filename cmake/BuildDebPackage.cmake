@@ -21,6 +21,35 @@ if(NOT EXISTS "${PACKAGE_ROOT}/usr/bin/verdad")
     message(FATAL_ERROR "Missing staged executable: ${PACKAGE_ROOT}/usr/bin/verdad")
 endif()
 
+set(private_library_dir "${PACKAGE_ROOT}/usr/lib/verdad")
+if(NOT IS_DIRECTORY "${private_library_dir}")
+    message(FATAL_ERROR
+        "Missing staged private library directory: ${private_library_dir}")
+endif()
+
+file(GLOB private_sword_candidates "${private_library_dir}/libsword.so*")
+set(private_sword_libraries "")
+foreach(candidate IN LISTS private_sword_candidates)
+    if(NOT IS_SYMLINK "${candidate}")
+        list(APPEND private_sword_libraries "${candidate}")
+    endif()
+endforeach()
+if(NOT private_sword_libraries)
+    message(FATAL_ERROR
+        "Missing staged private libsword runtime under ${private_library_dir}")
+endif()
+
+set(private_sword_data_dir "${PACKAGE_ROOT}/usr/share/verdad/sword")
+if(NOT IS_DIRECTORY "${private_sword_data_dir}/locales.d" OR
+   NOT EXISTS "${private_sword_data_dir}/mods.d/globals.conf")
+    message(FATAL_ERROR
+        "Missing staged private SWORD data under ${private_sword_data_dir}")
+endif()
+if(EXISTS "${PACKAGE_ROOT}/usr/share/sword")
+    message(FATAL_ERROR
+        "Debian SWORD data must not collide with the system /usr/share/sword tree")
+endif()
+
 set(package_control_dir "${PACKAGE_ROOT}/DEBIAN")
 set(debian_work_dir "${WORK_DIR}/debian")
 set(debian_control "${debian_work_dir}/control")
@@ -44,7 +73,9 @@ execute_process(
     COMMAND ${DPKG_SHLIBDEPS_EXECUTABLE}
             -O
             -T${debian_substvars}
+            -l${private_library_dir}
             ${PACKAGE_ROOT}/usr/bin/verdad
+            ${private_sword_libraries}
     WORKING_DIRECTORY ${WORK_DIR}
     RESULT_VARIABLE shlibdeps_result
     OUTPUT_VARIABLE shlibdeps_output
@@ -70,6 +101,11 @@ if(DEFINED PACKAGE_EXTRA_DEPENDS AND NOT "${PACKAGE_EXTRA_DEPENDS}" STREQUAL "")
         set(package_depends "${package_depends}, ${PACKAGE_EXTRA_DEPENDS}")
     endif()
 endif()
+if(package_depends MATCHES "(^|,)[ \t]*libsword")
+    message(FATAL_ERROR
+        "Generated package still depends on a system libsword package: "
+        "${package_depends}")
+endif()
 
 file(GLOB_RECURSE installed_entries RELATIVE "${PACKAGE_ROOT}" "${PACKAGE_ROOT}/usr/*")
 list(SORT installed_entries)
@@ -78,7 +114,7 @@ set(installed_size_bytes 0)
 set(md5_lines "")
 foreach(relative_path IN LISTS installed_entries)
     set(absolute_path "${PACKAGE_ROOT}/${relative_path}")
-    if(IS_DIRECTORY "${absolute_path}")
+    if(IS_DIRECTORY "${absolute_path}" OR IS_SYMLINK "${absolute_path}")
         continue()
     endif()
 

@@ -1,0 +1,6 @@
+^habló/hablar<vblex><ifi><p3><sg>$
+^hablaron/hablar<vblex><ifi><p3><pl>$
+^dijo/decir<vblex><ifi><p3><sg>$
+^mujeres/mujer<n><f><pl>$
+^levantándose/levantar<vblex><ger>+se<prn><enc><ref><p3><mf><sp>$
+^vino/vino<n><m><sg>/venir<vblex><ifi><p3><sg>$

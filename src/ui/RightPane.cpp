@@ -32,6 +32,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cctype>
+#include <ctime>
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
@@ -1267,9 +1268,25 @@ bool pathsEqual(const std::string& a, const std::string& b) {
     return left == right;
 }
 
+std::string filenameTimestamp() {
+    std::time_t now = std::time(nullptr);
+    std::tm tmValue{};
+#ifdef _WIN32
+    localtime_s(&tmValue, &now);
+#else
+    localtime_r(&now, &tmValue);
+#endif
+
+    char buffer[32] = {};
+    if (std::strftime(buffer, sizeof(buffer), "%Y%m%d-%H%M%S", &tmValue) == 0) {
+        return std::to_string(static_cast<long long>(now));
+    }
+    return buffer;
+}
+
 std::string studypadDirectory(VerdadApp* app) {
     if (!app) return "";
-    return normalizePath((fs::path(app->getConfigDir()) / "studypad").string());
+    return normalizePath(app->getStudypadDir());
 }
 
 bool ensureDirectoryExists(const std::string& path) {
@@ -5318,6 +5335,86 @@ bool RightPane::maybeSaveDocumentChanges() {
     return true;
 }
 
+bool RightPane::currentDocumentHasUnsavedChanges() const {
+    return documentsEditor_ && documentsEditor_->isModified();
+}
+
+void RightPane::refreshDocumentsForExternalChange(bool reloadCurrentDocument) {
+    refreshDocumentChoices();
+
+    if (reloadCurrentDocument && !currentDocumentPath_.empty() && documentsEditor_) {
+        std::string path = currentDocumentPath_;
+        std::error_code ec;
+        bool exists = fs::exists(fs::path(path), ec) && !ec;
+        if (exists) {
+            openDocument(path, visibleTopTab() == TopTab::Documents);
+        } else if (!documentsEditor_->isModified()) {
+            currentDocumentPath_.clear();
+            documentsEditor_->clearDocument();
+            documentsEditor_->setModified(false);
+            refreshDocumentChoices();
+        }
+    }
+
+    updateDocumentChrome();
+}
+
+std::string RightPane::saveCurrentDocumentConflictCopy() {
+    if (!documentsEditor_ || !documentsEditor_->isModified()) return "";
+
+    std::string directory = studypadDirectory(app_);
+    if (!ensureDirectoryExists(directory)) return "";
+
+    std::string baseName =
+        currentDocumentPath_.empty() ? "Untitled" : studypadDisplayName(currentDocumentPath_);
+    baseName = sanitizeStudypadName(baseName);
+    if (baseName.empty()) baseName = "Untitled";
+
+    std::string stamp = filenameTimestamp();
+    fs::path candidate;
+    for (int i = 0; i < 100; ++i) {
+        std::string suffix = ".local-conflict-" + stamp;
+        if (i > 0) suffix += "-" + std::to_string(i);
+        candidate = fs::path(directory) / (baseName + suffix + ".studypad");
+        std::error_code ec;
+        if (!fs::exists(candidate, ec)) break;
+    }
+
+    std::ofstream out(candidate.string());
+    if (!out.is_open()) return "";
+    out << documentsEditor_->html();
+    out.close();
+    if (!out) return "";
+
+    refreshDocumentChoices();
+    updateDocumentChrome();
+    return normalizePath(candidate.string());
+}
+
+void RightPane::onUserDataDirectoryChanged(const std::string& oldDirectory,
+                                           const std::string& newDirectory) {
+    fs::path oldStudypadDir = fs::path(normalizePath(oldDirectory)) / "studypad";
+    fs::path newStudypadDir = fs::path(normalizePath(newDirectory)) / "studypad";
+
+    if (!currentDocumentPath_.empty()) {
+        fs::path current(normalizePath(currentDocumentPath_));
+        if (pathsEqual(current.parent_path().string(), oldStudypadDir.string())) {
+            fs::path replacement = newStudypadDir / current.filename();
+            std::error_code ec;
+            if (fs::exists(replacement, ec) && !ec) {
+                currentDocumentPath_ = normalizePath(replacement.string());
+            } else {
+                currentDocumentPath_.clear();
+            }
+        }
+    }
+
+    refreshDocumentChoices();
+    populateReadingPlanChoices();
+    refreshDailyWorkspace(true);
+    updateDocumentChrome();
+}
+
 bool RightPane::saveDocumentToPath(const std::string& path) {
     if (!documentsEditor_ || path.empty()) return false;
 
@@ -5666,7 +5763,7 @@ void RightPane::onCommentaryHover(const std::string& word,
                                   const std::string& href,
                                   const std::string& strong,
                                   const std::string& morph,
-                                  const std::string& /*module*/,
+                                  const std::string& module,
                                   int x, int y) {
     if (!app_ || !app_->mainWindow()) return;
 
@@ -5675,8 +5772,14 @@ void RightPane::onCommentaryHover(const std::string& word,
         return;
     }
 
-    if (!strong.empty() || !morph.empty() || !href.empty()) {
-        app_->mainWindow()->showWordInfo(word, href, strong, morph, x, y);
+    std::string sourceModule =
+        module.empty() ? currentCommentaryModule() : module;
+    bool translationEligible =
+        app_->offlineTranslationSettings().enabled && !word.empty();
+    if (!strong.empty() || !morph.empty() || !href.empty() ||
+        translationEligible) {
+        app_->mainWindow()->showWordInfo(
+            word, href, strong, morph, x, y, sourceModule);
     } else {
         app_->mainWindow()->hideWordInfo();
     }
@@ -5730,7 +5833,7 @@ void RightPane::onGeneralBookHover(const std::string& word,
                                    const std::string& href,
                                    const std::string& strong,
                                    const std::string& morph,
-                                   const std::string& /*module*/,
+                                   const std::string& module,
                                    int x, int y) {
     if (!app_ || !app_->mainWindow()) return;
 
@@ -5739,8 +5842,14 @@ void RightPane::onGeneralBookHover(const std::string& word,
         return;
     }
 
-    if (!strong.empty() || !morph.empty() || !href.empty()) {
-        app_->mainWindow()->showWordInfo(word, href, strong, morph, x, y);
+    std::string sourceModule =
+        module.empty() ? currentGeneralBookModule() : module;
+    bool translationEligible =
+        app_->offlineTranslationSettings().enabled && !word.empty();
+    if (!strong.empty() || !morph.empty() || !href.empty() ||
+        translationEligible) {
+        app_->mainWindow()->showWordInfo(
+            word, href, strong, morph, x, y, sourceModule);
     } else {
         app_->mainWindow()->hideWordInfo();
     }

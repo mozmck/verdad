@@ -17,6 +17,8 @@
 #include "app/PerfTrace.h"
 #include "tags/TagManager.h"
 
+#include <sqlite3.h>
+
 #include <FL/Fl.H>
 #include <FL/Fl_Native_File_Chooser.H>
 #include <FL/fl_ask.H>
@@ -41,12 +43,15 @@
 #include <cctype>
 #include <chrono>
 #include <cstdlib>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <optional>
 #include <regex>
 #include <set>
 #include <sstream>
 #include <system_error>
+#include <unordered_map>
 #include <unordered_set>
 #include <vector>
 
@@ -57,6 +62,8 @@ namespace fs = std::filesystem;
 constexpr const char* kVerdadProjectUrl = "https://github.com/mozmck/verdad";
 constexpr int kDefaultMaxCachedTabDocs = 4;
 constexpr double kDailyDateCheckSeconds = 60.0 * 60.0;
+constexpr double kDefaultUserDataSyncPollSeconds = 120.0;
+constexpr double kDefaultUserDataSyncDebounceSeconds = 60.0;
 
 std::string trimCopy(const std::string& s) {
     size_t start = 0;
@@ -100,6 +107,37 @@ int configuredMaxCachedTabDocs() {
         if (parsed > 1024) return 1024;
         return static_cast<int>(parsed);
     }();
+    return value;
+}
+
+double configuredSeconds(const char* envName,
+                         double fallback,
+                         double minValue,
+                         double maxValue) {
+    const char* env = std::getenv(envName);
+    if (!env || !*env) return fallback;
+
+    char* end = nullptr;
+    double parsed = std::strtod(env, &end);
+    if (end == env) return fallback;
+    return std::clamp(parsed, minValue, maxValue);
+}
+
+double userDataSyncPollSeconds() {
+    static const double value = configuredSeconds(
+        "VERDAD_USER_DATA_SYNC_POLL_SECONDS",
+        kDefaultUserDataSyncPollSeconds,
+        5.0,
+        60.0 * 60.0 * 12.0);
+    return value;
+}
+
+double userDataSyncDebounceSeconds() {
+    static const double value = configuredSeconds(
+        "VERDAD_USER_DATA_SYNC_DEBOUNCE_SECONDS",
+        kDefaultUserDataSyncDebounceSeconds,
+        1.0,
+        60.0 * 60.0);
     return value;
 }
 
@@ -618,6 +656,267 @@ std::string pathLeaf(const std::string& path) {
     return path.substr(slash + 1);
 }
 
+std::string normalizePath(const std::string& path) {
+    if (path.empty()) return "";
+
+    std::error_code ec;
+    fs::path normalized(path);
+    fs::path absolute = fs::absolute(normalized, ec);
+    if (!ec) normalized = absolute;
+    normalized = normalized.lexically_normal();
+    return normalized.string();
+}
+
+bool pathsEqual(const std::string& a, const std::string& b) {
+    if (a.empty() || b.empty()) return a.empty() && b.empty();
+
+    std::string left = normalizePath(a);
+    std::string right = normalizePath(b);
+#ifdef _WIN32
+    std::transform(left.begin(), left.end(), left.begin(),
+                   [](unsigned char c) {
+                       return static_cast<char>(std::tolower(c));
+                   });
+    std::transform(right.begin(), right.end(), right.begin(),
+                   [](unsigned char c) {
+                       return static_cast<char>(std::tolower(c));
+                   });
+#endif
+    return left == right;
+}
+
+bool pathIsInsideDirectory(const std::string& path, const std::string& directory) {
+    if (path.empty() || directory.empty()) return false;
+
+    fs::path target(normalizePath(path));
+    fs::path base(normalizePath(directory));
+    auto targetIt = target.begin();
+    auto baseIt = base.begin();
+    for (; baseIt != base.end(); ++baseIt, ++targetIt) {
+        if (targetIt == target.end() || *targetIt != *baseIt) return false;
+    }
+    return true;
+}
+
+bool filenameLooksLikeSyncConflict(const fs::path& path) {
+    return path.filename().string().find(".sync-conflict-") != std::string::npos;
+}
+
+std::string fileMetadataStamp(const fs::path& path) {
+    std::error_code ec;
+    if (!fs::exists(path, ec) || ec) return "missing";
+
+    std::string type = "other";
+    uintmax_t size = 0;
+    if (fs::is_directory(path, ec) && !ec) {
+        type = "dir";
+    } else if (fs::is_regular_file(path, ec) && !ec) {
+        type = "file";
+        size = fs::file_size(path, ec);
+        if (ec) size = 0;
+    }
+
+    ec.clear();
+    auto writeTime = fs::last_write_time(path, ec);
+    long long writeTicks = ec ? 0 : writeTime.time_since_epoch().count();
+    return type + ":" + std::to_string(size) + ":" + std::to_string(writeTicks);
+}
+
+void hashBytes(uint64_t& hash, const void* data, size_t size) {
+    static constexpr uint64_t kFnvPrime = 1099511628211ULL;
+    const auto* bytes = static_cast<const unsigned char*>(data);
+    for (size_t i = 0; i < size; ++i) {
+        hash ^= static_cast<uint64_t>(bytes[i]);
+        hash *= kFnvPrime;
+    }
+}
+
+void hashText(uint64_t& hash, const char* text) {
+    if (!text) {
+        const char marker = '\0';
+        hashBytes(hash, &marker, 1);
+        return;
+    }
+    hashBytes(hash, text, std::strlen(text));
+    const char marker = '\xff';
+    hashBytes(hash, &marker, 1);
+}
+
+std::string sqliteContentStamp(const fs::path& path,
+                               const std::vector<const char*>& queries) {
+    std::error_code ec;
+    if (!fs::exists(path, ec) || ec) return "missing";
+
+    sqlite3* db = nullptr;
+    int rc = sqlite3_open_v2(path.string().c_str(),
+                             &db,
+                             SQLITE_OPEN_READONLY | SQLITE_OPEN_FULLMUTEX,
+                             nullptr);
+    if (rc != SQLITE_OK || !db) {
+        if (db) sqlite3_close(db);
+        return "db-unreadable:" + fileMetadataStamp(path);
+    }
+
+    uint64_t hash = 1469598103934665603ULL;
+    int64_t rowCount = 0;
+    bool ok = true;
+
+    for (const char* sql : queries) {
+        sqlite3_stmt* stmt = nullptr;
+        if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) != SQLITE_OK) {
+            ok = false;
+            if (stmt) sqlite3_finalize(stmt);
+            break;
+        }
+
+        hashText(hash, sql);
+        int stepRc = SQLITE_ROW;
+        while ((stepRc = sqlite3_step(stmt)) == SQLITE_ROW) {
+            ++rowCount;
+            const char rowMarker = '\x1e';
+            hashBytes(hash, &rowMarker, 1);
+            int columnCount = sqlite3_column_count(stmt);
+            for (int i = 0; i < columnCount; ++i) {
+                const char columnMarker = '\x1f';
+                hashBytes(hash, &columnMarker, 1);
+                if (sqlite3_column_type(stmt, i) == SQLITE_NULL) {
+                    hashText(hash, nullptr);
+                } else {
+                    const auto* text =
+                        reinterpret_cast<const char*>(sqlite3_column_text(stmt, i));
+                    hashText(hash, text ? text : "");
+                }
+            }
+        }
+        if (stepRc != SQLITE_DONE) ok = false;
+        sqlite3_finalize(stmt);
+        if (!ok) break;
+    }
+
+    sqlite3_close(db);
+    if (!ok) return "db-error:" + fileMetadataStamp(path);
+
+    std::ostringstream out;
+    out << "sqlite-content:" << rowCount << ':' << std::hex << hash;
+    return out.str();
+}
+
+std::string tagsDbContentStamp(const fs::path& path) {
+    return sqliteContentStamp(path, {
+        "SELECT name, color FROM tags ORDER BY name;",
+        "SELECT resource_kind, module_name, source_key, selection_text, tag_name "
+        "FROM tag_items ORDER BY resource_kind, module_name, source_key, selection_text, tag_name;",
+        "SELECT verse_key, tag_name FROM verse_tags ORDER BY verse_key, tag_name;",
+    });
+}
+
+std::string readingPlansDbContentStamp(const fs::path& path) {
+    return sqliteContentStamp(path, {
+        "SELECT id, name, description, color FROM reading_plans ORDER BY id;",
+        "SELECT id, plan_id, day_number, title, completed "
+        "FROM reading_plan_days ORDER BY id;",
+        "SELECT id, day_id, sort_order, reference "
+        "FROM reading_plan_day_passages ORDER BY id;",
+        "SELECT plan_id, start_date FROM reading_plan_schedules ORDER BY plan_id;",
+        "SELECT id, plan_id, day_number, start_date "
+        "FROM reading_plan_schedule_offsets ORDER BY id;",
+        "SELECT module_name, start_date FROM sword_reading_plan_schedules ORDER BY module_name;",
+        "SELECT id, module_name, day_number, start_date "
+        "FROM sword_reading_plan_schedule_offsets ORDER BY id;",
+        "SELECT module_name, day_number, completed "
+        "FROM sword_reading_plan_progress ORDER BY module_name, day_number;",
+    });
+}
+
+std::string pathStateStamp(const fs::path& path) {
+    const std::string filename = path.filename().string();
+    if (filename == "tags.db") {
+        return tagsDbContentStamp(path);
+    }
+    if (filename == "reading_plans.db") {
+        return readingPlansDbContentStamp(path);
+    }
+
+    return fileMetadataStamp(path);
+}
+
+void addRequiredSnapshotPath(std::unordered_map<std::string, std::string>& snapshot,
+                             const fs::path& path) {
+    snapshot[normalizePath(path.string())] = pathStateStamp(path);
+}
+
+void addOptionalSnapshotPath(std::unordered_map<std::string, std::string>& snapshot,
+                             const fs::path& path) {
+    std::error_code ec;
+    if (!fs::exists(path, ec) || ec) return;
+    snapshot[normalizePath(path.string())] = pathStateStamp(path);
+}
+
+std::unordered_map<std::string, std::string> buildUserDataSnapshot(VerdadApp* app) {
+    std::unordered_map<std::string, std::string> snapshot;
+    if (!app) return snapshot;
+
+    fs::path userDataDir(app->getUserDataDir());
+    fs::path studypadDir(app->getStudypadDir());
+
+    addRequiredSnapshotPath(snapshot, userDataDir / "tags.db");
+    addRequiredSnapshotPath(snapshot, userDataDir / "reading_plans.db");
+    addRequiredSnapshotPath(snapshot, studypadDir);
+
+    std::error_code ec;
+    fs::directory_iterator studypadIt(studypadDir, ec);
+    fs::directory_iterator end;
+    while (!ec && studypadIt != end) {
+        if (fs::is_regular_file(studypadIt->path(), ec) && !ec) {
+            addOptionalSnapshotPath(snapshot, studypadIt->path());
+        }
+        ec.clear();
+        studypadIt.increment(ec);
+    }
+
+    ec.clear();
+    fs::directory_iterator dataIt(userDataDir, ec);
+    while (!ec && dataIt != end) {
+        if (fs::is_regular_file(dataIt->path(), ec) &&
+            !ec &&
+            filenameLooksLikeSyncConflict(dataIt->path())) {
+            addOptionalSnapshotPath(snapshot, dataIt->path());
+        }
+        ec.clear();
+        dataIt.increment(ec);
+    }
+
+    return snapshot;
+}
+
+std::vector<std::string> changedSnapshotPaths(
+    const std::unordered_map<std::string, std::string>& oldSnapshot,
+    const std::unordered_map<std::string, std::string>& newSnapshot) {
+    std::vector<std::string> changed;
+    for (const auto& kv : oldSnapshot) {
+        auto it = newSnapshot.find(kv.first);
+        if (it == newSnapshot.end() || it->second != kv.second) {
+            changed.push_back(kv.first);
+        }
+    }
+    for (const auto& kv : newSnapshot) {
+        if (oldSnapshot.find(kv.first) == oldSnapshot.end()) {
+            changed.push_back(kv.first);
+        }
+    }
+    std::sort(changed.begin(), changed.end());
+    changed.erase(std::unique(changed.begin(), changed.end()), changed.end());
+    return changed;
+}
+
+bool snapshotHasSyncConflict(
+    const std::unordered_map<std::string, std::string>& snapshot) {
+    return std::any_of(snapshot.begin(), snapshot.end(),
+                       [](const auto& kv) {
+                           return filenameLooksLikeSyncConflict(fs::path(kv.first));
+                       });
+}
+
 bool ensureDirectoryExists(const std::string& path) {
     if (path.empty()) return false;
 
@@ -748,6 +1047,71 @@ std::string languageDisplayName(const std::string& languageCode) {
                        return static_cast<char>(std::toupper(c));
                    });
     return label;
+}
+
+std::string offlineTranslationPairsLabel(const WikDictScanReport& report) {
+    std::ostringstream label;
+    label << "Detected: ";
+    bool hasDetectedResource = false;
+    for (const auto& pair : report.pairs) {
+        if (hasDetectedResource) label << ", ";
+        label << pair.sourceLanguage << " -> " << pair.targetLanguage;
+        hasDetectedResource = true;
+    }
+    for (const auto& language : report.morphologyLanguages) {
+        if (hasDetectedResource) label << ", ";
+        label << language << " Apertium morphology";
+        hasDetectedResource = true;
+    }
+    if (!hasDetectedResource) label << "No offline translation resources";
+    return label.str();
+}
+
+std::string joinDisplayValues(const std::vector<std::string>& values) {
+    std::ostringstream joined;
+    constexpr size_t kDisplayedValues = 6;
+    const size_t count = std::min(values.size(), kDisplayedValues);
+    for (size_t i = 0; i < count; ++i) {
+        if (i) joined << ", ";
+        joined << values[i];
+    }
+    if (values.size() > count) {
+        joined << ", +" << (values.size() - count) << " variants";
+    }
+    return joined.str();
+}
+
+std::string offlineTranslationIssuesLabel(const WikDictScanReport& report) {
+    if (report.issues.empty()) return "Errors: None";
+
+    std::ostringstream label;
+    label << "Errors: ";
+    constexpr size_t kDisplayedIssues = 3;
+    const size_t count = std::min(report.issues.size(), kDisplayedIssues);
+    for (size_t i = 0; i < count; ++i) {
+        if (i) label << "; ";
+        if (!report.issues[i].fileName.empty()) {
+            label << report.issues[i].fileName << ": ";
+        }
+        label << report.issues[i].message;
+    }
+    if (report.issues.size() > count) {
+        label << "; plus " << (report.issues.size() - count) << " more";
+    }
+    return label.str();
+}
+
+void updateOfflineTranslationScanLabels(Fl_Box* detectedBox,
+                                        Fl_Box* issuesBox,
+                                        const WikDictScanReport& report) {
+    if (detectedBox) {
+        detectedBox->copy_label(offlineTranslationPairsLabel(report).c_str());
+        detectedBox->redraw();
+    }
+    if (issuesBox) {
+        issuesBox->copy_label(offlineTranslationIssuesLabel(report).c_str());
+        issuesBox->redraw();
+    }
 }
 
 std::vector<std::string> dictionaryLanguageCodes(
@@ -957,6 +1321,9 @@ MainWindow::MainWindow(VerdadApp* app, int W, int H, const char* title)
     lastDailyDateIso_ = reading::formatIsoDate(reading::today());
     Fl::add_timeout(kDailyDateCheckSeconds, onDailyDateCheck, this);
     dailyDateCheckScheduled_ = true;
+    resetUserDataMonitorSnapshot();
+    Fl::add_timeout(userDataSyncPollSeconds(), onUserDataSyncPoll, this);
+    userDataSyncPollScheduled_ = true;
 }
 
 MainWindow::~MainWindow() {
@@ -979,6 +1346,10 @@ MainWindow::~MainWindow() {
     if (dailyDateCheckScheduled_) {
         Fl::remove_timeout(onDailyDateCheck, this);
         dailyDateCheckScheduled_ = false;
+    }
+    if (userDataSyncPollScheduled_) {
+        Fl::remove_timeout(onUserDataSyncPoll, this);
+        userDataSyncPollScheduled_ = false;
     }
     if (searchHelpWindow_) {
         searchHelpWindow_->hide();
@@ -1907,11 +2278,13 @@ void MainWindow::showGeneralBookEntry(const std::string& module,
 
 void MainWindow::showWordInfo(const std::string& word, const std::string& href,
                                const std::string& strong, const std::string& morph,
-                               int /*screenX*/, int /*screenY*/) {
+                               int /*screenX*/, int /*screenY*/,
+                               const std::string& sourceModule) {
     pendingWordInfo_.word = word;
     pendingWordInfo_.href = href;
     pendingWordInfo_.strong = strong;
     pendingWordInfo_.morph = morph;
+    pendingWordInfo_.sourceModule = sourceModule;
     pendingWordInfo_.tabIndex = activeStudyTab_;
 
     if (hoverDelayScheduled_) {
@@ -1930,7 +2303,8 @@ void MainWindow::showWordInfo(const std::string& word, const std::string& href,
 void MainWindow::showWordInfoNow(const std::string& word,
                                  const std::string& href,
                                  const std::string& strong,
-                                 const std::string& morph) {
+                                 const std::string& morph,
+                                 const std::string& sourceModule) {
     if (hoverDelayScheduled_) {
         Fl::remove_timeout(onHoverDelayTimeout, this);
         hoverDelayScheduled_ = false;
@@ -1940,6 +2314,7 @@ void MainWindow::showWordInfoNow(const std::string& word,
     pendingWordInfo_.href = href;
     pendingWordInfo_.strong = strong;
     pendingWordInfo_.morph = morph;
+    pendingWordInfo_.sourceModule = sourceModule;
     pendingWordInfo_.tabIndex = activeStudyTab_;
     applyPendingWordInfo();
 }
@@ -1981,7 +2356,69 @@ void MainWindow::applyPendingWordInfo() {
 
     std::vector<std::string> strongTokens = extractStrongsTokens(strongNum);
     std::string morphKey = trimCopy(morphCode);
-    if (strongTokens.empty() && morphKey.empty()) return;
+    if (strongTokens.empty() && morphKey.empty()) {
+        if (!app_ || !app_->offlineTranslationSettings().enabled ||
+            !pendingWordInfo_.href.empty()) {
+            return;
+        }
+
+        std::string sourceLanguage = app_->sourceLanguageForModule(
+            pendingWordInfo_.sourceModule);
+        std::optional<OfflineTranslationResult> translation =
+            app_->wikDictManager().lookup(
+                sourceLanguage, "en", pendingWordInfo_.word);
+        if (!translation) return;
+
+        std::ostringstream translationHtml;
+        translationHtml << "<div class=\"mag-lite mag-translation\">";
+        translationHtml << "<span class=\"mag-line mag-wordline\">"
+                        << htmlEscape(translation->sourceWord) << "</span>";
+        translationHtml << "<span class=\"mag-line mag-translation-label\">"
+                        << htmlEscape(languageDisplayName(
+                               translation->targetLanguage))
+                        << "</span>";
+        if (translation->morphologyDerived) {
+            for (const auto& analysis : translation->morphologyAnalyses) {
+                translationHtml
+                    << "<span class=\"mag-line mag-translation-metadata\"><b>"
+                    << "From: </b>" << htmlEscape(analysis.lemma);
+                if (!analysis.partOfSpeech.empty()) {
+                    translationHtml << " ("
+                                    << htmlEscape(analysis.partOfSpeech)
+                                    << ")";
+                }
+                translationHtml << "</span>";
+                if (!analysis.grammaticalVariants.empty()) {
+                    translationHtml
+                        << "<span class=\"mag-line mag-translation-metadata\">"
+                        << htmlEscape(joinDisplayValues(
+                               analysis.grammaticalVariants))
+                        << "</span>";
+                }
+                for (const auto& gloss : analysis.glosses) {
+                    translationHtml
+                        << "<span class=\"mag-line mag-translation-gloss\">"
+                        << htmlEscape(gloss)
+                        << "</span>";
+                }
+            }
+        } else {
+            for (const auto& gloss : translation->glosses) {
+                translationHtml
+                    << "<span class=\"mag-line mag-translation-gloss\">"
+                    << htmlEscape(gloss)
+                    << "</span>";
+            }
+        }
+        translationHtml
+            << "<span class=\"mag-line mag-translation-attribution\">"
+            << htmlEscape(translation->attribution) << "</span></div>";
+
+        if (leftPane_) {
+            leftPane_->setPreviewText(translationHtml.str());
+        }
+        return;
+    }
 
     std::ostringstream html;
     html << "<div class=\"mag-lite\">";
@@ -2463,6 +2900,135 @@ void MainWindow::onDailyDateCheck(void* data) {
     self->dailyDateCheckScheduled_ = true;
 }
 
+void MainWindow::resetUserDataMonitorSnapshot() {
+    userDataSnapshot_ = buildUserDataSnapshot(app_);
+    pendingUserDataSnapshot_.clear();
+    pendingUserDataChangedPaths_.clear();
+    pendingUserDataChange_ = false;
+}
+
+void MainWindow::pollUserDataSyncChanges() {
+    auto currentSnapshot = buildUserDataSnapshot(app_);
+    std::vector<std::string> changed =
+        changedSnapshotPaths(userDataSnapshot_, currentSnapshot);
+    if (changed.empty()) {
+        pendingUserDataSnapshot_.clear();
+        pendingUserDataChangedPaths_.clear();
+        pendingUserDataChange_ = false;
+        return;
+    }
+
+    auto now = std::chrono::steady_clock::now();
+    if (!pendingUserDataChange_ ||
+        pendingUserDataSnapshot_ != currentSnapshot) {
+        pendingUserDataSnapshot_ = std::move(currentSnapshot);
+        pendingUserDataChangedPaths_ = std::move(changed);
+        pendingUserDataChangeSince_ = now;
+        pendingUserDataChange_ = true;
+        return;
+    }
+
+    auto quietFor = std::chrono::duration<double>(now - pendingUserDataChangeSince_).count();
+    if (quietFor < userDataSyncDebounceSeconds()) return;
+
+    applyUserDataSyncChanges();
+}
+
+void MainWindow::applyUserDataSyncChanges() {
+    if (!app_ || !pendingUserDataChange_) return;
+
+    bool tagsChanged = false;
+    bool readingPlansChanged = false;
+    bool studypadChanged = false;
+    bool currentDocumentChanged = false;
+
+    fs::path userDataDir(app_->getUserDataDir());
+    fs::path studypadDir(app_->getStudypadDir());
+    std::string currentDocumentPath =
+        rightPane_ ? rightPane_->currentDocumentPath() : std::string();
+    currentDocumentPath = normalizePath(currentDocumentPath);
+
+    for (const std::string& pathText : pendingUserDataChangedPaths_) {
+        fs::path path(pathText);
+        if (pathsEqual(pathText, (userDataDir / "tags.db").string())) {
+            tagsChanged = true;
+        } else if (pathsEqual(pathText, (userDataDir / "reading_plans.db").string())) {
+            readingPlansChanged = true;
+        }
+
+        if (pathIsInsideDirectory(pathText, studypadDir.string())) {
+            studypadChanged = true;
+            if (!currentDocumentPath.empty() && pathsEqual(pathText, currentDocumentPath)) {
+                currentDocumentChanged = true;
+            }
+        }
+
+        if (filenameLooksLikeSyncConflict(path)) {
+            studypadChanged = studypadChanged ||
+                              pathIsInsideDirectory(pathText, studypadDir.string());
+        }
+    }
+
+    bool conflictDetected = snapshotHasSyncConflict(pendingUserDataSnapshot_);
+    bool dirtyDocumentConflict = false;
+    std::string conflictCopyPath;
+    if (currentDocumentChanged && rightPane_ &&
+        rightPane_->currentDocumentHasUnsavedChanges()) {
+        dirtyDocumentConflict = true;
+        conflictCopyPath = rightPane_->saveCurrentDocumentConflictCopy();
+    }
+
+    if (tagsChanged) {
+        if (!app_->tagManager().load((userDataDir / "tags.db").string())) {
+            showTransientStatus("Failed to reload synced tags.", 8.0);
+        }
+    }
+    if (readingPlansChanged) {
+        if (!app_->readingPlanManager().load((userDataDir / "reading_plans.db").string())) {
+            showTransientStatus("Failed to reload synced reading plans.", 8.0);
+        }
+    }
+
+    if (tagsChanged || readingPlansChanged) {
+        refresh();
+    }
+    if (studypadChanged && rightPane_) {
+        rightPane_->refreshDocumentsForExternalChange(
+            currentDocumentChanged && !dirtyDocumentConflict);
+    }
+
+    if (dirtyDocumentConflict) {
+        if (!conflictCopyPath.empty()) {
+            showTransientStatus("Synced studypad changed; local edits were saved as a conflict copy.",
+                                8.0);
+        } else {
+            showTransientStatus("Synced studypad changed; unsaved local edits were kept.",
+                                8.0);
+        }
+    } else if (conflictDetected) {
+        showTransientStatus("Syncthing conflict file detected in user data folder.", 8.0);
+    } else if (tagsChanged || readingPlansChanged || studypadChanged) {
+        showTransientStatus("Reloaded synced user data.", 3.5);
+    }
+
+    userDataSnapshot_ = buildUserDataSnapshot(app_);
+    pendingUserDataSnapshot_.clear();
+    pendingUserDataChangedPaths_.clear();
+    pendingUserDataChange_ = false;
+}
+
+void MainWindow::onUserDataSyncPoll(void* data) {
+    auto* self = static_cast<MainWindow*>(data);
+    if (!self) return;
+
+    self->userDataSyncPollScheduled_ = false;
+    if (!self->shown()) return;
+
+    self->pollUserDataSyncChanges();
+    Fl::repeat_timeout(userDataSyncPollSeconds(), onUserDataSyncPoll, self);
+    self->userDataSyncPollScheduled_ = true;
+}
+
 void MainWindow::scheduleTabSnapshotEviction() {
     if (tabCacheEvictionScheduled_) return;
     Fl::add_timeout(0.0, onDeferredTabSnapshotEviction, this);
@@ -2616,13 +3182,16 @@ bool MainWindow::exportSettingsArchive(const std::string& archivePath,
 
     app_->tagManager().save();
     app_->readingPlanManager().save();
+    app_->tagManager().checkpoint();
+    app_->readingPlanManager().checkpoint();
     app_->savePreferences();
 
     fs::path configDir(app_->getConfigDir());
+    fs::path userDataDir(app_->getUserDataDir());
     fs::path prefsPath = configDir / "preferences.conf";
-    fs::path tagsPath = configDir / "tags.db";
-    fs::path readingPlansPath = configDir / "reading_plans.db";
-    fs::path studypadPath = configDir / "studypad";
+    fs::path tagsPath = userDataDir / "tags.db";
+    fs::path readingPlansPath = userDataDir / "reading_plans.db";
+    fs::path studypadPath = userDataDir / "studypad";
 
     std::error_code ec;
     if (!fs::exists(prefsPath, ec) || ec) {
@@ -2738,9 +3307,15 @@ bool MainWindow::importSettingsArchive(const std::string& archivePath,
     }
 
     fs::path configDir(app_->getConfigDir());
+    fs::path userDataDir(app_->getUserDataDir());
     if (!ensureDirectoryExists(configDir.string())) {
         cleanup();
         errorMessage = "Failed to prepare the application config directory.";
+        return false;
+    }
+    if (!ensureDirectoryExists(userDataDir.string())) {
+        cleanup();
+        errorMessage = "Failed to prepare the user data directory.";
         return false;
     }
 
@@ -2753,38 +3328,38 @@ bool MainWindow::importSettingsArchive(const std::string& archivePath,
 
     if (fs::exists(extractedTags, ec) && !ec) {
         if (!copyBinaryFile(extractedTags.string(),
-                            (configDir / "tags.db").string())) {
+                            (userDataDir / "tags.db").string())) {
             cleanup();
-            errorMessage = "Failed to copy tags.db into the config directory.";
+            errorMessage = "Failed to copy tags.db into the user data directory.";
             return false;
         }
     }
 
     if (fs::exists(extractedReadingPlans, ec) && !ec) {
         if (!copyBinaryFile(extractedReadingPlans.string(),
-                            (configDir / "reading_plans.db").string())) {
+                            (userDataDir / "reading_plans.db").string())) {
             cleanup();
-            errorMessage = "Failed to copy reading_plans.db into the config directory.";
+            errorMessage = "Failed to copy reading_plans.db into the user data directory.";
             return false;
         }
     }
 
     if (fs::exists(extractedStudypad, ec) && !ec) {
         if (!copyDirectoryRecursive(extractedStudypad.string(),
-                                    (configDir / "studypad").string())) {
+                                    (userDataDir / "studypad").string())) {
             cleanup();
-            errorMessage = "Failed to copy the studypad directory into the config directory.";
+            errorMessage = "Failed to copy the studypad directory into the user data directory.";
             return false;
         }
     }
 
     cleanup();
 
-    fs::path tagsPath = configDir / "tags.db";
+    fs::path tagsPath = userDataDir / "tags.db";
     if (fs::exists(tagsPath, ec) && !ec) {
         app_->tagManager().load(tagsPath.string());
     }
-    fs::path readingPlansPath = configDir / "reading_plans.db";
+    fs::path readingPlansPath = userDataDir / "reading_plans.db";
     if (fs::exists(readingPlansPath, ec) && !ec) {
         app_->readingPlanManager().load(readingPlansPath.string());
     }
@@ -2796,6 +3371,7 @@ bool MainWindow::importSettingsArchive(const std::string& archivePath,
 
     refresh();
     app_->savePreferences();
+    resetUserDataMonitorSnapshot();
     return true;
 }
 
@@ -2959,6 +3535,13 @@ void MainWindow::onViewSettings(Fl_Widget* /*w*/, void* data) {
 
     auto current = self->app_->appearanceSettings();
     auto currentPreview = self->app_->previewDictionarySettings();
+    auto currentOfflineTranslation =
+        self->app_->offlineTranslationSettings();
+    std::string defaultOfflineTranslationDirectory =
+        (fs::path(self->app_->getConfigDir()) / "dictionaries").string();
+    std::string currentOfflineTranslationDirectory =
+        self->app_->effectiveOfflineTranslationDictionaryDirectory();
+    std::string currentUserDataDir = self->app_->getUserDataDir();
     std::vector<std::string> greekDictionaryModules =
         self->app_->strongsDictionaryModules('G');
     std::vector<std::string> hebrewDictionaryModules =
@@ -2966,22 +3549,26 @@ void MainWindow::onViewSettings(Fl_Widget* /*w*/, void* data) {
     std::vector<std::string> languageCodes =
         dictionaryLanguageCodes(self->app_, currentPreview);
 
-    constexpr int dialogW = 520;
+    constexpr int dialogW = 720;
     constexpr int rowStep = 34;
     constexpr int tabsX = 12;
     constexpr int tabsY = 12;
     constexpr int tabsHeaderH = 28;
     constexpr int groupPadX = 20;
     constexpr int groupPadY = 18;
-    constexpr int labelW = 150;
-    constexpr int fieldW = 300;
-    constexpr int fieldXOffset = 180;
+    constexpr int labelW = 170;
+    constexpr int fieldW = 470;
+    constexpr int fieldXOffset = 190;
     constexpr int spinnerW = 90;
 
     int appearanceRowCount = 8;
-    int dictionaryRowCount = 2 + static_cast<int>(languageCodes.size());
+    int dictionaryRowCount = 7 + static_cast<int>(languageCodes.size());
     int editorRowCount = 2;
-    int maxRowCount = std::max({appearanceRowCount, dictionaryRowCount, editorRowCount});
+    int dataRowCount = 1;
+    int maxRowCount = std::max({appearanceRowCount,
+                                dictionaryRowCount,
+                                editorRowCount,
+                                dataRowCount});
     int tabsH = tabsHeaderH + (groupPadY * 2) + (maxRowCount * rowStep);
     int buttonsY = tabsY + tabsH + 12;
     int dialogH = buttonsY + 44;
@@ -3132,6 +3719,101 @@ void MainWindow::onViewSettings(Fl_Widget* /*w*/, void* data) {
         rowY += rowStep;
     }
 
+    auto* offlineTranslationCheck = new Fl_Check_Button(
+        labelX,
+        rowY,
+        groupW - (groupPadX * 2),
+        24,
+        "Show offline English translations on word hover");
+    offlineTranslationCheck->value(currentOfflineTranslation.enabled ? 1 : 0);
+    rowY += rowStep;
+
+    constexpr int dictionaryButtonW = 70;
+    constexpr int dictionaryButtonGap = 8;
+    Fl_Box* offlineDirectoryLabel =
+        new Fl_Box(labelX, rowY, labelW, 24, "Dictionary folder:");
+    offlineDirectoryLabel->align(FL_ALIGN_LEFT | FL_ALIGN_INSIDE);
+    const int dictionaryInputW = fieldW - (dictionaryButtonW * 2) -
+                                 (dictionaryButtonGap * 2);
+    auto* offlineDirectoryInput =
+        new Fl_Input(fieldX, rowY, dictionaryInputW, 24);
+    offlineDirectoryInput->value(currentOfflineTranslationDirectory.c_str());
+    auto* offlineBrowseButton = new Fl_Button(
+        fieldX + dictionaryInputW + dictionaryButtonGap,
+        rowY,
+        dictionaryButtonW,
+        24,
+        "Browse");
+    auto* offlineRescanButton = new Fl_Button(
+        fieldX + dictionaryInputW + dictionaryButtonGap + dictionaryButtonW +
+            dictionaryButtonGap,
+        rowY,
+        dictionaryButtonW,
+        24,
+        "Rescan");
+    rowY += rowStep;
+
+    auto* offlineDetectedBox = new Fl_Box(
+        labelX, rowY, groupW - (groupPadX * 2), 24);
+    offlineDetectedBox->align(FL_ALIGN_LEFT | FL_ALIGN_INSIDE);
+    rowY += rowStep;
+
+    auto* offlineIssuesBox = new Fl_Box(
+        labelX, rowY, groupW - (groupPadX * 2), (rowStep * 2) - 8);
+    offlineIssuesBox->align(FL_ALIGN_LEFT | FL_ALIGN_INSIDE | FL_ALIGN_WRAP);
+
+    struct OfflineTranslationUiState {
+        Fl_Input* directoryInput = nullptr;
+        Fl_Box* detectedBox = nullptr;
+        Fl_Box* issuesBox = nullptr;
+        std::string defaultDirectory;
+        WikDictManager manager;
+    };
+    OfflineTranslationUiState offlineTranslationUiState{
+        offlineDirectoryInput,
+        offlineDetectedBox,
+        offlineIssuesBox,
+        defaultOfflineTranslationDirectory,
+        WikDictManager{}};
+    WikDictScanReport initialOfflineReport =
+        offlineTranslationUiState.manager.scan(
+            currentOfflineTranslationDirectory);
+    updateOfflineTranslationScanLabels(
+        offlineDetectedBox, offlineIssuesBox, initialOfflineReport);
+
+    offlineBrowseButton->callback(
+        [](Fl_Widget*, void* data) {
+            auto* state = static_cast<OfflineTranslationUiState*>(data);
+            if (!state || !state->directoryInput) return;
+
+            Fl_Native_File_Chooser chooser;
+            chooser.title("Choose Offline Dictionary Folder");
+            chooser.type(Fl_Native_File_Chooser::BROWSE_DIRECTORY);
+            const char* currentValue = state->directoryInput->value();
+            if (currentValue && currentValue[0]) {
+                chooser.directory(currentValue);
+            }
+            if (chooser.show() != 0 || !chooser.filename()) return;
+            state->directoryInput->value(chooser.filename());
+        },
+        &offlineTranslationUiState);
+
+    offlineRescanButton->callback(
+        [](Fl_Widget*, void* data) {
+            auto* state = static_cast<OfflineTranslationUiState*>(data);
+            if (!state || !state->directoryInput) return;
+
+            std::string directory = trimCopy(
+                state->directoryInput->value()
+                    ? state->directoryInput->value()
+                    : "");
+            if (directory.empty()) directory = state->defaultDirectory;
+            WikDictScanReport report = state->manager.scan(directory);
+            updateOfflineTranslationScanLabels(
+                state->detectedBox, state->issuesBox, report);
+        },
+        &offlineTranslationUiState);
+
     dictionariesTab->end();
 
     Fl_Group* editorTab =
@@ -3160,6 +3842,22 @@ void MainWindow::onViewSettings(Fl_Widget* /*w*/, void* data) {
 
     editorTab->end();
 
+    Fl_Group* dataTab =
+        new Fl_Group(groupX, groupY, groupW, groupH, "Data");
+    dataTab->begin();
+
+    rowY = groupY + groupPadY;
+    Fl_Box* userDataDirLabel = new Fl_Box(labelX, rowY, labelW, 24, "User data folder:");
+    userDataDirLabel->align(FL_ALIGN_LEFT | FL_ALIGN_INSIDE);
+    constexpr int browseButtonW = 68;
+    Fl_Input* userDataDirInput =
+        new Fl_Input(fieldX, rowY, fieldW - browseButtonW - 8, 24);
+    userDataDirInput->value(currentUserDataDir.c_str());
+    Fl_Button* userDataBrowseButton =
+        new Fl_Button(fieldX + fieldW - browseButtonW, rowY, browseButtonW, 24, "Browse");
+
+    dataTab->end();
+
     tabs->end();
     tabs->value(appearanceTab);
 
@@ -3171,6 +3869,11 @@ void MainWindow::onViewSettings(Fl_Widget* /*w*/, void* data) {
         bool accepted = false;
     };
     auto* state = new DialogState();
+
+    struct BrowseState {
+        Fl_Input* input = nullptr;
+    };
+    auto* browseState = new BrowseState{userDataDirInput};
 
     cancelBtn->callback(
         [](Fl_Widget* w, void* data) {
@@ -3188,6 +3891,23 @@ void MainWindow::onViewSettings(Fl_Widget* /*w*/, void* data) {
         },
         state);
 
+    userDataBrowseButton->callback(
+        [](Fl_Widget*, void* data) {
+            auto* st = static_cast<BrowseState*>(data);
+            if (!st || !st->input) return;
+
+            Fl_Native_File_Chooser chooser;
+            chooser.title("Choose User Data Folder");
+            chooser.type(Fl_Native_File_Chooser::BROWSE_DIRECTORY);
+            const char* currentValue = st->input->value();
+            if (currentValue && currentValue[0]) {
+                chooser.directory(currentValue);
+            }
+            if (chooser.show() != 0 || !chooser.filename()) return;
+            st->input->value(chooser.filename());
+        },
+        browseState);
+
     dlg->end();
     ui_font::applyCurrentAppUiFont(dlg);
     dlg->show();
@@ -3198,6 +3918,18 @@ void MainWindow::onViewSettings(Fl_Widget* /*w*/, void* data) {
     if (state->accepted) {
         VerdadApp::AppearanceSettings updated = current;
         VerdadApp::PreviewDictionarySettings updatedPreview = currentPreview;
+        OfflineTranslationSettings updatedOfflineTranslation =
+            currentOfflineTranslation;
+        std::string requestedUserDataDir =
+            trimCopy(userDataDirInput->value() ? userDataDirInput->value() : "");
+
+        if (requestedUserDataDir.empty()) {
+            fl_alert("Choose a user data folder.");
+            delete browseState;
+            delete state;
+            delete dlg;
+            return;
+        }
 
         updated.themeMode =
             (themeChoice->value() == 1)
@@ -3239,10 +3971,78 @@ void MainWindow::onViewSettings(Fl_Widget* /*w*/, void* data) {
             }
         }
 
+        updatedOfflineTranslation.enabled =
+            offlineTranslationCheck->value() != 0;
+        std::string requestedOfflineDirectory = trimCopy(
+            offlineDirectoryInput->value()
+                ? offlineDirectoryInput->value()
+                : "");
+        if (requestedOfflineDirectory.empty() ||
+            (currentOfflineTranslation.dictionaryDirectory.empty() &&
+             pathsEqual(requestedOfflineDirectory,
+                        currentOfflineTranslationDirectory))) {
+            updatedOfflineTranslation.dictionaryDirectory.clear();
+        } else {
+            updatedOfflineTranslation.dictionaryDirectory =
+                requestedOfflineDirectory;
+        }
+
+        if (!pathsEqual(requestedUserDataDir, currentUserDataDir)) {
+            if (self->rightPane_ && !self->rightPane_->maybeSaveDocumentChanges()) {
+                delete browseState;
+                delete state;
+                delete dlg;
+                return;
+            }
+
+            VerdadApp::UserDataDirectoryMode dataMode =
+                VerdadApp::UserDataDirectoryMode::CopyCurrentData;
+            if (self->app_->userDataDirectoryHasData(requestedUserDataDir)) {
+                int choice = fl_choice(
+                    "The selected folder already contains Verdad user data.",
+                    "Cancel",
+                    "Use Existing",
+                    "Replace");
+                if (choice == 0) {
+                    delete browseState;
+                    delete state;
+                    delete dlg;
+                    return;
+                }
+                dataMode = (choice == 1)
+                               ? VerdadApp::UserDataDirectoryMode::UseExisting
+                               : VerdadApp::UserDataDirectoryMode::CopyCurrentData;
+            }
+
+            std::string oldUserDataDir = self->app_->getUserDataDir();
+            std::string errorMessage;
+            if (!self->app_->setUserDataDir(requestedUserDataDir,
+                                            dataMode,
+                                            errorMessage)) {
+                fl_alert("%s", errorMessage.c_str());
+                delete browseState;
+                delete state;
+                delete dlg;
+                return;
+            }
+
+            if (self->rightPane_) {
+                self->rightPane_->onUserDataDirectoryChanged(
+                    oldUserDataDir,
+                    self->app_->getUserDataDir());
+            }
+            self->refresh();
+            self->resetUserDataMonitorSnapshot();
+            self->showTransientStatus("User data folder updated.", 3.0);
+        }
+
         self->app_->setPreviewDictionarySettings(updatedPreview);
+        self->app_->setOfflineTranslationSettings(updatedOfflineTranslation);
         self->app_->setAppearanceSettings(updated);
+        self->app_->savePreferences();
     }
 
+    delete browseState;
     delete state;
     delete dlg;
 }

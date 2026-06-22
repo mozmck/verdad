@@ -1,7 +1,8 @@
 cmake_minimum_required(VERSION 3.16)
-project(Verdad VERSION 0.7.6 LANGUAGES CXX)
+project(Verdad VERSION 0.8.0 LANGUAGES CXX)
 
 include(GNUInstallDirs)
+include(CTest)
 
 if(NOT CMAKE_CONFIGURATION_TYPES AND NOT CMAKE_BUILD_TYPE)
     set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)
@@ -83,6 +84,30 @@ find_file(VERDAD_SWORD_GLOBALS_CONF
     HINTS ${VERDAD_SWORD_SHARE_DIR}
 )
 
+set(VERDAD_BUNDLE_SHARED_SWORD OFF)
+if(UNIX AND NOT APPLE)
+    list(LENGTH SWORD_LIBRARIES VERDAD_SWORD_LIBRARY_COUNT)
+    if(VERDAD_SWORD_LIBRARY_COUNT EQUAL 1)
+        get_filename_component(VERDAD_SWORD_LIBRARY_REALPATH
+            "${SWORD_LIBRARIES}" REALPATH)
+        if(VERDAD_SWORD_LIBRARY_REALPATH MATCHES "\\.so(\\.[0-9]+)*$")
+            set(VERDAD_BUNDLE_SHARED_SWORD ON)
+        endif()
+    endif()
+
+    if(VERDAD_BUNDLE_SHARED_SWORD)
+        configure_file(
+            "${CMAKE_SOURCE_DIR}/cmake/InstallBundledSword.cmake.in"
+            "${CMAKE_BINARY_DIR}/InstallBundledSword.cmake"
+            @ONLY
+        )
+    else()
+        message(STATUS
+            "Linux bundle and deb targets disabled because SWORD_LIBRARIES "
+            "does not resolve to one shared library: ${SWORD_LIBRARIES}")
+    endif()
+endif()
+
 # SQLite3 (FTS5 search index)
 # vcpkg installs sqlite3 under the 'unofficial-sqlite3' cmake package name.
 if(WIN32)
@@ -119,6 +144,10 @@ set(SOURCES
     src/reading/ReadingPlanManager.cpp
     src/reading/ReadingPlanUtils.cpp
     src/tags/TagManager.cpp
+    src/translation/MorphologyProvider.cpp
+    src/translation/SqliteMorphologyProvider.cpp
+    src/translation/TranslationNormalization.cpp
+    src/translation/WikDictManager.cpp
     src/ui/MainWindow.cpp
     src/ui/BibleBookChoice.cpp
     src/ui/FilterableChoiceWidget.cpp
@@ -156,6 +185,10 @@ set(HEADERS
     src/reading/ReadingPlanManager.h
     src/reading/ReadingPlanUtils.h
     src/tags/TagManager.h
+    src/translation/MorphologyProvider.h
+    src/translation/SqliteMorphologyProvider.h
+    src/translation/TranslationNormalization.h
+    src/translation/WikDictManager.h
     src/ui/MainWindow.h
     src/ui/BibleBookChoice.h
     src/ui/FilterableChoiceWidget.h
@@ -195,6 +228,12 @@ add_executable(verdad-bench
     src/search/SearchSnippet.cpp
     src/ui/HtmlWidget.cpp
 )
+
+if(UNIX AND NOT APPLE AND VERDAD_BUNDLE_SHARED_SWORD)
+    set_target_properties(verdad PROPERTIES
+        INSTALL_RPATH "$ORIGIN/../${CMAKE_INSTALL_LIBDIR}/verdad"
+    )
+endif()
 
 if(WIN32)
     set_target_properties(verdad PROPERTIES WIN32_EXECUTABLE TRUE)
@@ -240,6 +279,41 @@ target_link_libraries(verdad-bench PRIVATE
 )
 
 target_compile_definitions(verdad-bench PRIVATE VERDAD_NO_APP_FONT_LOOKUP)
+
+if(BUILD_TESTING)
+    add_executable(verdad-morphology-tests
+        tests/MorphologyTests.cpp
+        src/translation/MorphologyProvider.cpp
+        src/translation/SqliteMorphologyProvider.cpp
+        src/translation/TranslationNormalization.cpp
+        src/translation/WikDictManager.cpp
+    )
+    target_include_directories(verdad-morphology-tests PRIVATE
+        ${CMAKE_SOURCE_DIR}/src
+    )
+    target_link_libraries(verdad-morphology-tests PRIVATE
+        fltk::fltk
+        SQLite::SQLite3
+    )
+    if(WIN32)
+        target_compile_definitions(verdad-morphology-tests PRIVATE NOMINMAX)
+    endif()
+    add_test(NAME morphology-provider COMMAND verdad-morphology-tests)
+
+    find_package(Python3 COMPONENTS Interpreter)
+    if(Python3_Interpreter_FOUND)
+        add_test(
+            NAME spanish-morphology-importer
+            COMMAND ${Python3_EXECUTABLE}
+                    ${CMAKE_SOURCE_DIR}/tests/test_import_apertium_spanish_morphology.py
+        )
+        add_test(
+            NAME german-morphology-importer
+            COMMAND ${Python3_EXECUTABLE}
+                    ${CMAKE_SOURCE_DIR}/tests/test_import_apertium_german_morphology.py
+        )
+    endif()
+endif()
 
 if(APPLE)
     target_link_libraries(verdad PRIVATE
@@ -346,6 +420,9 @@ else()
         DESTINATION ${CMAKE_INSTALL_DATADIR}/verdad)
     install(DIRECTORY LICENSES
         DESTINATION ${CMAKE_INSTALL_DATADIR}/verdad)
+    if(VERDAD_BUNDLE_SHARED_SWORD)
+        install(SCRIPT "${CMAKE_BINARY_DIR}/InstallBundledSword.cmake")
+    endif()
 endif()
 
 if(UNIX AND NOT APPLE)
@@ -367,42 +444,33 @@ endif()
 # ============================================================================
 # Linux packaging targets (bundle, deb, AppImage)
 # ============================================================================
-if(UNIX AND NOT APPLE)
+if(UNIX AND NOT APPLE AND VERDAD_BUNDLE_SHARED_SWORD)
     set(VERDAD_BUNDLE_ARCHIVE "${CMAKE_BINARY_DIR}/${VERDAD_BUNDLE_NAME}.tar.gz")
 
     add_custom_command(
         OUTPUT "${VERDAD_BUNDLE_ARCHIVE}"
         COMMAND ${CMAKE_COMMAND} -E rm -rf "${VERDAD_BUNDLE_DIR}"
         COMMAND ${CMAKE_COMMAND} -E rm -f "${VERDAD_BUNDLE_ARCHIVE}"
-        COMMAND ${CMAKE_COMMAND} -E make_directory "${VERDAD_BUNDLE_DIR}/bin"
-        COMMAND ${CMAKE_COMMAND} -E make_directory "${VERDAD_BUNDLE_DIR}/share/verdad"
-        COMMAND ${CMAKE_COMMAND} -E make_directory "${VERDAD_BUNDLE_DIR}/share/metainfo"
-        COMMAND ${CMAKE_COMMAND} -E copy "$<TARGET_FILE:verdad>"
-                "${VERDAD_BUNDLE_DIR}/bin/verdad"
-        COMMAND ${CMAKE_COMMAND} -E copy "${CMAKE_SOURCE_DIR}/LICENSE"
-                "${VERDAD_BUNDLE_DIR}/share/verdad/LICENSE"
-        COMMAND ${CMAKE_COMMAND} -E copy "${CMAKE_SOURCE_DIR}/data/master.css"
-                "${VERDAD_BUNDLE_DIR}/share/verdad/master.css"
-        COMMAND ${CMAKE_COMMAND} -E copy "${CMAKE_SOURCE_DIR}/data/help.html"
-                "${VERDAD_BUNDLE_DIR}/share/verdad/help.html"
-        COMMAND ${CMAKE_COMMAND} -E copy "${CMAKE_SOURCE_DIR}/data/verdad_icon.png"
-                "${VERDAD_BUNDLE_DIR}/share/verdad/verdad_icon.png"
-        COMMAND ${CMAKE_COMMAND} -E copy "${CMAKE_SOURCE_DIR}/data/verdad_icon_128.png"
-                "${VERDAD_BUNDLE_DIR}/share/verdad/verdad_icon_128.png"
-        COMMAND ${CMAKE_COMMAND} -E copy "${CMAKE_SOURCE_DIR}/data/verdad_icon_24.png"
-                "${VERDAD_BUNDLE_DIR}/share/verdad/verdad_icon_24.png"
-        COMMAND ${CMAKE_COMMAND} -E copy "${CMAKE_BINARY_DIR}/io.github.mozmck.Verdad.metainfo.xml"
-                "${VERDAD_BUNDLE_DIR}/share/metainfo/io.github.mozmck.Verdad.metainfo.xml"
-        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/LICENSES"
-                "${VERDAD_BUNDLE_DIR}/share/verdad/LICENSES"
+        COMMAND ${CMAKE_COMMAND} -E env
+                DESTDIR=${VERDAD_BUNDLE_DIR}
+                ${CMAKE_COMMAND}
+                -DCMAKE_INSTALL_PREFIX=/
+                -DCMAKE_INSTALL_CONFIG_NAME=${CMAKE_BUILD_TYPE}
+                -DCMAKE_INSTALL_LOCAL_ONLY=1
+                -P ${CMAKE_BINARY_DIR}/cmake_install.cmake
         COMMAND ${CMAKE_COMMAND} -E copy "${CMAKE_SOURCE_DIR}/install.sh"
                 "${VERDAD_BUNDLE_DIR}/install.sh"
-        COMMAND /bin/chmod 0755 "${VERDAD_BUNDLE_DIR}/bin/verdad"
         COMMAND /bin/chmod 0755 "${VERDAD_BUNDLE_DIR}/install.sh"
         COMMAND ${CMAKE_COMMAND} -E chdir "${CMAKE_BINARY_DIR}"
                 ${CMAKE_COMMAND} -E tar "cfvz" "${VERDAD_BUNDLE_ARCHIVE}"
                 "${VERDAD_BUNDLE_NAME}"
-        DEPENDS verdad copy_runtime_assets "${CMAKE_SOURCE_DIR}/install.sh"
+        DEPENDS
+            verdad
+            copy_runtime_assets
+            "${SWORD_LIBRARIES}"
+            "${VERDAD_SWORD_GLOBALS_CONF}"
+            "${CMAKE_SOURCE_DIR}/install.sh"
+            "${CMAKE_BINARY_DIR}/InstallBundledSword.cmake"
         VERBATIM
     )
 
@@ -444,6 +512,9 @@ if(UNIX AND NOT APPLE)
                     -DCMAKE_INSTALL_CONFIG_NAME=${CMAKE_BUILD_TYPE}
                     -DCMAKE_INSTALL_LOCAL_ONLY=1
                     -P ${CMAKE_BINARY_DIR}/cmake_install.cmake
+            COMMAND ${CMAKE_COMMAND} -E rename
+                    ${VERDAD_DEB_PACKAGE_ROOT}/usr/share/sword
+                    ${VERDAD_DEB_PACKAGE_ROOT}/usr/share/verdad/sword
             COMMAND ${CMAKE_COMMAND}
                     -DWORK_DIR=${VERDAD_DEB_WORK_DIR}
                     -DPACKAGE_ROOT=${VERDAD_DEB_PACKAGE_ROOT}
@@ -456,7 +527,6 @@ if(UNIX AND NOT APPLE)
                     -DPACKAGE_MAINTAINER=Verdad\ maintainers
                     -DPACKAGE_SUMMARY=Desktop\ Bible\ study\ application\ for\ CrossWire\ SWORD\ modules
                     -DPACKAGE_DESCRIPTION=Verdad\ is\ a\ desktop\ Bible\ study\ application\ for\ CrossWire\ SWORD\ modules.
-                    -DPACKAGE_EXTRA_DEPENDS=libsword-common
                     -DDPKG_DEB_EXECUTABLE=${VERDAD_DPKG_DEB_EXECUTABLE}
                     -DDPKG_SHLIBDEPS_EXECUTABLE=${VERDAD_DPKG_SHLIBDEPS_EXECUTABLE}
                     -P ${CMAKE_SOURCE_DIR}/cmake/BuildDebPackage.cmake
@@ -468,7 +538,9 @@ if(UNIX AND NOT APPLE)
         message(STATUS
             "Debian packaging target disabled; dpkg, dpkg-deb, or dpkg-shlibdeps not found.")
     endif()
+endif()
 
+if(UNIX AND NOT APPLE)
     if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|amd64)$")
         set(VERDAD_APPIMAGE_ARCH "x86_64")
     else()
@@ -504,6 +576,7 @@ if(UNIX AND NOT APPLE)
         COMMAND ${CMAKE_COMMAND} -E make_directory ${VERDAD_APPIMAGE_WORK_DIR}
         COMMAND ${CMAKE_COMMAND} -E env
                 DESTDIR=${VERDAD_APPIMAGE_APPDIR}
+                VERDAD_SKIP_BUNDLED_SWORD_INSTALL=1
                 ${CMAKE_COMMAND}
                 -DCMAKE_INSTALL_PREFIX=/usr
                 -DCMAKE_INSTALL_CONFIG_NAME=${CMAKE_BUILD_TYPE}

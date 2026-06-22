@@ -2531,8 +2531,14 @@ int HtmlWidget::handle(int event) {
                         tooltip(nullptr);
                         Fl_Tooltip::current(nullptr);
                     }
-                    hoverCallback_(word, href, strong, morph, module,
-                                   Fl::event_x(), Fl::event_y());
+                    if (!title.empty() && href.empty() && strong.empty() &&
+                        morph.empty()) {
+                        hoverCallback_("", "", "", "", "",
+                                       Fl::event_x(), Fl::event_y());
+                    } else {
+                        hoverCallback_(word, href, strong, morph, module,
+                                       Fl::event_x(), Fl::event_y());
+                    }
                 }
             }
         }

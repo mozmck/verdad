@@ -11,6 +11,7 @@
 #include <string>
 #include <vector>
 #include <chrono>
+#include <unordered_map>
 
 #include "ui/DailyWorkspaceState.h"
 
@@ -114,11 +115,13 @@ public:
     /// Queue Mag viewer info update in the left pane preview.
     void showWordInfo(const std::string& word, const std::string& href,
                       const std::string& strong, const std::string& morph,
-                      int screenX, int screenY);
+                      int screenX, int screenY,
+                      const std::string& sourceModule = "");
 
     /// Immediately render Strong's/morph info into the left preview pane.
     void showWordInfoNow(const std::string& word, const std::string& href,
-                         const std::string& strong, const std::string& morph);
+                         const std::string& strong, const std::string& morph,
+                         const std::string& sourceModule = "");
 
     /// Cancel pending hover update (does not clear current MAG content).
     void hideWordInfo();
@@ -201,6 +204,7 @@ private:
         std::string href;
         std::string strong;
         std::string morph;
+        std::string sourceModule;
         int tabIndex = -1;
     };
 
@@ -252,10 +256,16 @@ private:
     bool tabCacheEvictionScheduled_ = false;
     bool statusPollScheduled_ = false;
     bool dailyDateCheckScheduled_ = false;
+    bool userDataSyncPollScheduled_ = false;
     std::string lastDailyDateIso_;
     std::string lastStatusBarText_;
     std::string transientStatusText_;
     std::chrono::steady_clock::time_point transientStatusUntil_{};
+    std::unordered_map<std::string, std::string> userDataSnapshot_;
+    std::unordered_map<std::string, std::string> pendingUserDataSnapshot_;
+    std::vector<std::string> pendingUserDataChangedPaths_;
+    std::chrono::steady_clock::time_point pendingUserDataChangeSince_{};
+    bool pendingUserDataChange_ = false;
 
     /// Add a new Bible/Commentary workspace tab.
     void addStudyTab(const std::string& module,
@@ -316,6 +326,10 @@ private:
     /// Refresh daily devotional/plan dates when the local date changes.
     void checkDailyDateRollover();
     static void onDailyDateCheck(void* data);
+    void resetUserDataMonitorSnapshot();
+    void pollUserDataSyncChanges();
+    void applyUserDataSyncChanges();
+    static void onUserDataSyncPoll(void* data);
 
     /// Schedule eviction of old tab render buffers after the current UI work.
     void scheduleTabSnapshotEviction();

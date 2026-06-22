@@ -2311,13 +2311,18 @@ void BiblePane::onLinkClicked(const std::string& url) {
 
 void BiblePane::onWordHover(const std::string& word, const std::string& href,
                              const std::string& strong, const std::string& morph,
-                             const std::string& /*module*/,
+                             const std::string& module,
                              int x, int y) {
     if (app_->mainWindow()) {
+        std::string sourceModule = module.empty() ? currentModule() : module;
+        bool translationEligible =
+            app_->offlineTranslationSettings().enabled && !word.empty();
         if (href.rfind("tags:", 0) == 0) {
             app_->mainWindow()->hideWordInfo();
-        } else if (!strong.empty() || !morph.empty() || !href.empty()) {
-            app_->mainWindow()->showWordInfo(word, href, strong, morph, x, y);
+        } else if (!strong.empty() || !morph.empty() || !href.empty() ||
+                   translationEligible) {
+            app_->mainWindow()->showWordInfo(
+                word, href, strong, morph, x, y, sourceModule);
         } else {
             app_->mainWindow()->hideWordInfo();
         }

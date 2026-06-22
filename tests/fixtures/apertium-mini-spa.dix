@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<dictionary>
+  <alphabet>abcdefghijklmnopqrstuvwxyzá</alphabet>
+  <sdefs>
+    <sdef n="vblex"/>
+    <sdef n="ifi"/>
+    <sdef n="p3"/>
+    <sdef n="sg"/>
+    <sdef n="pl"/>
+  </sdefs>
+  <pardefs>
+    <pardef n="habl/ar__vblex">
+      <e><p><l>ó</l><r>ar<s n="vblex"/><s n="ifi"/><s n="p3"/><s n="sg"/></r></p></e>
+      <e><p><l>aron</l><r>ar<s n="vblex"/><s n="ifi"/><s n="p3"/><s n="pl"/></r></p></e>
+      <e r="RL"><p><l>generation-only</l><r>ar<s n="vblex"/></r></p></e>
+    </pardef>
+  </pardefs>
+  <section id="main" type="standard">
+    <e lm="hablar"><i>habl</i><par n="habl/ar__vblex"/></e>
+    <e lm="multiword"><i>dos<b/>palabras</i><par n="habl/ar__vblex"/></e>
+  </section>
+  <section id="regexp" type="standard">
+    <e><re>[0-9]+</re></e>
+  </section>
+</dictionary>

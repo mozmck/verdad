@@ -7,6 +7,8 @@
 #include <vector>
 #include <FL/Enumerations.H>
 
+#include "translation/WikDictManager.h"
+
 namespace verdad {
 
 class SwordManager;
@@ -26,6 +28,11 @@ enum class SearchAssistanceMode {
 /// Main application class - owns all managers and the main window
 class VerdadApp {
 public:
+    enum class UserDataDirectoryMode {
+        UseExisting,
+        CopyCurrentData,
+    };
+
     enum class ThemeMode {
         Light,
         Dark,
@@ -146,6 +153,29 @@ public:
     /// Get application config directory
     std::string getConfigDir() const;
 
+    /// Get syncable user-generated data directory.
+    std::string getUserDataDir() const;
+
+    /// Return the default user-generated data directory.
+    std::string getDefaultUserDataDir() const;
+
+    /// Get studypad directory under the user-generated data directory.
+    std::string getStudypadDir() const;
+
+    /// Return true if a directory appears to contain Verdad user data.
+    bool userDataDirectoryHasData(const std::string& directory) const;
+
+    /// Make a stored session path absolute under the current user-data directory.
+    std::string resolveUserDataPath(const std::string& storedPath) const;
+
+    /// Store a path relative to the current user-data directory when possible.
+    std::string makeUserDataRelativePath(const std::string& path) const;
+
+    /// Switch the active user-data directory.
+    bool setUserDataDir(const std::string& directory,
+                        UserDataDirectoryMode mode,
+                        std::string& errorMessage);
+
     /// Get the singleton instance
     static VerdadApp* instance() { return instance_; }
 
@@ -171,6 +201,30 @@ public:
 
     /// Update default Greek/Hebrew Strong's preview dictionaries.
     void setPreviewDictionarySettings(const PreviewDictionarySettings& settings);
+
+    /// Current offline hover-translation preferences.
+    const OfflineTranslationSettings& offlineTranslationSettings() const {
+        return offlineTranslationSettings_;
+    }
+
+    /// Update offline hover-translation preferences and rescan dictionaries.
+    void setOfflineTranslationSettings(const OfflineTranslationSettings& settings);
+
+    /// Return the configured folder or the platform default when unset.
+    std::string effectiveOfflineTranslationDictionaryDirectory() const;
+
+    /// Rescan the effective offline dictionary folder.
+    const WikDictScanReport& rescanOfflineTranslations();
+
+    /// Current WikDict manager and latest scan status.
+    WikDictManager& wikDictManager() { return *wikDictMgr_; }
+    const WikDictManager& wikDictManager() const { return *wikDictMgr_; }
+    const WikDictScanReport& offlineTranslationScanReport() const {
+        return offlineTranslationScanReport_;
+    }
+
+    /// Return the cached language metadata for an installed module.
+    std::string sourceLanguageForModule(const std::string& moduleName) const;
 
     /// Return the effective preview dictionary for a Strong's language prefix.
     std::string preferredPreviewDictionary(char strongPrefix) const;
@@ -245,21 +299,32 @@ private:
     std::unique_ptr<TagManager> tagMgr_;
     std::unique_ptr<ReadingPlanManager> readingPlanMgr_;
     std::unique_ptr<ImportedModuleManager> importedModuleMgr_;
+    std::unique_ptr<WikDictManager> wikDictMgr_;
     std::unique_ptr<MainWindow> mainWindow_;
     AppearanceSettings appearanceSettings_;
     PreviewDictionarySettings previewDictionarySettings_;
+    OfflineTranslationSettings offlineTranslationSettings_;
+    WikDictScanReport offlineTranslationScanReport_;
     OptionDisplaySettings optionDisplaySettings_;
     ModuleManagerSettings moduleManagerSettings_;
     SearchSettings searchSettings_;
+    std::string userDataDir_;
     ThemePalette themePalette_;
     std::vector<std::string> systemFontFamilies_;
     /// Map from family name (lowercase) to FLTK font index
     std::unordered_map<std::string, Fl_Font> fontFamilyMap_;
     /// Map from regular font index to bold font index
     std::unordered_map<Fl_Font, Fl_Font> boldVariantMap_;
+    std::unordered_map<std::string, std::string> moduleLanguageByName_;
 
     /// Ensure config directory exists
     void ensureConfigDir();
+
+    /// Ensure the configured user-data directory exists.
+    bool ensureUserDataDir();
+
+    /// Load only the user-data directory preference before opening user DBs.
+    void loadUserDataDirPreference();
 
     /// Enumerate all system fonts (called once during init)
     void enumerateSystemFonts();
@@ -273,6 +338,9 @@ private:
     /// Apply parsed preference data to the running app.
     bool applyPreferencesMap(const std::unordered_map<std::string, std::string>& prefs,
                              bool preserveLayout);
+
+    /// Refresh cached module language metadata after SWORD catalog changes.
+    void refreshModuleLanguageCache();
 };
 
 } // namespace verdad

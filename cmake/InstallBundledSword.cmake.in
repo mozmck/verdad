@@ -1,0 +1,35 @@
+if("$ENV{VERDAD_SKIP_BUNDLED_SWORD_INSTALL}" STREQUAL "1")
+    return()
+endif()
+
+set(sword_library "@SWORD_LIBRARIES@")
+set(sword_share_dir "@VERDAD_SWORD_SHARE_DIR@")
+set(sword_globals_conf "@VERDAD_SWORD_GLOBALS_CONF@")
+
+if(NOT EXISTS "${sword_library}")
+    message(FATAL_ERROR "Missing shared SWORD library: ${sword_library}")
+endif()
+if(NOT IS_DIRECTORY "${sword_share_dir}/locales.d")
+    message(FATAL_ERROR
+        "Missing SWORD locales directory under ${sword_share_dir}.")
+endif()
+if(NOT EXISTS "${sword_globals_conf}")
+    message(FATAL_ERROR "Missing SWORD globals.conf: ${sword_globals_conf}")
+endif()
+
+set(sword_library_dir
+    "${CMAKE_INSTALL_PREFIX}/@CMAKE_INSTALL_LIBDIR@/verdad")
+set(sword_data_dir
+    "${CMAKE_INSTALL_PREFIX}/@CMAKE_INSTALL_DATADIR@/sword")
+
+# Preserve the SONAME symlink chain so the executable's DT_NEEDED entry resolves.
+file(INSTALL "${sword_library}"
+    DESTINATION "${sword_library_dir}"
+    USE_SOURCE_PERMISSIONS
+    FOLLOW_SYMLINK_CHAIN)
+file(INSTALL "${sword_share_dir}/locales.d"
+    DESTINATION "${sword_data_dir}"
+    USE_SOURCE_PERMISSIONS)
+file(INSTALL "${sword_globals_conf}"
+    DESTINATION "${sword_data_dir}/mods.d"
+    USE_SOURCE_PERMISSIONS)

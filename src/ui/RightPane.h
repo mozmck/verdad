@@ -169,6 +169,11 @@ public:
     bool saveDocument();
     bool exportDocumentToOdt();
     bool maybeSaveDocumentChanges();
+    bool currentDocumentHasUnsavedChanges() const;
+    void refreshDocumentsForExternalChange(bool reloadCurrentDocument);
+    std::string saveCurrentDocumentConflictCopy();
+    void onUserDataDirectoryChanged(const std::string& oldDirectory,
+                                    const std::string& newDirectory);
 
     /// Legacy naming kept for session compatibility.
     /// Select visible tab: true = General Books, false = Commentary.

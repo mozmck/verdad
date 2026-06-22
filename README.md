@@ -1,148 +1,291 @@
 # Verdad Bible Study
 
-Verdad is a desktop Bible study application using CrossWire SWORD modules. It keeps Bible reading, commentary, dictionaries, general books, search, tags, and notes in one window.
-NOTE: This program was made using AI and is in active development.
+Verdad is a desktop Bible study application built around CrossWire SWORD
+modules. It combines Bible reading, parallel texts, search, commentary,
+dictionaries, daily readings, imported documents, tags, and study notes in one
+workspace.
 
-## Features
+Verdad is in active development. The project has been developed with extensive
+AI assistance.
 
-- Multiple study tabs. Duplicate the current workspace, keep multiple passages open, and restore your tab set on the next launch.
-- Three-pane study layout. The left pane handles modules, search, tags, and preview; the center pane shows Bible text; the right pane shows commentary, dictionaries, general books, and Studypad.
-- Fast Bible search. Search by multi-word query, exact phrase, regex, or Strong's/lemma references, with canonical result ordering and a live preview pane.
-- Search results workflow. Single-click a result to preview it, double-click to navigate the current study tab, or middle-click to open it in a new study tab.
-- Bible reading tools. Jump by book, chapter, or typed reference; move chapter to chapter; switch between verse and paragraph mode; and compare up to seven Bible modules in parallel columns.
-- Study marker controls. Toggle visible Strong's, morphology, footnote, and cross-reference markers without losing the underlying hover and context-menu data.
-- Word study actions. Hovering a Bible word fills the lower-left preview pane, and right-clicking exposes word search, Strong's search, dictionary lookup, copy, and tagging actions.
-- Synced right pane. Commentary follows the selected verse, the dictionary pane stays available at the bottom, and general books use the module table of contents directly.
-- General books support. Pick a table of contents entry from the chooser, load one page at a time, and follow internal links without leaving the pane.
-- NEW: Supports file import (PDF, MD, TXT) and automatic reference detection
-- Verse tagging. Create tags, rename or delete them, filter tags by name or verse reference, browse all tagged verses, and jump from a tag entry back into the Bible.
-- Notes and editable content. The Studypad tab opens and saves HTML study notes with lightweight rich-text editing, saved scripture links in a Studypad can be right-clicked to insert verse text, and writable commentary modules can be edited in place.
-- Session persistence. Verdad remembers window geometry, splitter sizes, active study tab, Bible state, right-pane selections, the open Studypad path, and scroll positions.
-- Built-in module management. Add local or remote SWORD sources, refresh them, and install or update modules from inside the app.
-- Appearance and dictionary preferences. Choose UI font, text font and size, hover delay, default Greek and Hebrew Strong's dictionaries, and language-specific word dictionaries.
+## Current features
 
-## Everyday workflow
+### Study workspace
 
-The left pane combines the always-visible search box with three tabs: `Modules`, `Search`, and `Tags`. The preview area at the bottom is shared by search results, module metadata, word-hover preview content, and link previews from Bible, commentary, and general-book panes.
+- Multiple study tabs with independent Bible, reference, paragraph or parallel
+  mode, right-pane selections, splitter sizes, and scroll positions.
+- A three-pane layout: modules, search, tags, and previews on the left; Bible
+  text in the center; commentary, Daily, general books, Studypad, and dictionary
+  content on the right.
+- Chapter and reference navigation, paragraph mode, red-letter display, and up
+  to seven parallel Bible columns.
+- Controls for Strong's numbers, morphology, footnotes, and cross references.
+- Word-hover previews and context actions for search, Strong's lookup,
+  dictionaries, copying verses or selections, and verse tagging.
+- Restored window geometry, study tabs, pane state, active Studypad, and scroll
+  positions between sessions.
 
-The center pane is the active Bible workspace. The right pane keeps commentary, general books, and the global Studypad editor in top tabs, with the dictionary or lexicon pane docked below them. Scripture links inside commentary and general books can populate the preview pane or the Search tab, depending on whether a link resolves to one verse or many. Users can highlight text and create tags that will show previews in the Tags pane.
+### Search and navigation
 
-## SWORD modules and local data
+- Background SQLite FTS5 indexing of Bibles, commentaries, dictionaries,
+  general books, and imported documents, with Bible-only, library-only, or
+  combined search scopes.
+- Multi-word, exact phrase, ECMAScript regex, and Strong's/lemma matching.
+- Exact, spelling-assisted, synonym-assisted, and smart fuzzy search modes,
+  with language-aware synonym expansion where supported.
+- Canonically ordered results with contextual snippets and a shared preview
+  pane.
+- Single-click preview, double-click navigation in the current tab, and
+  middle-click navigation in a new tab.
+- Scripture links from commentary, general books, Studypad, daily content, and
+  imported files can open previews or populate search results.
 
-Verdad is useful only after SWORD modules are installed. You can install them with your normal SWORD tooling or from `File > Module Manager...`. The module manager supports local sources and remote sources. Remote sources can reveal network activity, so use local sources when that matters for your situation.
+### Study resources and personal data
 
-Using the File Import menu, users can import PDF's, MD, or TXT files. These will then be browesable just like pre-packaged SWORD modules, and most verse references will be treated as hyperlinks.
+- Commentary follows the current verse, including navigation from commentary
+  verse numbers and support for editing writable commentary modules.
+- A persistent dictionary pane for Strong's lexicons and language-specific word
+  dictionaries.
+- Paged general-book navigation with a table-of-contents browser.
+- A Daily workspace for SWORD devotionals, SWORD reading-plan modules, and
+  editable reading plans with calendar navigation, completion tracking, and
+  rescheduling.
+- Verse tags with filtering, renaming, deletion, previews, and Bible markers.
+- Studypad HTML notes with rich-text editing, detected scripture links, verse
+  insertion, and optional ODT export through LibreOffice.
+- PDF, plain-text, and Markdown import. Files or whole folders can be added to
+  the library, optionally copied into Verdad's storage, indexed for search, and
+  browsed like general-book modules.
+- Settings export and import for preferences, tags, reading plans, and
+  Studypads.
+- A configurable user-data directory suitable for Syncthing or another file
+  synchronization tool. Verdad detects external changes to tags, reading plans,
+  and clean Studypad files and protects unsaved notes with conflict copies.
 
-Verdad stores user state in `~/.config/verdad/` on Linux:
+### Modules and offline language lookup
 
-- `preferences.conf` for appearance, layout, and restored session state
-- `module_index.db` for the background SQLite search index
-- `tags.db` for verse tags
+- A built-in SWORD module manager for local and remote repositories, module
+  installation, and updates.
+- Configurable Greek and Hebrew Strong's dictionaries and language-specific
+  word dictionaries.
+- Optional local-only English hover glosses from user-supplied WikDict SQLite
+  databases. This is word lookup, not sentence translation.
+- Optional Apertium-derived Spanish and German morphology resolves inflected
+  forms to WikDict lemmas. Apertium is needed only to generate morphology
+  databases, not while Verdad is running.
 
-## Build and run
+## SWORD modules
 
-Verdad currently builds as a C++17 desktop application with CMake. The build system defaults to the Ninja generator when Ninja is available, and uses ccache automatically when it is installed.
+## SWORD modules
+
+Verdad can start without SWORD modules, but Bible, commentary, dictionary,
+general-book, devotional, and packaged reading-plan content requires installed
+modules. Use `Tools > Module Manager...` or normal SWORD tools to install them.
+Remote module sources use the network; local sources remain available for
+offline installations.
+
+## Offline dictionaries and morphology
+
+By default, Verdad scans a `dictionaries` directory inside its platform config
+directory. The recommended layout is:
+
+```text
+dictionaries/
+  wikdict/
+    es-en.sqlite3
+    de-en.sqlite3
+  morphology/
+    es-morph-apertium.sqlite3
+    es-morph-apertium.NOTICE
+    de-morph-apertium.sqlite3
+    de-morph-apertium.NOTICE
+```
+
+Flat WikDict files directly under `dictionaries/` are also supported. Dictionary
+and morphology packs are user-managed data. They are not included in the
+repository, packaged Verdad releases, or settings exports. Direct WikDict
+lookups take precedence; morphology is used only when the surface form has no
+direct gloss, and a derived lemma is shown only when the matching `*-en.sqlite3`
+database supplies an English gloss.
+
+To generate the complete Spanish morphology database without maintaining a
+wordlist, install your distribution's `apertium-spa` package and run:
+
+```bash
+python3 tools/import_apertium_spanish_morphology.py
+```
+
+The importer locates `apertium-spa.spa.dix`, expands all finite single-token
+paradigms, and writes the SQLite database and license notice to Verdad's default
+morphology directory. The current full source produces about 1.8 million
+analyses in a database of roughly 55 MB. See
+[`doc/offline-spanish-morphology.md`](doc/offline-spanish-morphology.md) for
+custom source paths, output locations, metadata, and alternate import modes.
+
+To generate German morphology from the ignored local source checkout:
+
+```bash
+git clone --depth 1 \
+  https://github.com/apertium/apertium-deu.git \
+  tools/data/apertium-deu
+python3 tools/import_apertium_german_morphology.py \
+  --dictionary tools/data/apertium-deu/apertium-deu.deu.dix
+```
+
+The inspected German source produces about 338,000 normalized forms in a 15 MB
+database. The generator records the upstream commit, source URL, dictionary
+SHA-256, GPL-3.0 license, generator version, and generation time, and writes an
+adjacent notice. See
+[`doc/offline-german-morphology.md`](doc/offline-german-morphology.md).
+
+## Local data
+
+The default config directory is:
+
+- Linux: `~/.config/verdad/`
+- macOS: `~/Library/Application Support/Verdad/`
+- Windows: `%APPDATA%\Verdad\`
+
+Important files and directories include:
+
+- `preferences.conf`: preferences, window layout, and restored session state
+- `module_index.db`: generated search index
+- `imports.db` and `imports/`: imported-document catalog and copied source files
+- `dictionaries/`: user-managed WikDict and morphology databases
+- `tags.db`: verse tags, stored in the selected user-data directory
+- `reading_plans.db`: editable plans and completion state, stored in the
+  selected user-data directory
+- `studypad/`: study notes, stored in the selected user-data directory
+
+SQLite databases can also create temporary `-wal`, `-shm`, or `-journal`
+sidecar files while the application is running.
+
+## Build, test, and run
+
+Verdad is a C++17 CMake project. FLTK and litehtml are included as submodules.
+The build system defaults to the Ninja generator when Ninja is available, and
+uses ccache automatically when it is installed.
 
 ```bash
 git submodule update --init --recursive
 cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
-cmake --build build
+cmake --build build -j$(nproc)
+ctest --test-dir build --output-on-failure
 ./build/verdad
 ```
 
-Fresh single-config builds default to `Release` if you do not set `CMAKE_BUILD_TYPE` yourself. Use `Debug` only when you actually need it:
+The automated tests currently cover the morphology provider, WikDict fallback
+behavior, and Apertium morphology importer. UI and SWORD integration changes
+still require a manual application smoke test.
+
+For a debug build:
 
 ```bash
 cmake -S . -B build-debug -G Ninja -DCMAKE_BUILD_TYPE=Debug
 cmake --build build-debug
 ```
 
-On a recent Debian/Ubuntu-based distribution, these packages are typically enough to build Verdad from source:
+### Debian and Ubuntu build dependencies
 
 ```bash
-sudo apt install build-essential cmake pkg-config \
-    git libsword-dev libsqlite3-dev \
+sudo apt install build-essential cmake pkg-config git python3 \
+    libsword-dev libsqlite3-dev \
     libx11-dev libxext-dev libxinerama-dev libxfixes-dev \
     libxcursor-dev libxrender-dev libxft-dev \
     libfontconfig-dev libfreetype-dev
 ```
 
-To install and run a prebuilt Verdad binary without the compiler toolchain, install the runtime libraries instead:
+FLTK 1.4.4 is built statically from `libs/fltk`, and litehtml is built from
+`libs/litehtml`. `data/master.css` and `data/help.html` are copied into the
+build tree automatically.
+
+Linux packages and prebuilt bundles include the SWORD shared library and its
+common runtime data. They still use the host system for SWORD's lower-level
+dependencies and Verdad's other runtime libraries. On Debian and Ubuntu, a
+typical runtime set is:
 
 ```bash
-sudo apt install libsword1.9.0 libsword-common libsqlite3-0 \
+sudo apt install libsqlite3-0 \
     libx11-6 libxext6 libxinerama1 libxfixes3 \
     libxcursor1 libxrender1 libxft2 libfontconfig1
 ```
 
-FLTK 1.4.4 is vendored under `libs/fltk` and linked statically, so you do not need distro FLTK runtime or `-dev` packages. If you cloned the repository without submodules, run `git submodule update --init --recursive` before configuring.
+The generated Debian package declares the exact additional dependencies needed
+by the bundled SWORD build on the packaging host.
 
-On newer releases, the SWORD runtime package name may differ slightly from `libsword1.9.0`; if that exact package is unavailable, install the distro's current `libsword` runtime package instead. `litehtml` is vendored under `libs/litehtml`, so it is built with the project instead of being installed separately. `data/master.css` and `data/help.html` are copied into `build/data/` automatically during the build.
+## Packaging
 
-To build an AppImage on Linux:
+Available CMake packaging targets depend on the host platform:
+
+- Linux: `bundle`, `deb`, and `appimage`
+- macOS: `app` and `dmg`
+- Windows: `winzip` and `msi`
+
+For example:
 
 ```bash
 cmake --build build --target appimage
-```
-
-On the first run, that target downloads `linuxdeploy` and the AppImage output plugin into `tools/appimage-tools/`, stages an `AppDir` under `build/appimage/`, bundles the current `libsword` along with the installed SWORD common data, and writes the final AppImage into `build/`. It does not bundle any SWORD modules. Install `libsword-common` as well if you want to use the `appimage` target.
-
-To build the installer archive:
-
-```bash
 cmake --build build --target bundle
-```
-
-That target writes a `verdad-<version>-<system>-<arch>.tar.gz` archive into `build/`. The archive contains the built Verdad binary, its data files, licenses, and `install.sh` so it can be unpacked and installed under `~/.local` or `/usr/local`. Unlike the AppImage, it is not a fully self-contained runtime bundle.
-
-To build a Debian package on a Debian/Ubuntu-based system:
-
-```bash
 cmake --build build --target deb
 ```
 
-That target writes a `verdad_<version>_<arch>.deb` package into `build/`. The package installs under `/usr`, uses distro-managed runtime libraries, and declares a dependency on `libsword-common` in addition to the shared-library dependencies detected from the built binary.
+The Linux AppImage, archive, and Debian package bundle the SWORD runtime and
+common data but not Bible or other SWORD modules. Verdad still discovers
+modules in the standard system and user SWORD locations. The private library is
+installed under `lib/verdad`; Debian common data is kept under
+`share/verdad/sword` to avoid colliding with `libsword-common`. Other
+applications continue using the system SWORD library. GitHub Actions builds and
+packages Linux, macOS, and Windows artifacts.
 
-There is no dedicated automated test suite yet. Validation is currently a successful build plus manual UI smoke testing in the running application.
+## Install on Linux
 
-## Install from source
-
-Use the repo-level installer:
+To install directly from a source build:
 
 ```bash
-./install.sh
+cmake --install build --prefix "$HOME/.local"
 ```
 
-By default, `install.sh` installs for the current user under `~/.local`, and
-that default can be accepted by pressing Enter. To install system-wide under
-`/usr/local`, run it with `sudo`. The installer also prompts to add a desktop
-launcher.
+To use the standalone installer, build and unpack the prebuilt bundle, then run
+`install.sh` from inside the unpacked directory:
 
-Useful options:
+```bash
+cmake --build build --target bundle
+tar -xzf build/verdad-*.tar.gz -C /tmp
+/tmp/verdad-*/install.sh
+```
 
-- `./install.sh --user` to force a per-user install
-- `./install.sh --system` to force a system-wide install
-- `./install.sh --prefix /some/prefix` to choose a different install prefix
-- `./install.sh --yes` to accept defaults without prompts
+The standalone installer uses `~/.local` by default. Run it with `sudo` for a
+system-wide installation under `/usr/local`. Useful options:
+
+- `./install.sh --user`
+- `./install.sh --system`
+- `./install.sh --prefix /some/prefix`
+- `./install.sh --yes`
 
 ## Technical overview
 
 - UI: FLTK
-- HTML rendering: `litehtml`
+- HTML rendering: litehtml
 - Module access and XHTML generation: CrossWire SWORD
-- Search indexing: SQLite FTS5 over Bible modules
-- Tag storage: separate SQLite database from the search index
-- Runtime styling and help content: [`data/master.css`](data/master.css) and [`data/help.html`](data/help.html)
+- Search: SQLite FTS5
+- Tags, reading plans, imports, and morphology: separate SQLite databases
+- Runtime styling and help: [`data/master.css`](data/master.css) and
+  [`data/help.html`](data/help.html)
 
 Project layout:
 
-- `src/app/` application startup, preferences, and session restore
-- `src/ui/` FLTK panes, widgets, dialogs, and editors
-- `src/sword/` SWORD integration, markup normalization, and rendered HTML generation
-- `src/search/` SQLite-backed indexing and search
-- `src/tags/` verse tagging and persistence
-- `cmake/` custom CMake find modules
-- `libs/litehtml/` vendored rendering dependency
+- `src/app/`: startup, platform paths, preferences, and session restore
+- `src/ui/`: FLTK panes, widgets, dialogs, editors, and daily workspace
+- `src/sword/`: SWORD integration, markup normalization, and HTML generation
+- `src/search/`: indexing, snippets, and search
+- `src/tags/`: verse tagging and persistence
+- `src/reading/`: editable reading plans and completion state
+- `src/import/`: PDF, text, and Markdown library import
+- `src/translation/`: WikDict lookup and optional morphology providers
+- `tools/`: development and database-generation utilities
+- `tests/`: C++ and Python automated tests
+- `cmake/`: custom find modules and packaging helpers
+- `libs/fltk/` and `libs/litehtml/`: vendored dependencies
 
 ## License
 
@@ -151,9 +294,7 @@ repository is dual-licensed under `GPL-2.0-only OR Unlicense`. See
 [LICENSE](LICENSE), [LICENSES/GPL-2.0-only.txt](LICENSES/GPL-2.0-only.txt), and
 [LICENSES/Unlicense.txt](LICENSES/Unlicense.txt).
 
-Third-party license texts and notices are bundled under
-[LICENSES/README.md](LICENSES/README.md).
-
-For distributed builds, the important practical constraint is CrossWire SWORD:
-Verdad links against SWORD, so distributions that ship that combined program
-need to comply with GPL-2.0 terms.
+Third-party license texts and notices are listed in
+[LICENSES/README.md](LICENSES/README.md). Distributed builds linking CrossWire
+SWORD must comply with its GPL-2.0 terms. WikDict and generated Apertium data
+retain their own source licenses and notices.
