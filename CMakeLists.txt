@@ -14,16 +14,6 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
-# --- Build speed: ccache ---
-find_program(CCACHE_PROGRAM ccache)
-if(CCACHE_PROGRAM)
-    set(CMAKE_C_COMPILER_LAUNCHER   "${CCACHE_PROGRAM}")
-    set(CMAKE_CXX_COMPILER_LAUNCHER "${CCACHE_PROGRAM}")
-    message(STATUS "ccache found: ${CCACHE_PROGRAM}")
-else()
-    message(STATUS "ccache not found; install it for faster incremental builds")
-endif()
-
 # On Windows with MSVC, align Verdad, FLTK, litehtml, and vcpkg static
 # dependencies on the static CRT (/MT). FLTK otherwise resets itself to /MD
 # inside its own CMake options.

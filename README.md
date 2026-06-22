@@ -76,8 +76,6 @@ AI assistance.
 
 ## SWORD modules
 
-## SWORD modules
-
 Verdad can start without SWORD modules, but Bible, commentary, dictionary,
 general-book, devotional, and packaged reading-plan content requires installed
 modules. Use `Tools > Module Manager...` or normal SWORD tools to install them.
@@ -163,12 +161,10 @@ sidecar files while the application is running.
 ## Build, test, and run
 
 Verdad is a C++17 CMake project. FLTK and litehtml are included as submodules.
-The build system defaults to the Ninja generator when Ninja is available, and
-uses ccache automatically when it is installed.
 
 ```bash
 git submodule update --init --recursive
-cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build -j$(nproc)
 ctest --test-dir build --output-on-failure
 ./build/verdad
@@ -181,8 +177,8 @@ still require a manual application smoke test.
 For a debug build:
 
 ```bash
-cmake -S . -B build-debug -G Ninja -DCMAKE_BUILD_TYPE=Debug
-cmake --build build-debug
+cmake -S . -B build-debug -DCMAKE_BUILD_TYPE=Debug
+cmake --build build-debug -j$(nproc)
 ```
 
 ### Debian and Ubuntu build dependencies

@@ -50,12 +50,6 @@ cmake_install.cmake
 Makefile
 compile_commands.json
 
-# Ninja build artifacts
-build.ninja
-rules.ninja
-.ninja_deps
-.ninja_log
-
 # IDE files
 .idea/
 .vscode/

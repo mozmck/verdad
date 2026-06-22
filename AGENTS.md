@@ -14,7 +14,7 @@ When work touches SWORD, BibleTime, or Xiphos behavior or APIs, check these loca
 Configure a local build with:
 
 ```bash
-cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
 ```
 
 Build with:
