@@ -17,6 +17,7 @@ class Fl_Choice;
 class Fl_Hold_Browser;
 class Fl_Box;
 class Fl_Button;
+class Fl_Check_Button;
 class Fl_Input;
 class Fl_Tree;
 class Fl_Tree_Item;
@@ -98,6 +99,7 @@ private:
     FilterableChoiceWidget* languageChoice_ = nullptr;
     Fl_Box* sortChoiceLabel_ = nullptr;
     Fl_Choice* sortChoice_ = nullptr;
+    Fl_Check_Button* reverseSortButton_ = nullptr;
     Fl_Box* moduleFilterLabel_ = nullptr;
     Fl_Input* moduleFilterInput_ = nullptr;
     Fl_Box* descriptionFilterLabel_ = nullptr;
@@ -108,7 +110,7 @@ private:
     Fl_Button* installButton_ = nullptr;
     Fl_Button* closeButton_ = nullptr;
 
-    int moduleBrowserColWidths_[10] = {36, 130, 260, 120, 130, 150, 90, 90, 55, 0};
+    int moduleBrowserColWidths_[10] = {36, 55, 130, 260, 120, 130, 150, 90, 90, 0};
 
     std::vector<SourceRow> sources_;
     std::vector<ModuleRow> modules_;
