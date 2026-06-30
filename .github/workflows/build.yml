@@ -230,20 +230,6 @@ jobs:
       - name: Package (.app bundle)
         run: cmake --build build --target app
 
-      - name: Copy SWORD data into bundle
-        run: |
-          SWORD_SHARE="${{ github.workspace }}/deps/sword/share/sword"
-          RESOURCES="build/Verdad.app/Contents/Resources/sword"
-          if [ -d "$SWORD_SHARE" ]; then
-            mkdir -p "$RESOURCES"
-            if [ -d "$SWORD_SHARE/locales.d" ]; then
-              cp -R "$SWORD_SHARE/locales.d" "$RESOURCES/"
-            fi
-            if [ -d "$SWORD_SHARE/mods.d" ]; then
-              cp -R "$SWORD_SHARE/mods.d" "$RESOURCES/"
-            fi
-          fi
-
       - name: Create DMG
         run: cmake --build build --target dmg
 
@@ -357,20 +343,6 @@ jobs:
       - name: Package (.app bundle)
         run: cmake --build build --target app
 
-      - name: Copy SWORD data into bundle
-        run: |
-          SWORD_SHARE="${{ github.workspace }}/deps/sword/share/sword"
-          RESOURCES="build/Verdad.app/Contents/Resources/sword"
-          if [ -d "$SWORD_SHARE" ]; then
-            mkdir -p "$RESOURCES"
-            if [ -d "$SWORD_SHARE/locales.d" ]; then
-              cp -R "$SWORD_SHARE/locales.d" "$RESOURCES/"
-            fi
-            if [ -d "$SWORD_SHARE/mods.d" ]; then
-              cp -R "$SWORD_SHARE/mods.d" "$RESOURCES/"
-            fi
-          fi
-
       - name: Create DMG
         run: cmake --build build --target dmg
 
@@ -472,30 +444,7 @@ jobs:
         run: choco install wixtoolset --yes
 
       - name: Package (zip)
-        shell: pwsh
-        run: |
-          # Copy SWORD data into the bundle directory before zipping
-          $swordShare = "${{ github.workspace }}\deps\sword\share\sword"
-          $bundleDir = (Get-ChildItem -Directory build\verdad-*-Windows-* | Select-Object -First 1)
-          if (!$bundleDir) {
-            # winzip hasn't created the dir yet; build it first to establish layout
-            cmake --build build --config Release --target winzip
-            $bundleDir = (Get-ChildItem -Directory build\verdad-*-Windows-* | Select-Object -First 1)
-          }
-          if (!$bundleDir) {
-            throw "Windows bundle directory was not created."
-          }
-          if ($bundleDir -and (Test-Path $swordShare)) {
-            $dest = Join-Path $bundleDir.FullName "sword"
-            Copy-Item -Recurse $swordShare $dest
-          }
-          # Re-create the zip with SWORD data included
-          $bundleName = $bundleDir.Name
-          Push-Location build
-          $zipFile = "${bundleName}.zip"
-          Remove-Item -Force $zipFile -ErrorAction SilentlyContinue
-          cmake -E tar cf "$zipFile" --format=zip "$bundleName"
-          Pop-Location
+        run: cmake --build build --config Release --target winzip
 
       - name: Package (MSI)
         run: cmake --build build --config Release --target msi

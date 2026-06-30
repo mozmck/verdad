@@ -946,6 +946,35 @@ std::string shellQuote(const std::string& text) {
 #endif
 }
 
+#ifdef _WIN32
+std::string powershellQuote(const std::string& text) {
+    std::string out = "'";
+    for (char c : text) {
+        if (c == '\'') out += "''";
+        else out.push_back(c);
+    }
+    out += "'";
+    return out;
+}
+
+std::string powershellArrayLiteral(const std::vector<std::string>& values) {
+    std::string out = "@(";
+    for (size_t i = 0; i < values.size(); ++i) {
+        if (i > 0) out += ",";
+        out += powershellQuote(values[i]);
+    }
+    out += ")";
+    return out;
+}
+
+bool runPowerShellArchiveCommand(const std::string& script) {
+    std::string cmd = "powershell -NoProfile -ExecutionPolicy Bypass -Command \"";
+    cmd += script;
+    cmd += "\" >NUL 2>NUL";
+    return std::system(cmd.c_str()) == 0;
+}
+#endif
+
 std::string makeUniqueTempDir(const std::string& prefix) {
     std::error_code ec;
     fs::path base = fs::temp_directory_path(ec);
@@ -984,6 +1013,22 @@ bool runZipArchive(const std::string& workingDir,
                    const std::string& archivePath,
                    bool includeTagsDb,
                    bool includeReadingPlansDb) {
+#ifdef _WIN32
+    std::vector<std::string> entries = {"preferences.conf"};
+    if (includeTagsDb) entries.push_back("tags.db");
+    if (includeReadingPlansDb) entries.push_back("reading_plans.db");
+    entries.push_back("studypad");
+
+    std::string script = "Set-Location -LiteralPath " +
+                         powershellQuote(workingDir) +
+                         "; Compress-Archive -LiteralPath " +
+                         powershellArrayLiteral(entries) +
+                         " -DestinationPath " +
+                         powershellQuote(archivePath) +
+                         " -Force";
+    if (runPowerShellArchiveCommand(script)) return true;
+#endif
+
     std::string cmd = "cd " + shellQuote(workingDir) +
                       " && zip -rq " + shellQuote(archivePath) +
                       " preferences.conf";
@@ -1000,6 +1045,15 @@ bool runZipArchive(const std::string& workingDir,
 
 bool runUnzipArchive(const std::string& archivePath,
                      const std::string& outputDir) {
+#ifdef _WIN32
+    std::string script = "Expand-Archive -LiteralPath " +
+                         powershellQuote(archivePath) +
+                         " -DestinationPath " +
+                         powershellQuote(outputDir) +
+                         " -Force";
+    if (runPowerShellArchiveCommand(script)) return true;
+#endif
+
     std::string cmd = "unzip -oq " + shellQuote(archivePath) +
                       " -d " + shellQuote(outputDir);
 #ifdef _WIN32

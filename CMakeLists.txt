@@ -326,6 +326,32 @@ set(VERDAD_BUNDLE_NAME
     "verdad-${PROJECT_VERSION}-${CMAKE_SYSTEM_NAME}-${CMAKE_SYSTEM_PROCESSOR}")
 set(VERDAD_BUNDLE_DIR "${CMAKE_BINARY_DIR}/${VERDAD_BUNDLE_NAME}")
 
+set(VERDAD_HAS_SWORD_COMMON_DATA OFF)
+if(IS_DIRECTORY "${VERDAD_SWORD_SHARE_DIR}/locales.d" AND
+   EXISTS "${VERDAD_SWORD_GLOBALS_CONF}")
+    set(VERDAD_HAS_SWORD_COMMON_DATA ON)
+elseif(APPLE OR WIN32)
+    message(WARNING
+        "SWORD common data was not found; app bundle/package targets will "
+        "need system SWORD data at runtime.")
+endif()
+
+function(verdad_append_copy_sword_common_data out_var destination)
+    set(commands)
+    if(VERDAD_HAS_SWORD_COMMON_DATA)
+        list(APPEND commands
+            COMMAND ${CMAKE_COMMAND} -E make_directory "${destination}"
+            COMMAND ${CMAKE_COMMAND} -E make_directory "${destination}/mods.d"
+            COMMAND ${CMAKE_COMMAND} -E copy_directory
+                    "${VERDAD_SWORD_SHARE_DIR}/locales.d"
+                    "${destination}/locales.d"
+            COMMAND ${CMAKE_COMMAND} -E copy
+                    "${VERDAD_SWORD_GLOBALS_CONF}"
+                    "${destination}/mods.d/globals.conf")
+    endif()
+    set(${out_var} ${commands} PARENT_SCOPE)
+endfunction()
+
 # Copy runtime CSS asset into the build tree on every build invocation.
 add_custom_target(copy_runtime_assets ALL
     COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_BINARY_DIR}/data"
@@ -364,9 +390,12 @@ if(WIN32)
         DESTINATION data)
     install(DIRECTORY LICENSES
         DESTINATION .)
-    if(IS_DIRECTORY "${VERDAD_SWORD_SHARE_DIR}")
-        install(DIRECTORY "${VERDAD_SWORD_SHARE_DIR}/"
+    if(VERDAD_HAS_SWORD_COMMON_DATA)
+        install(DIRECTORY "${VERDAD_SWORD_SHARE_DIR}/locales.d"
             DESTINATION sword)
+        install(FILES "${VERDAD_SWORD_GLOBALS_CONF}"
+            DESTINATION sword/mods.d
+            RENAME globals.conf)
     endif()
 else()
     install(TARGETS verdad DESTINATION ${CMAKE_INSTALL_BINDIR})
@@ -380,6 +409,13 @@ else()
         DESTINATION ${CMAKE_INSTALL_DATADIR}/verdad)
     install(DIRECTORY LICENSES
         DESTINATION ${CMAKE_INSTALL_DATADIR}/verdad)
+    if(APPLE AND VERDAD_HAS_SWORD_COMMON_DATA)
+        install(DIRECTORY "${VERDAD_SWORD_SHARE_DIR}/locales.d"
+            DESTINATION ${CMAKE_INSTALL_DATADIR}/sword)
+        install(FILES "${VERDAD_SWORD_GLOBALS_CONF}"
+            DESTINATION ${CMAKE_INSTALL_DATADIR}/sword/mods.d
+            RENAME globals.conf)
+    endif()
 endif()
 
 if(UNIX AND NOT APPLE)
@@ -577,6 +613,9 @@ if(APPLE)
     set(VERDAD_APP_CONTENTS "${VERDAD_APP_BUNDLE}/Contents")
     set(VERDAD_APP_RESOURCES "${VERDAD_APP_CONTENTS}/Resources")
     set(VERDAD_APP_MACOS "${VERDAD_APP_CONTENTS}/MacOS")
+    verdad_append_copy_sword_common_data(
+        VERDAD_MAC_SWORD_COMMON_DATA_COMMANDS
+        "${VERDAD_APP_RESOURCES}/sword")
 
     add_custom_target(app
         COMMAND ${CMAKE_COMMAND} -E rm -rf "${VERDAD_APP_BUNDLE}"
@@ -600,6 +639,7 @@ if(APPLE)
                 "${VERDAD_APP_RESOURCES}/LICENSE"
         COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/LICENSES"
                 "${VERDAD_APP_RESOURCES}/LICENSES"
+        ${VERDAD_MAC_SWORD_COMMON_DATA_COMMANDS}
         DEPENDS verdad copy_runtime_assets
         COMMENT "Assembling Verdad.app bundle"
         VERBATIM
@@ -626,6 +666,9 @@ if(WIN32)
     set(VERDAD_WIN_ZIP "${CMAKE_BINARY_DIR}/${VERDAD_BUNDLE_NAME}.zip")
     set(VERDAD_WIN_MSI "${CMAKE_BINARY_DIR}/${VERDAD_BUNDLE_NAME}.msi")
     set(VERDAD_WIN_LICENSE_TXT "${CMAKE_BINARY_DIR}/LICENSE.txt")
+    verdad_append_copy_sword_common_data(
+        VERDAD_WIN_SWORD_COMMON_DATA_COMMANDS
+        "${VERDAD_WIN_DIR}/sword")
 
     configure_file(
         "${CMAKE_SOURCE_DIR}/LICENSE"
@@ -652,6 +695,7 @@ if(WIN32)
                 "${VERDAD_WIN_DIR}/LICENSE"
         COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/LICENSES"
                 "${VERDAD_WIN_DIR}/LICENSES"
+        ${VERDAD_WIN_SWORD_COMMON_DATA_COMMANDS}
         COMMAND ${CMAKE_COMMAND} -E chdir "${CMAKE_BINARY_DIR}"
                 ${CMAKE_COMMAND} -E tar "cf" "${VERDAD_WIN_ZIP}" --format=zip
                 "${VERDAD_BUNDLE_NAME}"
