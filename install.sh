@@ -12,6 +12,8 @@ source_bin=""
 source_data=""
 source_license=""
 source_licenses=""
+source_lib=""
+source_sword=""
 
 usage() {
     cat <<'EOF'
@@ -21,14 +23,10 @@ Install a prebuilt Verdad bundle without requiring CMake on the target system.
 
 Expected bundle layout:
   bin/verdad
+  lib/verdad/
+  share/sword/
   share/verdad/
   install.sh
-
-The script also accepts a built source tree for developer testing:
-  build/verdad
-  data/
-  LICENSE
-  LICENSES/
 
 Default behavior:
   - If run as root, install under /usr/local.
@@ -119,27 +117,16 @@ escape_desktop_exec() {
 }
 
 detect_source_layout() {
-    if [[ -x "$script_dir/bin/verdad" && -d "$script_dir/share/verdad" ]]; then
+    if [[ -x "$script_dir/bin/verdad" &&
+          -d "$script_dir/lib/verdad" &&
+          -d "$script_dir/share/sword" &&
+          -d "$script_dir/share/verdad" ]]; then
         source_bin="$script_dir/bin/verdad"
+        source_lib="$script_dir/lib/verdad"
+        source_sword="$script_dir/share/sword"
         source_data="$script_dir/share/verdad"
         source_license="$script_dir/share/verdad/LICENSE"
         source_licenses="$script_dir/share/verdad/LICENSES"
-        return 0
-    fi
-
-    if [[ -x "$script_dir/build/verdad" && -d "$script_dir/data" ]]; then
-        source_bin="$script_dir/build/verdad"
-        source_data="$script_dir/data"
-        source_license="$script_dir/LICENSE"
-        source_licenses="$script_dir/LICENSES"
-        return 0
-    fi
-
-    if [[ -x "$script_dir/verdad" && -d "$script_dir/data" ]]; then
-        source_bin="$script_dir/verdad"
-        source_data="$script_dir/data"
-        source_license="$script_dir/LICENSE"
-        source_licenses="$script_dir/LICENSES"
         return 0
     fi
 
@@ -240,12 +227,24 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-detect_source_layout || die "Could not find a Verdad bundle. Expected bin/verdad with share/verdad, or a built source tree with build/verdad and data/."
+detect_source_layout || die "Could not find a complete Verdad bundle. Expected bin/verdad, lib/verdad, share/sword, and share/verdad."
 
 [[ -x "$source_bin" ]] || die "Missing executable: $source_bin"
+[[ -d "$source_lib" ]] || die "Missing private library directory: $source_lib"
+[[ -d "$source_sword/locales.d" ]] || die "Missing SWORD locales: $source_sword/locales.d"
+[[ -f "$source_sword/mods.d/globals.conf" ]] || die "Missing SWORD globals.conf: $source_sword/mods.d/globals.conf"
 [[ -f "$source_data/master.css" ]] || die "Missing runtime asset: $source_data/master.css"
 [[ -f "$source_data/help.html" ]] || die "Missing runtime asset: $source_data/help.html"
 [[ -f "$source_data/verdad_icon.png" ]] || die "Missing runtime asset: $source_data/verdad_icon.png"
+
+sword_runtime_found=0
+for candidate in "$source_lib"/libsword.so*; do
+    if [[ -f "$candidate" && ! -L "$candidate" ]]; then
+        sword_runtime_found=1
+        break
+    fi
+done
+[[ $sword_runtime_found -eq 1 ]] || die "Missing private libsword runtime in: $source_lib"
 
 if [[ -z "$install_mode" ]]; then
     if [[ $EUID -eq 0 ]]; then
@@ -274,6 +273,8 @@ fi
 prefix=$(expand_path "$prefix")
 
 dest_bin_dir="$prefix/bin"
+dest_lib_dir="$prefix/lib/verdad"
+dest_sword_dir="$prefix/share/sword"
 dest_data_dir="$prefix/share/verdad"
 dest_applications_dir="$prefix/share/applications"
 dest_pixmaps_dir="$prefix/share/pixmaps"
@@ -293,13 +294,17 @@ fi
 printf 'Install mode: %s\n' "$install_mode"
 printf 'Install prefix: %s\n' "$prefix"
 printf 'Source executable: %s\n' "$source_bin"
+printf 'Source private libraries: %s\n' "$source_lib"
+printf 'Source SWORD data: %s\n' "$source_sword"
 printf 'Source data: %s\n' "$source_data"
 
-install -d "$dest_bin_dir" "$dest_data_dir" \
+install -d "$dest_bin_dir" "$dest_lib_dir" "$dest_sword_dir" "$dest_data_dir" \
     "$dest_applications_dir" "$dest_pixmaps_dir" \
     "$dest_icon_128_dir" "$dest_icon_24_dir"
 
 install -m 0755 "$source_bin" "$dest_bin_dir/verdad"
+cp -a "$source_lib/." "$dest_lib_dir/"
+cp -a "$source_sword/." "$dest_sword_dir/"
 install -m 0644 "$source_data/master.css" "$dest_data_dir/master.css"
 install -m 0644 "$source_data/help.html" "$dest_data_dir/help.html"
 install -m 0644 "$source_data/verdad_icon.png" "$dest_data_dir/verdad_icon.png"

@@ -77,6 +77,10 @@ std::vector<fs::path> candidateSwordDataDirs() {
 #if defined(__APPLE__)
         // Inside .app bundle: Contents/MacOS/../Resources/sword
         dirs.push_back(dir.parent_path() / "Resources" / "sword");
+#elif !defined(_WIN32)
+        // Debian packages keep common SWORD data private to avoid colliding
+        // with files owned by libsword-common.
+        dirs.push_back(dir.parent_path() / "share" / "verdad" / "sword");
 #endif
         // FHS-like install or bundled layout
         dirs.push_back(dir.parent_path() / "share" / "sword");
