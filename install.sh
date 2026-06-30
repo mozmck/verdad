@@ -14,12 +14,16 @@ source_license=""
 source_licenses=""
 source_lib=""
 source_sword=""
+source_layout=""
+source_build_dir=""
+existing_sword_data=""
+skip_sword_data_install=0
 
 usage() {
     cat <<'EOF'
 Usage: ./install.sh [options]
 
-Install a prebuilt Verdad bundle without requiring CMake on the target system.
+Install Verdad from a prebuilt bundle, or from a local source build.
 
 Expected bundle layout:
   bin/verdad
@@ -27,6 +31,11 @@ Expected bundle layout:
   share/sword/
   share/verdad/
   install.sh
+
+Expected source build layout:
+  build/verdad
+  build/cmake_install.cmake
+  data/
 
 Default behavior:
   - If run as root, install under /usr/local.
@@ -87,6 +96,55 @@ desktop_owner_ids() {
     printf '%s:%s\n' "$(id -u)" "$(id -g)"
 }
 
+sword_dir_has_data() {
+    local path=$1
+    [[ -d "$path" ]] || return 1
+
+    if [[ -d "$path/locales.d" && -f "$path/mods.d/globals.conf" ]]; then
+        return 0
+    fi
+
+    if [[ -d "$path/mods.d" ]] && compgen -G "$path/mods.d/*.conf" >/dev/null; then
+        return 0
+    fi
+
+    return 1
+}
+
+find_existing_sword_data_dir() {
+    local home_dir
+    local candidate
+
+    if [[ -n "${SWORD_PATH:-}" ]]; then
+        while IFS= read -r candidate; do
+            [[ -n "$candidate" ]] || continue
+            if sword_dir_has_data "$candidate"; then
+                printf '%s\n' "$candidate"
+                return 0
+            fi
+        done < <(printf '%s\n' "$SWORD_PATH" | tr ':' '\n')
+    fi
+
+    if [[ "$install_mode" == "user" ]]; then
+        home_dir=$(desktop_owner_home)
+        for candidate in "$home_dir/.sword" "$home_dir/sword"; do
+            if sword_dir_has_data "$candidate"; then
+                printf '%s\n' "$candidate"
+                return 0
+            fi
+        done
+    fi
+
+    for candidate in /usr/local/share/sword /usr/share/sword /opt/homebrew/share/sword; do
+        if sword_dir_has_data "$candidate"; then
+            printf '%s\n' "$candidate"
+            return 0
+        fi
+    done
+
+    return 1
+}
+
 desktop_dir_for_home() {
     local home_dir=$1
     local config_file="$home_dir/.config/user-dirs.dirs"
@@ -127,6 +185,19 @@ detect_source_layout() {
         source_data="$script_dir/share/verdad"
         source_license="$script_dir/share/verdad/LICENSE"
         source_licenses="$script_dir/share/verdad/LICENSES"
+        source_layout="bundle"
+        return 0
+    fi
+
+    if [[ -x "$script_dir/build/verdad" &&
+          -f "$script_dir/build/cmake_install.cmake" &&
+          -d "$script_dir/data" ]]; then
+        source_bin="$script_dir/build/verdad"
+        source_data="$script_dir/data"
+        source_license="$script_dir/LICENSE"
+        source_licenses="$script_dir/LICENSES"
+        source_build_dir="$script_dir/build"
+        source_layout="source-build"
         return 0
     fi
 
@@ -227,24 +298,30 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-detect_source_layout || die "Could not find a complete Verdad bundle. Expected bin/verdad, lib/verdad, share/sword, and share/verdad."
+detect_source_layout || die "Could not find a complete Verdad bundle or source build. Expected bin/verdad, lib/verdad, share/sword, and share/verdad; or build/verdad, build/cmake_install.cmake, and data/."
 
 [[ -x "$source_bin" ]] || die "Missing executable: $source_bin"
-[[ -d "$source_lib" ]] || die "Missing private library directory: $source_lib"
-[[ -d "$source_sword/locales.d" ]] || die "Missing SWORD locales: $source_sword/locales.d"
-[[ -f "$source_sword/mods.d/globals.conf" ]] || die "Missing SWORD globals.conf: $source_sword/mods.d/globals.conf"
 [[ -f "$source_data/master.css" ]] || die "Missing runtime asset: $source_data/master.css"
 [[ -f "$source_data/help.html" ]] || die "Missing runtime asset: $source_data/help.html"
 [[ -f "$source_data/verdad_icon.png" ]] || die "Missing runtime asset: $source_data/verdad_icon.png"
 
-sword_runtime_found=0
-for candidate in "$source_lib"/libsword.so*; do
-    if [[ -f "$candidate" && ! -L "$candidate" ]]; then
-        sword_runtime_found=1
-        break
-    fi
-done
-[[ $sword_runtime_found -eq 1 ]] || die "Missing private libsword runtime in: $source_lib"
+if [[ "$source_layout" == "bundle" ]]; then
+    [[ -d "$source_lib" ]] || die "Missing private library directory: $source_lib"
+    [[ -d "$source_sword/locales.d" ]] || die "Missing SWORD locales: $source_sword/locales.d"
+    [[ -f "$source_sword/mods.d/globals.conf" ]] || die "Missing SWORD globals.conf: $source_sword/mods.d/globals.conf"
+
+    sword_runtime_found=0
+    for candidate in "$source_lib"/libsword.so*; do
+        if [[ -f "$candidate" && ! -L "$candidate" ]]; then
+            sword_runtime_found=1
+            break
+        fi
+    done
+    [[ $sword_runtime_found -eq 1 ]] || die "Missing private libsword runtime in: $source_lib"
+else
+    command -v cmake >/dev/null 2>&1 || die "Installing from a source build requires cmake on PATH."
+    [[ -f "$source_build_dir/cmake_install.cmake" ]] || die "Missing CMake install script: $source_build_dir/cmake_install.cmake"
+fi
 
 if [[ -z "$install_mode" ]]; then
     if [[ $EUID -eq 0 ]]; then
@@ -272,6 +349,10 @@ fi
 
 prefix=$(expand_path "$prefix")
 
+if existing_sword_data=$(find_existing_sword_data_dir); then
+    skip_sword_data_install=1
+fi
+
 dest_bin_dir="$prefix/bin"
 dest_lib_dir="$prefix/lib/verdad"
 dest_sword_dir="$prefix/share/sword"
@@ -293,18 +374,76 @@ fi
 
 printf 'Install mode: %s\n' "$install_mode"
 printf 'Install prefix: %s\n' "$prefix"
+printf 'Source layout: %s\n' "$source_layout"
 printf 'Source executable: %s\n' "$source_bin"
-printf 'Source private libraries: %s\n' "$source_lib"
-printf 'Source SWORD data: %s\n' "$source_sword"
 printf 'Source data: %s\n' "$source_data"
+if [[ $skip_sword_data_install -eq 1 ]]; then
+    printf 'Existing SWORD data: %s\n' "$existing_sword_data"
+    printf 'Bundled SWORD data: skipped\n'
+fi
 
-install -d "$dest_bin_dir" "$dest_lib_dir" "$dest_sword_dir" "$dest_data_dir" \
+desktop_file="$dest_applications_dir/verdad.desktop"
+
+if [[ "$source_layout" == "source-build" ]]; then
+    printf 'Source CMake build: %s\n' "$source_build_dir"
+    source_build_config=""
+    if [[ -f "$source_build_dir/CMakeCache.txt" ]]; then
+        source_build_config=$(sed -n 's/^CMAKE_BUILD_TYPE:STRING=//p' \
+            "$source_build_dir/CMakeCache.txt" | tail -n 1)
+    fi
+    source_build_config=${source_build_config:-Release}
+
+    VERDAD_SKIP_BUNDLED_SWORD_DATA_INSTALL=$skip_sword_data_install cmake \
+        -DCMAKE_INSTALL_PREFIX="$prefix" \
+        -DCMAKE_INSTALL_CONFIG_NAME="$source_build_config" \
+        -DCMAKE_INSTALL_LOCAL_ONLY=1 \
+        -P "$source_build_dir/cmake_install.cmake"
+
+    if [[ ! -f "$desktop_file" ]]; then
+        install -d "$dest_applications_dir"
+        write_desktop_entry "$desktop_file" "$dest_bin_dir/verdad"
+    fi
+
+    update_desktop_cache "$dest_applications_dir" "$prefix/share/icons/hicolor"
+
+    if [[ $assume_yes -eq 0 ]] && can_prompt; then
+        desktop_dir=$(desktop_dir_for_home "$(desktop_owner_home)")
+        printf 'Create a desktop launcher in %s? [y/N] ' "$desktop_dir"
+        read -r reply
+        if [[ "$reply" =~ ^[Yy]$ ]]; then
+            install_desktop_launcher "$desktop_file"
+        fi
+    fi
+
+    printf '\nInstalled Verdad to %s\n' "$prefix"
+    printf 'Binary: %s/bin/verdad\n' "$prefix"
+    printf 'Desktop entry: %s/share/applications/verdad.desktop\n' "$prefix"
+
+    if [[ "$install_mode" == "user" && "$prefix" == "$HOME/.local" ]]; then
+        printf 'If %s/bin is not on your PATH, start Verdad with:\n' "$HOME/.local"
+        printf '  %s/bin/verdad\n' "$HOME/.local"
+    fi
+
+    exit 0
+fi
+
+printf 'Source private libraries: %s\n' "$source_lib"
+if [[ $skip_sword_data_install -eq 0 ]]; then
+    printf 'Source SWORD data: %s\n' "$source_sword"
+fi
+
+install -d "$dest_bin_dir" "$dest_lib_dir" "$dest_data_dir" \
     "$dest_applications_dir" "$dest_pixmaps_dir" \
     "$dest_icon_128_dir" "$dest_icon_24_dir"
+if [[ $skip_sword_data_install -eq 0 ]]; then
+    install -d "$dest_sword_dir"
+fi
 
 install -m 0755 "$source_bin" "$dest_bin_dir/verdad"
 cp -a "$source_lib/." "$dest_lib_dir/"
-cp -a "$source_sword/." "$dest_sword_dir/"
+if [[ $skip_sword_data_install -eq 0 ]]; then
+    cp -a "$source_sword/." "$dest_sword_dir/"
+fi
 install -m 0644 "$source_data/master.css" "$dest_data_dir/master.css"
 install -m 0644 "$source_data/help.html" "$dest_data_dir/help.html"
 install -m 0644 "$source_data/verdad_icon.png" "$dest_data_dir/verdad_icon.png"
@@ -332,7 +471,6 @@ install -m 0644 "$icon_128_source" "$dest_pixmaps_dir/verdad.png"
 install -m 0644 "$icon_128_source" "$dest_icon_128_dir/verdad.png"
 install -m 0644 "$icon_24_source" "$dest_icon_24_dir/verdad.png"
 
-desktop_file="$dest_applications_dir/verdad.desktop"
 write_desktop_entry "$desktop_file" "$dest_bin_dir/verdad"
 update_desktop_cache "$dest_applications_dir" "$prefix/share/icons/hicolor"
 

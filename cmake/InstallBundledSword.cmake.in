@@ -5,16 +5,22 @@ endif()
 set(sword_library "@SWORD_LIBRARIES@")
 set(sword_share_dir "@VERDAD_SWORD_SHARE_DIR@")
 set(sword_globals_conf "@VERDAD_SWORD_GLOBALS_CONF@")
+set(skip_sword_data OFF)
+if("$ENV{VERDAD_SKIP_BUNDLED_SWORD_DATA_INSTALL}" STREQUAL "1")
+    set(skip_sword_data ON)
+endif()
 
 if(NOT EXISTS "${sword_library}")
     message(FATAL_ERROR "Missing shared SWORD library: ${sword_library}")
 endif()
-if(NOT IS_DIRECTORY "${sword_share_dir}/locales.d")
-    message(FATAL_ERROR
-        "Missing SWORD locales directory under ${sword_share_dir}.")
-endif()
-if(NOT EXISTS "${sword_globals_conf}")
-    message(FATAL_ERROR "Missing SWORD globals.conf: ${sword_globals_conf}")
+if(NOT skip_sword_data)
+    if(NOT IS_DIRECTORY "${sword_share_dir}/locales.d")
+        message(FATAL_ERROR
+            "Missing SWORD locales directory under ${sword_share_dir}.")
+    endif()
+    if(NOT EXISTS "${sword_globals_conf}")
+        message(FATAL_ERROR "Missing SWORD globals.conf: ${sword_globals_conf}")
+    endif()
 endif()
 
 set(sword_library_dir
@@ -27,9 +33,13 @@ file(INSTALL "${sword_library}"
     DESTINATION "${sword_library_dir}"
     USE_SOURCE_PERMISSIONS
     FOLLOW_SYMLINK_CHAIN)
-file(INSTALL "${sword_share_dir}/locales.d"
-    DESTINATION "${sword_data_dir}"
-    USE_SOURCE_PERMISSIONS)
-file(INSTALL "${sword_globals_conf}"
-    DESTINATION "${sword_data_dir}/mods.d"
-    USE_SOURCE_PERMISSIONS)
+if(skip_sword_data)
+    message(STATUS "Skipping bundled SWORD data install; normal SWORD data already exists.")
+else()
+    file(INSTALL "${sword_share_dir}/locales.d"
+        DESTINATION "${sword_data_dir}"
+        USE_SOURCE_PERMISSIONS)
+    file(INSTALL "${sword_globals_conf}"
+        DESTINATION "${sword_data_dir}/mods.d"
+        USE_SOURCE_PERMISSIONS)
+endif()

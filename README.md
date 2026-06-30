@@ -241,6 +241,12 @@ To install directly from a source build:
 cmake --install build --prefix "$HOME/.local"
 ```
 
+Or use the repository installer after building:
+
+```bash
+./install.sh --user
+```
+
 To use the standalone installer, build and unpack the prebuilt bundle, then run
 `install.sh` from inside the unpacked directory:
 
@@ -251,7 +257,9 @@ tar -xzf build/verdad-*.tar.gz -C /tmp
 ```
 
 The standalone installer uses `~/.local` by default. Run it with `sudo` for a
-system-wide installation under `/usr/local`. Useful options:
+system-wide installation under `/usr/local`. It skips bundled SWORD common data
+when an existing SWORD data directory is found in `SWORD_PATH`, `~/.sword`,
+`~/sword`, `/usr/local/share/sword`, or `/usr/share/sword`. Useful options:
 
 - `./install.sh --user`
 - `./install.sh --system`
