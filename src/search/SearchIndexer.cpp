@@ -96,7 +96,8 @@ bool isDirectSearchWordByte(unsigned char c) {
 }
 
 bool containsWholeDirectSearchMatch(std::string_view haystack,
-                                    std::string_view needle) {
+                                    std::string_view needle,
+                                    bool prefix = false) {
     if (needle.empty()) return false;
 
     size_t pos = 0;
@@ -108,7 +109,7 @@ bool containsWholeDirectSearchMatch(std::string_view haystack,
         const bool rightBoundary =
             (end >= haystack.size()) ||
             !isDirectSearchWordByte(static_cast<unsigned char>(haystack[end]));
-        if (leftBoundary && rightBoundary) return true;
+        if (leftBoundary && (prefix || rightBoundary)) return true;
         ++pos;
     }
 
@@ -243,6 +244,29 @@ std::string quoteFtsToken(const std::string& token) {
         }
     }
     return "\"" + escaped + "\"";
+}
+
+std::string regexFtsPrefilter(const std::string& pattern) {
+    // FTS matches tokens, while regex can match inside a word. Only filter
+    // when a start anchor guarantees a token start, and use a prefix
+    // rather than requiring the regex's literal fragment to be a whole word.
+    // std::regex's byte-oriented \b is not a unicode61 token boundary.
+    if (hasUnsupportedRegexLiteralPrefilterSyntax(pattern)) return "";
+    if (pattern.rfind("^", 0) != 0) return "";
+    size_t start = pattern.rfind("^\\b", 0) == 0 ? 3 : 1;
+
+    size_t end = start;
+    while (end < pattern.size() &&
+           static_cast<unsigned char>(pattern[end]) < 0x80 &&
+           std::isalnum(static_cast<unsigned char>(pattern[end]))) ++end;
+    std::string literal = pattern.substr(start, end - start);
+    if (end < pattern.size()) {
+        if (pattern[end] == '{') return "";
+        if ((pattern[end] == '*' || pattern[end] == '?') && !literal.empty()) {
+            literal.pop_back();
+        }
+    }
+    return literal.empty() ? "" : "{title content}:" + quoteFtsToken(literal) + "*";
 }
 
 std::string normalizeWordToken(const std::string& raw) {
@@ -387,7 +411,6 @@ smart_search::QueryExpansionOptions toQueryExpansionOptions(
     queryOptions.includeSpelling = options.spellingCorrection;
     queryOptions.includeSynonyms = options.includeSynonyms;
     queryOptions.includePartialWords = options.partialWordMatching;
-    queryOptions.includeFuzzy = options.fuzzyExpansion;
     return queryOptions;
 }
 
@@ -1384,12 +1407,17 @@ std::vector<bool> buildLiteralMask(const std::string& text,
 
     std::string lowerText = lowerCopy(text);
     for (const auto& needleRaw : needles) {
+        const bool prefix = !needleRaw.empty() && needleRaw.back() == '*';
         std::string needle = lowerCopy(normalizeWordToken(needleRaw));
         if (needle.empty()) continue;
 
         size_t pos = 0;
         while ((pos = lowerText.find(needle, pos)) != std::string::npos) {
-            const size_t end = pos + needle.size();
+            size_t end = pos + needle.size();
+            if (prefix) {
+                while (end < text.size() &&
+                       isLiteralWordByte(static_cast<unsigned char>(text[end]))) ++end;
+            }
             bool ok = true;
             if (requireWordBoundaries) {
                 if (pos > 0 &&
@@ -1425,7 +1453,7 @@ std::string buildWordSnippetFromSourceText(const std::string& plainText,
         std::string phrase = trimCopy(query);
         if (!phrase.empty()) needles.push_back(std::move(phrase));
     } else {
-        needles = tokenizeWords(query);
+        needles = smart_search::queryTerms(query);
     }
 
     auto makeSnippet = [&](const std::string& text) {
@@ -1631,22 +1659,25 @@ std::string buildSmartSnippetFromSourceText(
 
     auto markInLower = [&](const std::string& haystack,
                            const std::string& needle,
-                           bool useStrippedMap) {
+                           bool useStrippedMap,
+                           bool prefix = false) {
         if (needle.empty()) return;
         size_t pos = 0;
         while ((pos = haystack.find(needle, pos)) != std::string::npos) {
             size_t end = pos + needle.size();
-            if (!options.partialWordMatching) {
-                const bool leftBoundary =
-                    (pos == 0) ||
-                    !isLiteralWordByte(static_cast<unsigned char>(haystack[pos - 1]));
-                const bool rightBoundary =
-                    (end >= haystack.size()) ||
-                    !isLiteralWordByte(static_cast<unsigned char>(haystack[end]));
-                if (!leftBoundary || !rightBoundary) {
-                    ++pos;
-                    continue;
-                }
+            const bool leftBoundary =
+                (pos == 0) ||
+                !isLiteralWordByte(static_cast<unsigned char>(haystack[pos - 1]));
+            const bool rightBoundary =
+                (end >= haystack.size()) ||
+                !isLiteralWordByte(static_cast<unsigned char>(haystack[end]));
+            if (!leftBoundary || (!prefix && !rightBoundary)) {
+                ++pos;
+                continue;
+            }
+            if (prefix) {
+                while (end < haystack.size() &&
+                       isLiteralWordByte(static_cast<unsigned char>(haystack[end]))) ++end;
             }
             if (useStrippedMap) {
                 size_t origStart = (pos < strippedToOrig.size()) ? strippedToOrig[pos] : pos;
@@ -1676,15 +1707,21 @@ std::string buildSmartSnippetFromSourceText(
 
     for (const auto& term : queryTerms) {
         std::string lowerTerm = lowerCopy(term);
+        const bool explicitPrefix = lowerTerm.back() == '*';
+        if (explicitPrefix) lowerTerm.pop_back();
+        const bool prefix = explicitPrefix ||
+            (options.partialWordMatching && lowerTerm.size() >= 4 &&
+             lowerTerm.find(' ') == std::string::npos);
         std::string strippedTerm = smart_search::stripDiacritics(lowerTerm);
         std::string lowerStrippedTerm = lowerCopy(strippedTerm);
 
-        markInLower(lowerPlain, lowerTerm, false);
-        markInLower(lowerStrippedPlain, lowerTerm, true);
+        markInLower(lowerPlain, lowerTerm, false, prefix);
+        markInLower(lowerStrippedPlain, lowerTerm, true, prefix);
         if (lowerStrippedTerm != lowerTerm) {
-            markInLower(lowerStrippedPlain, lowerStrippedTerm, true);
+            markInLower(lowerStrippedPlain, lowerStrippedTerm, true, prefix);
         }
 
+        if (explicitPrefix) continue;
         if (options.includeSynonyms) {
             auto syns = smart_search::expandSynonyms(lowerTerm, language);
             for (const auto& syn : syns) {
@@ -2352,14 +2389,17 @@ std::string SearchIndexer::buildWordFtsQuery(const SearchRequest& request,
     if (exactPhrase) {
         contentClause = "{title content}:" + quoteFtsToken(text);
     } else {
-        std::vector<std::string> tokens = tokenizeWords(text);
+        std::vector<std::string> tokens = smart_search::queryTerms(text);
         if (tokens.empty()) return "";
 
         std::ostringstream content;
         content << "{title content}:(";
         for (size_t i = 0; i < tokens.size(); ++i) {
             if (i) content << " AND ";
-            content << quoteFtsToken(tokens[i]);
+            const bool prefix = tokens[i].back() == '*';
+            content << quoteFtsToken(prefix ? tokens[i].substr(0, tokens[i].size() - 1)
+                                           : tokens[i]);
+            if (prefix) content << "*";
         }
         content << ")";
         contentClause = content.str();
@@ -2705,17 +2745,8 @@ std::vector<SearchResult> SearchIndexer::buildResultSnippets(
     std::vector<std::string> smartQueryTerms;
     std::unordered_map<std::string, std::vector<std::string>> spellingAlternatives;
     if (kind == SnippetKind::Smart) {
-        std::istringstream ss(query);
-        std::string word;
-        while (ss >> word) {
-            size_t s = 0;
-            size_t e = word.size();
-            while (s < e && !std::isalnum(static_cast<unsigned char>(word[s])) &&
-                   static_cast<unsigned char>(word[s]) < 0x80) ++s;
-            while (e > s && !std::isalnum(static_cast<unsigned char>(word[e - 1])) &&
-                   static_cast<unsigned char>(word[e - 1]) < 0x80) --e;
-            if (s < e) smartQueryTerms.push_back(word.substr(s, e - s));
-        }
+        smartQueryTerms = smart_search::queryTerms(query, language,
+                                                   smartOptions.includeSynonyms);
         spellingAlternatives = buildSmartSpellingAlternatives(
             SearchRequest{}, query, smartOptions);
     }
@@ -2882,7 +2913,7 @@ std::vector<SearchResult> SearchIndexer::searchWordDirect(
             maxResults);
     }
 
-    std::vector<std::string> tokens = tokenizeWords(query);
+    std::vector<std::string> tokens = smart_search::queryTerms(query);
     if (tokens.empty()) return {};
 
     std::vector<std::string> normalizedTokens;
@@ -2904,7 +2935,10 @@ std::vector<SearchResult> SearchIndexer::searchWordDirect(
             const bool matched = std::all_of(
                 normalizedTokens.begin(), normalizedTokens.end(),
                 [&searchable](const std::string& token) {
-                    return containsWholeDirectSearchMatch(searchable, token);
+                    std::string_view needle(token);
+                    const bool prefix = needle.back() == '*';
+                    if (prefix) needle.remove_suffix(1);
+                    return containsWholeDirectSearchMatch(searchable, needle, prefix);
                 });
             if (!matched) return false;
             snippetOut = buildWordSnippetFromSourceText(
@@ -2999,15 +3033,8 @@ std::vector<SearchResult> SearchIndexer::searchRegex(
         return results;
     }
 
-    std::string literalPrefilter = extractRegexLiteralPrefilter(pattern);
-    if (!caseSensitive && !isAsciiText(literalPrefilter)) {
-        literalPrefilter.clear();
-    }
-
     MetadataFilter filter = buildMetadataFilter(request, "e");
-    std::string prefilterQuery = literalPrefilter.empty()
-        ? ""
-        : buildWordFtsQuery(SearchRequest{}, literalPrefilter, true);
+    std::string prefilterQuery = regexFtsPrefilter(pattern);
 
     sqlite3* readDb = nullptr;
     int rc = sqlite3_open_v2(
@@ -3254,7 +3281,7 @@ SearchIndexer::buildSmartSpellingAlternatives(
     (void)request;
 
     std::unordered_map<std::string, std::vector<std::string>> alternatives;
-    std::vector<std::string> tokens = tokenizeWords(query);
+    std::vector<std::string> tokens = smart_search::queryTerms(query);
     if (!db_ || tokens.empty() || !options.spellingCorrection) return alternatives;
 
     struct Candidate {
@@ -3328,6 +3355,8 @@ SearchIndexer::buildSmartSpellingAlternatives(
     std::lock_guard<std::mutex> lock(dbMutex_);
 
     for (const auto& rawToken : tokens) {
+        // A wildcard is an explicit request, never a misspelling.
+        if (rawToken.back() == '*') continue;
         std::string lowerToken = lowerCopy(normalizeWordToken(rawToken));
         std::string normalized = normalizeVocabularyTerm(rawToken);
         if (lowerToken.empty() || normalized.empty()) continue;
@@ -3355,14 +3384,13 @@ SearchIndexer::buildSmartSpellingAlternatives(
 
         const auto exactIt = candidates.find(normalized);
         const bool exactTermExists = exactIt != candidates.end();
-        const int exactTermTotalCount = exactTermExists ? exactIt->second.totalCount : 0;
-        const bool exactTermIsRare = exactTermExists && exactTermTotalCount < 64;
+        // A rare valid word is still valid. Never "correct" railer to ruler.
+        if (exactTermExists) continue;
         const bool allowPartialCandidateProbe =
             options.partialWordMatching || options.fuzzyExpansion;
 
         for (const auto& probe : spellingProbeTerms(
-                 normalized, !exactTermExists || exactTermIsRare ||
-                             options.fuzzyExpansion)) {
+                 normalized, true)) {
             if (candidates.size() >= kMaxSpellingCandidatesPerToken) break;
             sqlite3_stmt* stmt = nullptr;
             if (sqlite3_prepare_v2(
@@ -3378,10 +3406,7 @@ SearchIndexer::buildSmartSpellingAlternatives(
         }
 
         std::string phoneticKey = smart_search::metaphoneKey(normalized);
-        const bool allowBroadFuzzyCandidates =
-            options.fuzzyExpansion || !exactTermExists || exactTermIsRare;
-        if (allowBroadFuzzyCandidates &&
-            !phoneticKey.empty() && normalized.size() >= 4 &&
+        if (!phoneticKey.empty() && normalized.size() >= 4 &&
             candidates.size() < kMaxSpellingCandidatesPerToken) {
             sqlite3_stmt* stmt = nullptr;
             if (sqlite3_prepare_v2(
@@ -3400,7 +3425,7 @@ SearchIndexer::buildSmartSpellingAlternatives(
             if (stmt) sqlite3_finalize(stmt);
         }
 
-        if (allowBroadFuzzyCandidates && allowPartialCandidateProbe) {
+        if (allowPartialCandidateProbe) {
             for (const auto& prefix : spellingPrefixProbes(normalized)) {
                 if (candidates.size() >= kMaxSpellingCandidatesPerToken) break;
                 std::string upperBound = prefixRangeUpperBound(prefix);
@@ -3452,13 +3477,6 @@ SearchIndexer::buildSmartSpellingAlternatives(
             } else if (candidate.orthographicHit) {
                 candidate.score = std::max(fuzzy, 0.76);
                 acceptable = true;
-            } else if (candidate.phoneticHit && normalized.size() >= 5 &&
-                       options.fuzzyExpansion &&
-                       std::abs(static_cast<int>(normalized.size()) -
-                                static_cast<int>(candidateTerm.size())) <= 2 &&
-                       fuzzy >= 0.50) {
-                candidate.score = std::max(fuzzy, 0.70);
-                acceptable = true;
             }
 
             if (!acceptable) continue;
@@ -3479,7 +3497,8 @@ SearchIndexer::buildSmartSpellingAlternatives(
             auto& values = alternatives[key];
             std::unordered_set<std::string> seen(values.begin(), values.end());
             for (const auto& candidate : ranked) {
-                if (values.size() >= 8) break;
+                if (values.size() >= 3) break;
+                if (candidate.score < ranked.front().score - 0.05) break;
                 if (candidate.term == normalized) continue;
                 if (seen.insert(candidate.term).second) {
                     values.push_back(candidate.term);

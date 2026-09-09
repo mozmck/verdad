@@ -271,6 +271,30 @@ target_link_libraries(verdad-bench PRIVATE
 target_compile_definitions(verdad-bench PRIVATE VERDAD_NO_APP_FONT_LOOKUP)
 
 if(BUILD_TESTING)
+    find_package(Threads REQUIRED)
+    add_executable(verdad-search-tests
+        tests/SearchTests.cpp
+        src/search/SearchIndexer.cpp
+        src/search/SearchSnippet.cpp
+        src/search/SmartSearch.cpp
+        src/import/ImportedModuleManager.cpp
+        src/sword/SwordPaths.cpp
+        src/app/PlatformPaths.cpp
+    )
+    target_include_directories(verdad-search-tests PRIVATE
+        ${CMAKE_SOURCE_DIR}/src
+        ${SWORD_INCLUDE_DIRS}
+    )
+    target_link_libraries(verdad-search-tests PRIVATE
+        ${SWORD_LIBRARIES}
+        SQLite::SQLite3
+        Threads::Threads
+    )
+    if(WIN32)
+        target_compile_definitions(verdad-search-tests PRIVATE NOMINMAX)
+    endif()
+    add_test(NAME search-regressions COMMAND verdad-search-tests)
+
     add_executable(verdad-morphology-tests
         tests/MorphologyTests.cpp
         src/translation/MorphologyProvider.cpp

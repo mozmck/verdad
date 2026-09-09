@@ -48,11 +48,16 @@ struct QueryExpansionOptions {
     bool includeSpelling = true;
     bool includeSynonyms = true;
     bool includePartialWords = true;
-    bool includeFuzzy = true;
 };
 
-/// Build an FTS5 query that covers the original terms plus fuzzy expansions.
-/// Each query word is expanded with synonyms and phonetic variants, then
+/// Split search input, preserving a trailing '*' as an explicit word prefix.
+/// With synonyms enabled, recognize known multi-word expressions as phrases.
+std::vector<std::string> queryTerms(const std::string& query,
+                                  const std::string& language = "en",
+                                  bool includeSynonyms = false);
+
+/// Build an FTS5 query using synonyms and vocabulary-validated corrections.
+/// Each query term is expanded with enabled alternatives, then
 /// combined with OR within each word group and AND across word groups.
 std::string buildSmartFtsQuery(const std::string& query,
                                const std::string& language = "en",

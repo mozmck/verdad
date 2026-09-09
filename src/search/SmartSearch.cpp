@@ -192,29 +192,29 @@ const std::vector<SynonymGroup>& englishSynonyms() {
         // Deity / divine references
         {{"god", "lord", "almighty", "creator", "deity"}},
         {{"jesus", "christ", "messiah", "savior", "saviour", "redeemer", "immanuel", "emmanuel"}},
-        {{"holy spirit", "spirit", "comforter", "counselor", "counsellor", "advocate", "helper", "paraclete"}},
+        {{"holy spirit", "holy ghost", "paraclete"}},
 
         // People / roles
         {{"king", "ruler", "sovereign", "monarch"}},
         {{"queen", "empress", "sovereign"}},
         {{"prophet", "seer", "oracle"}},
         {{"priest", "minister", "clergyman"}},
-        {{"apostle", "disciple", "follower"}},
+        {{"disciple", "follower", "pupil"}},
         {{"servant", "slave", "bondservant", "bondman", "handmaid", "handmaiden", "maidservant"}},
         {{"master", "lord", "ruler", "owner"}},
         {{"teacher", "rabbi", "master", "instructor"}},
         {{"shepherd", "pastor", "herdsman"}},
-        {{"child", "children", "offspring", "progeny", "son", "daughter"}},
+        {{"child", "children", "offspring", "progeny"}},
         {{"father", "dad", "parent", "patriarch"}},
         {{"mother", "parent", "matriarch"}},
         {{"brother", "sibling", "brethren", "kinsman"}},
-        {{"wife", "spouse", "bride", "woman"}},
-        {{"husband", "spouse", "bridegroom", "man"}},
+        {{"wife", "bride"}},
+        {{"husband", "bridegroom"}},
         {{"enemy", "foe", "adversary", "opponent"}},
         {{"stranger", "foreigner", "alien", "sojourner", "pilgrim"}},
         {{"elder", "overseer", "bishop"}},
         {{"warrior", "soldier", "fighter", "champion"}},
-        {{"nation", "people", "gentile", "heathen"}},
+        {{"gentile", "heathen"}},
 
         // Actions / verbs
         {{"pray", "prayer", "supplication", "petition", "intercession", "entreat", "beseech", "implore"}},
@@ -226,7 +226,7 @@ const std::vector<SynonymGroup>& englishSynonyms() {
         {{"bless", "blessing", "benediction", "beatitude"}},
         {{"curse", "cursed", "accursed", "damned", "anathema"}},
         {{"believe", "faith", "trust", "confidence"}},
-        {{"love", "charity", "compassion", "lovingkindness", "loving-kindness", "kindness", "mercy", "affection"}},
+        {{"love", "charity", "affection"}},
         {{"hate", "hatred", "abhor", "detest", "loathe", "despise"}},
         {{"fear", "dread", "terror", "trembling", "awe", "reverence"}},
         {{"rejoice", "joy", "gladness", "delight", "happiness", "mirth", "jubilation"}},
@@ -287,51 +287,71 @@ const std::vector<SynonymGroup>& englishSynonyms() {
         {{"darkness", "shadow", "gloom", "blackness", "night"}},
         {{"life", "living", "existence", "vitality"}},
         {{"bread", "food", "nourishment", "sustenance", "provision"}},
-        {{"wine", "drink", "cup", "libation"}},
-        {{"blood", "sacrifice", "offering", "atonement"}},
+        {{"libation", "drink offering"}},
+        {{"sacrifice", "offering", "oblation"}},
         {{"cross", "crucify", "crucifixion", "calvary", "golgotha"}},
         {{"angel", "messenger", "seraph", "seraphim", "cherub", "cherubim"}},
         {{"demon", "devil", "satan", "evil spirit", "unclean spirit", "fiend"}},
         {{"miracle", "wonder", "sign", "marvel", "portent", "prodigy"}},
         {{"prophecy", "revelation", "vision", "oracle"}},
         {{"parable", "allegory", "fable", "story", "illustration"}},
-        {{"tithe", "offering", "sacrifice", "oblation", "gift"}},
+        {{"tithe", "tenth"}},
         {{"baptize", "baptism", "immerse", "immersion", "washing", "cleansing"}},
         {{"eternal", "everlasting", "forever", "perpetual", "immortal", "infinite"}},
         {{"tribulation", "trial", "affliction", "suffering", "persecution", "distress", "hardship"}},
-        {{"idol", "idolatry", "graven image", "false god", "abomination"}},
+        {{"idol", "graven image", "false god"}},
         {{"treasure", "riches", "wealth", "abundance", "prosperity"}},
-        {{"poor", "poverty", "needy", "destitute", "humble", "lowly", "meek"}},
+        {{"poor", "needy", "destitute", "impoverished"}},
         {{"proud", "pride", "arrogant", "arrogance", "haughty", "vain"}},
         {{"faithful", "faithful", "loyal", "steadfast", "devoted", "true"}},
         {{"wrath", "anger", "fury", "rage", "indignation"}},
         {{"patience", "endurance", "perseverance", "longsuffering", "forbearance"}},
         {{"temptation", "test", "trial", "enticement", "allurement"}},
-        {{"armor", "armour", "shield", "breastplate", "helmet", "sword"}},
+        {{"armor", "armour"}},
 
         // Nature / animals
-        {{"lamb", "sheep", "ewe", "ram", "flock"}},
+        {{"lamb", "lambkin"}},
         //{{"lion", "beast", "predator"}},
         {{"dove", "pigeon", "turtledove"}},
-        {{"serpent", "snake", "viper", "dragon"}},
-        {{"ox", "bull", "bullock", "calf", "cattle", "herd"}},
-        {{"horse", "steed", "chariot"}},
-        {{"fig", "olive", "vine", "vineyard"}},
-        {{"tree", "cedar", "oak", "palm"}},
+        {{"serpent", "snake"}},
+        {{"ox", "bullock"}},
+        {{"horse", "steed"}},
         {{"garden", "orchard", "grove"}},
-        {{"seed", "grain", "wheat", "barley", "harvest", "crop"}},
+        {{"grain", "corn", "cereal"}},
 
         // Time
         {{"today", "to day", "to-day"}},
-        {{"day", "morning", "dawn", "daybreak", "sunrise"}},
-        {{"night", "evening", "dusk", "sunset", "twilight"}},
-        {{"sabbath", "rest", "seventh day"}},
-        {{"feast", "festival", "celebration", "passover"}},
+        {{"dawn", "daybreak", "sunrise"}},
+        {{"dusk", "twilight", "nightfall"}},
+        {{"sabbath", "seventh day"}},
+        {{"feast", "festival", "celebration"}},
 
         // Places
         {{"jerusalem", "zion", "sion", "city of david", "holy city"}},
         {{"egypt", "land of pharaoh"}},
         {{"babylon", "babel", "chaldea"}},
+
+        // Abusive speech (KJV "rail"), kept separate from rulers and royalty.
+        {{"rail", "rails", "railed", "railest", "railing", "railings",
+          "revile", "reviles", "reviled", "revilest", "reviling", "revilings"}},
+        {{"railer", "railers", "reviler", "revilers", "abusive person"}},
+
+        // Close archaic/modern equivalents, not merely associated topics.
+        {{"strait", "narrow"}},
+        {{"straitway", "immediately", "forthwith"}},
+        {{"sunder", "apart", "asunder"}},
+        {{"divers", "various", "diverse"}},
+        {{"wist", "knew"}},
+        {{"wot", "know"}},
+        {{"durst", "dared"}},
+        {{"holpen", "helped"}},
+        {{"kine", "cows"}},
+        {{"ass", "donkey"}},
+        {{"asses", "donkeys"}},
+        {{"victuals", "food", "provisions"}},
+        {{"concupiscence", "lust"}},
+        {{"lasciviousness", "lewdness", "licentiousness"}},
+        {{"emulation", "jealousy", "envy"}},
 
         // Misc archaic/modern equivalents
         {{"behold", "look", "see", "observe", "lo"}},
@@ -357,7 +377,7 @@ const std::vector<SynonymGroup>& englishSynonyms() {
         {{"thereof", "of it", "its"}},
         {{"therein", "in it", "within"}},
         {{"wherein", "in which", "where"}},
-        {{"wherefore", "therefore", "why", "for what reason"}},
+        {{"wherefore", "why", "for what reason"}},
         {{"whence", "where from", "from where"}},
         {{"hither", "here", "to this place"}},
         {{"thither", "there", "to that place"}},
@@ -1131,122 +1151,98 @@ std::vector<std::string> generateTypoVariants(const std::string& word) {
     return variants;
 }
 
+std::vector<std::string> queryTerms(const std::string& query,
+                                  const std::string& language,
+                                  bool includeSynonyms) {
+    std::vector<std::string> words;
+    std::istringstream input(query);
+    std::string raw;
+    while (input >> raw) {
+        auto isWord = [](unsigned char c) {
+            return std::isalnum(c) || c == '\'' || c == '-' || c >= 0x80;
+        };
+        size_t start = 0, end = raw.size();
+        while (start < end && !isWord(raw[start])) ++start;
+        while (end > start && !isWord(raw[end - 1]) && raw[end - 1] != '*') --end;
+        const bool prefix = end > start && raw[end - 1] == '*';
+        if (prefix) --end;
+        if (start < end) words.push_back(raw.substr(start, end - start) + (prefix ? "*" : ""));
+    }
+
+    if (!includeSynonyms) return words;
+    const auto& index = synonymIndex(language);
+    std::vector<std::string> terms;
+    for (size_t i = 0; i < words.size();) {
+        std::string phrase;
+        size_t matched = 1;
+        std::string term = words[i];
+        // Longest known expression wins; never reinterpret explicit prefixes.
+        for (size_t j = i; j < words.size() && j < i + 4; ++j) {
+            if (words[j].back() == '*') break;
+            if (!phrase.empty()) phrase += " ";
+            phrase += words[j];
+            if (j > i && index.count(toLower(phrase))) {
+                matched = j - i + 1;
+                term = phrase;
+            }
+        }
+        terms.push_back(std::move(term));
+        i += matched;
+    }
+    return terms;
+}
+
 std::string buildSmartFtsQuery(
     const std::string& query,
     const std::string& language,
     const std::unordered_map<std::string, std::vector<std::string>>& spellingAlternatives,
     QueryExpansionOptions options) {
-    std::vector<std::string> words = splitWords(query);
+    const auto words = queryTerms(query, language, options.includeSynonyms);
     if (words.empty()) return "";
 
-    // For each query word, build a group of alternatives: synonyms + the
-    // original + fuzzy/phonetic variants. Within each group, terms are OR'd.
-    // Groups are AND'd together so all query concepts must appear.
     std::ostringstream fts;
     fts << "{title content}:(";
-
     for (size_t w = 0; w < words.size(); ++w) {
         if (w > 0) fts << " AND ";
-
         std::string word = toLower(words[w]);
-        // Also try the accent-stripped form of the query word itself
-        std::string strippedWord = toLower(doStripDiacritics(word));
-
-        std::unordered_set<std::string> alternatives;
-        alternatives.insert(word);
-        if (strippedWord != word) alternatives.insert(strippedWord);
-
-        // Add synonyms (tries both accented and stripped forms internally)
-        if (options.includeSynonyms) {
-            auto syns = expandSynonyms(word, language);
-            for (const auto& s : syns) {
-                alternatives.insert(toLower(s));
-            }
-            if (strippedWord != word) {
-                auto syns2 = expandSynonyms(strippedWord, language);
-                for (const auto& s : syns2) {
-                    alternatives.insert(toLower(s));
-                }
-            }
+        if (word.back() == '*') {
+            word.pop_back();
+            fts << quoteFtsToken(word) << "*";
+            continue;
         }
-
-        bool hasIndexedSpellingAlternatives = false;
-        auto addSpellingAlternatives = [&](const std::string& key) {
+        std::string strippedWord = toLower(doStripDiacritics(word));
+        std::vector<std::string> alternatives{word};
+        if (options.includeSynonyms) alternatives = expandSynonyms(word, language);
+        auto addSpelling = [&](const std::string& key) {
             if (!options.includeSpelling) return;
             auto it = spellingAlternatives.find(key);
-            if (it == spellingAlternatives.end() || it->second.empty()) return;
-            hasIndexedSpellingAlternatives = true;
-            for (const auto& alt : it->second) {
-                std::string lowered = toLower(alt);
-                if (!lowered.empty()) alternatives.insert(std::move(lowered));
+            if (it != spellingAlternatives.end()) {
+                alternatives.insert(alternatives.end(), it->second.begin(), it->second.end());
             }
         };
-        addSpellingAlternatives(word);
-        if (strippedWord != word) addSpellingAlternatives(strippedWord);
+        addSpelling(word);
+        if (strippedWord != word) addSpelling(strippedWord);
 
-        // If the indexer provided real indexed alternatives, prefer those over
-        // synthetic variants. Otherwise keep the older generated fallback.
-        if (options.includeFuzzy && !hasIndexedSpellingAlternatives) {
-            auto typoVars = generateTypoVariants(word);
-            for (const auto& tv : typoVars) {
-                alternatives.insert(tv);
-            }
-            if (strippedWord != word) {
-                auto typoVars2 = generateTypoVariants(strippedWord);
-                for (const auto& tv : typoVars2) {
-                    alternatives.insert(tv);
-                }
-            }
-        }
-
-        // Build the FTS OR group
+        // Only use spelling candidates validated against the offline vocabulary.
+        // An empty candidate list means no correction, never synthetic typos.
         fts << "(";
+        std::unordered_set<std::string> seen;
         bool first = true;
-
-        auto isSafeFtsToken = [](const std::string& tok) {
-            if (tok.empty()) return false;
-            for (char ch : tok) {
-                unsigned char uc = static_cast<unsigned char>(ch);
-                if (!std::isalnum(uc) && ch != '\'' && ch != '-' && uc < 0x80) {
-                    // Allow spaces (for multi-word synonyms, which get quoted)
-                    if (ch != ' ') return false;
-                }
-            }
-            return true;
-        };
-
-        for (const auto& alt : alternatives) {
-            if (!isSafeFtsToken(alt)) continue;
+        for (const auto& alternative : alternatives) {
+            std::string alt = toLower(alternative);
+            if (alt.empty() || !seen.insert(alt).second) continue;
             if (!first) fts << " OR ";
             first = false;
             fts << quoteFtsToken(alt);
         }
-
-        // Add prefix match for original word (catches partial words and
-        // morphological variants).
-        // FTS5 prefix syntax: token* (unquoted token with trailing asterisk).
-        if (options.includePartialWords && word.size() >= 4) {
-            size_t stemLen = word.size() - 1;
-            if (stemLen >= 3) {
-                std::string stem = word.substr(0, stemLen);
-                if (alternatives.find(stem) == alternatives.end()) {
-                    bool safe = true;
-                    for (char ch : stem) {
-                        if (!std::isalnum(static_cast<unsigned char>(ch))) {
-                            safe = false;
-                            break;
-                        }
-                    }
-                    if (safe) {
-                        fts << " OR " << stem << "*";
-                    }
-                }
-            }
+        // Preserve the entire original word: rail* must never become rai*.
+        // Synonyms and spelling corrections remain whole words/phrases.
+        if (options.includePartialWords && word.size() >= 4 &&
+            word.find(' ') == std::string::npos) {
+            fts << " OR " << quoteFtsToken(word) << "*";
         }
-
         fts << ")";
     }
-
     fts << ")";
     return fts.str();
 }

@@ -29,7 +29,8 @@
 
   <h2 id="search-basics">Search Basics</h2>
   <p>The Search tab module chooser controls which Bible is searched. When a search starts from a Bible word context menu, Verdad automatically uses the module for the word that was clicked.</p>
-  <p><b>Multi-word</b> finds verses containing the search words in any order. Example: <code>faith hope charity</code>.</p>
+  <p><b>Multi-word</b> finds verses containing the search words in any order. Example: <code>faith hope charity</code>. Add a trailing <code>*</code> to match a word prefix: <code>rail*</code> finds rail, railing, railer, and railings. This works at every search assistance level, including Exact. Prefixes can be combined with other words, such as <code>rail* accusation</code>.</p>
+  <p><b>Search assistance</b> uses only offline data. Spelling correction is a fallback for words absent from the installed search vocabulary; even a single occurrence protects a valid word from correction. Synonyms adds curated equivalents, including archaic words such as railer/reviler and known phrases such as Holy Spirit/Holy Ghost. Synonyms and Smart also match prefixes of the full original word; they never shorten rail to rai. Explicit <code>*</code> terms use only the requested prefix. Smart considers additional vocabulary candidates for unknown words, with at most three close spelling alternatives. Synonyms are context-independent, so words with several meanings can still need a narrower query.</p>
   <p><b>Exact phrase</b> matches the words together in order. Example: <code>in the beginning</code>.</p>
   <p><b>Regex</b> searches the indexed plain-text Bible content. Regex search waits for the selected module to finish indexing before it can return matches.</p>
   <p><b>Strong's / lemma</b> searches indexed Strong's data. You can enter <code>G3588</code>, <code>H7225</code>, <code>strongs:G3588</code>, or <code>lemma:H7225</code>. Right-clicking a Bible word also exposes Strong's search and dictionary actions.</p>
@@ -37,6 +38,7 @@
 
   <h2 id="regex">Regex Search</h2>
   <p>Regex search uses ECMAScript syntax and is case-insensitive. It runs against the indexed plain-text Bible content rather than the rendered XHTML.</p>
+  <p>In regex, <code>rail*</code> means “rai followed by zero or more l characters.” To find whole words starting with rail, use <code>\brail\w*</code>. For ordinary prefix searches, use <code>rail*</code> in Multi-word mode.</p>
   <p>Useful building blocks:</p>
   <p><code>.</code> matches any single character except a newline.</p>
   <p><code>*</code>, <code>+</code>, and <code>?</code> repeat the previous token. Examples: <code>grac(e|es)</code>, <code>king(dom)?</code>.</p>

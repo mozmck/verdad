@@ -516,9 +516,16 @@ void markLiteralMatches(std::vector<bool>& mask,
 
     std::string lowerText = lowerAsciiCopy(text);
     std::string lowerTerm = lowerAsciiCopy(term);
+    const bool prefix = lowerTerm.back() == '*';
+    if (prefix) lowerTerm.pop_back();
+    if (lowerTerm.empty()) return;
     size_t pos = 0;
     while ((pos = lowerText.find(lowerTerm, pos)) != std::string::npos) {
         size_t end = pos + lowerTerm.size();
+        if (prefix) {
+            while (end < text.size() &&
+                   isWordByte(static_cast<unsigned char>(text[end]))) ++end;
+        }
         bool ok = true;
         if (requireWordBoundaries) {
             if (pos > 0 && isWordByte(static_cast<unsigned char>(text[pos - 1]))) {
@@ -810,7 +817,8 @@ SearchPanel::SearchPanel(VerdadApp* app, int X, int Y, int W, int H)
     searchType_->add("Exact phrase");
     searchType_->add("Regex");
     searchType_->value(0);
-    searchType_->tooltip("Match type");
+    searchType_->tooltip("Multi-word: rail* finds rail, railing, railer, etc.\n"
+                         "Regex: use \\brail\\w* for words starting with rail.");
 
     cy += choiceH + padding;
 
@@ -1394,27 +1402,23 @@ void SearchPanel::search(const std::string& query,
         // Assisted search highlights query terms and enabled expansions. The
         // indexer builds result snippets with the same option set.
         highlightMode_ = HighlightMode::Terms;
-        highlightTerms_ = tokenizeWords(trimmedQuery);
-        // Also add synonyms to the highlight terms for preview highlighting.
         std::string smartLang = detectSmartSearchLanguage(
             moduleName, resourceTypes, searchableModules_);
+        highlightTerms_ = smart_search::queryTerms(trimmedQuery, smartLang,
+                                                   smartOptions.includeSynonyms);
         std::vector<std::string> expandedTerms;
         std::unordered_set<std::string> seen;
         for (const auto& term : highlightTerms_) {
-            if (smartOptions.includeSynonyms) {
-                auto syns = smart_search::expandSynonyms(term, smartLang);
-                for (const auto& syn : syns) {
-                    std::string lower = syn;
-                    std::transform(lower.begin(), lower.end(), lower.begin(),
-                                   [](unsigned char c) {
-                                       return static_cast<char>(std::tolower(c));
-                                   });
-                    if (seen.insert(lower).second) {
-                        expandedTerms.push_back(syn);
-                    }
-                }
-            } else if (seen.insert(term).second) {
-                expandedTerms.push_back(term);
+            const bool explicitPrefix = term.back() == '*';
+            auto syns = smartOptions.includeSynonyms && !explicitPrefix
+                ? smart_search::expandSynonyms(term, smartLang)
+                : std::vector<std::string>{term};
+            for (const auto& syn : syns) {
+                if (seen.insert(lowerAsciiCopy(syn)).second) expandedTerms.push_back(syn);
+            }
+            if (!explicitPrefix && smartOptions.partialWordMatching &&
+                term.size() >= 4 && term.find(' ') == std::string::npos) {
+                expandedTerms.push_back(term + "*");
             }
         }
         highlightTerms_ = std::move(expandedTerms);
@@ -1424,7 +1428,7 @@ void SearchPanel::search(const std::string& query,
         highlightTerms_ = tokenizeWords(trimmedQuery);
     } else {
         highlightMode_ = HighlightMode::Terms;
-        highlightTerms_ = tokenizeWords(trimmedQuery);
+        highlightTerms_ = smart_search::queryTerms(trimmedQuery);
     }
 
     bool indexingPending = false;
