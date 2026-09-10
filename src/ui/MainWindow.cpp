@@ -6,6 +6,7 @@
 #include "ui/BiblePane.h"
 #include "ui/FilterableChoiceWidget.h"
 #include "ui/HtmlWidget.h"
+#include "ui/ModuleChoiceUtils.h"
 #include "ui/RightPane.h"
 #include "ui/ModuleManagerDialog.h"
 #include "ui/StyledTabs.h"
@@ -30,6 +31,7 @@
 #include <FL/Fl_Box.H>
 #include <FL/Fl_Browser_.H>
 #include <FL/Fl_Button.H>
+#include <FL/Fl_Check_Browser.H>
 #include <FL/Fl_Check_Button.H>
 #include <FL/Fl_Multi_Browser.H>
 #include <FL/Fl_Hold_Browser.H>
@@ -196,7 +198,7 @@ const char* kFallbackHelpHtml = R"(
   <h2 id="regex">Regex</h2>
   <p>Regex uses ECMAScript syntax and is case-insensitive. Use <code>\\b</code> for word boundaries and <code>.*</code> to span text between terms.</p>
   <h2 id="features">Features</h2>
-  <p>Use the Bible toolbar to switch modules, toggle paragraph mode, turn red-letter words on or off, manage parallel columns, and show or hide study markers such as Strong's, morphology, notes, and cross references.</p>
+  <p>Use the Bible toolbar to switch modules, toggle paragraph mode, turn red-letter words on or off, manage parallel columns, toggle interlinear display, and show or hide study markers such as Strong's, morphology, notes, and cross references. Default comparison modules are selected in Tools &gt; Settings &gt; Bible.</p>
   <p>Right-clicking in the Bible pane can copy verses or selections with the reference first or last, and the Studypad editor supports copy, cut, paste, and verse-link insertion from the current Bible module.</p>
 </div>
 )";
@@ -1443,6 +1445,7 @@ void MainWindow::addStudyTab(const std::string& module,
     ctx.state.verse = initVerse;
     ctx.state.paragraphMode = false;
     ctx.state.parallelMode = false;
+    ctx.state.interlinearMode = false;
     ctx.state.parallelModules.clear();
     ctx.state.biblePaneWidth = biblePane_ ? biblePane_->w() : 0;
     ensureStudyTabHistorySeeded(ctx.state);
@@ -1927,6 +1930,7 @@ void MainWindow::captureStudyTabState(int index) {
         ctx.state.verse = biblePane_->currentVerse();
         ctx.state.paragraphMode = biblePane_->isParagraphMode();
         ctx.state.parallelMode = biblePane_->isParallel();
+        ctx.state.interlinearMode = biblePane_->isInterlinear();
         ctx.state.parallelModules = biblePane_->parallelModules();
         ctx.state.biblePaneWidth = biblePane_->w();
         ctx.state.bibleScrollY = biblePane_->scrollY();
@@ -2095,6 +2099,7 @@ void MainWindow::applyTabState(int index) {
         ctx.state.verse,
         ctx.state.paragraphMode,
         ctx.state.parallelMode,
+        ctx.state.interlinearMode,
         ctx.state.parallelModules);
     perf::logf("applyTabState tab=%d biblePane_->setStudyState: %.3f ms",
                index, step.elapsedMs());
@@ -2548,6 +2553,19 @@ void MainWindow::refresh() {
     if (biblePane_) biblePane_->refresh();
     if (rightPane_) rightPane_->refresh();
     captureActiveTabState();
+}
+
+void MainWindow::applyBibleSettings() {
+    for (size_t i = 0; i < studyTabs_.size(); ++i) {
+        if (static_cast<int>(i) == activeStudyTab_) continue;
+        studyTabs_[i].bibleBuffer = HtmlDocBuffer{};
+        studyTabs_[i].hasBibleBuffer = false;
+    }
+
+    if (biblePane_ && biblePane_->isInterlinear()) {
+        biblePane_->refresh();
+        captureActiveTabState();
+    }
 }
 
 void MainWindow::applyAppearanceSettings(Fl_Font appFont,
@@ -3588,6 +3606,7 @@ void MainWindow::onViewSettings(Fl_Widget* /*w*/, void* data) {
     if (!self || !self->app_) return;
 
     auto current = self->app_->appearanceSettings();
+    auto currentBible = self->app_->bibleSettings();
     auto currentPreview = self->app_->previewDictionarySettings();
     auto currentOfflineTranslation =
         self->app_->offlineTranslationSettings();
@@ -3602,6 +3621,8 @@ void MainWindow::onViewSettings(Fl_Widget* /*w*/, void* data) {
         self->app_->strongsDictionaryModules('H');
     std::vector<std::string> languageCodes =
         dictionaryLanguageCodes(self->app_, currentPreview);
+    std::vector<ModuleInfo> bibleModules =
+        self->app_->swordManager().getBibleModules();
 
     constexpr int dialogW = 720;
     constexpr int rowStep = 34;
@@ -3616,10 +3637,12 @@ void MainWindow::onViewSettings(Fl_Widget* /*w*/, void* data) {
     constexpr int spinnerW = 90;
 
     int appearanceRowCount = 8;
+    int bibleRowCount = 7;
     int dictionaryRowCount = 7 + static_cast<int>(languageCodes.size());
     int editorRowCount = 2;
     int dataRowCount = 1;
     int maxRowCount = std::max({appearanceRowCount,
+                                bibleRowCount,
                                 dictionaryRowCount,
                                 editorRowCount,
                                 dataRowCount});
@@ -3719,6 +3742,110 @@ void MainWindow::onViewSettings(Fl_Widget* /*w*/, void* data) {
     hoverDelaySpinner->value(current.hoverDelayMs);
 
     appearanceTab->end();
+
+    Fl_Group* bibleTab =
+        new Fl_Group(groupX, groupY, groupW, groupH, "Bible");
+    bibleTab->begin();
+
+    rowY = groupY + groupPadY;
+    auto* bibleHelp = new Fl_Box(
+        labelX, rowY, groupW - (groupPadX * 2), 24,
+        "The current Bible stays first; choose companion modules below.");
+    bibleHelp->align(FL_ALIGN_LEFT | FL_ALIGN_INSIDE);
+    rowY += rowStep;
+
+    auto* defaultParallelLabel = new Fl_Box(
+        labelX, rowY, labelW, 24, "Default parallel:");
+    defaultParallelLabel->align(FL_ALIGN_LEFT | FL_ALIGN_INSIDE);
+    auto* defaultParallelBrowser = new Fl_Check_Browser(
+        fieldX, rowY, fieldW, (rowStep * 3) - 8);
+    defaultParallelBrowser->tooltip(
+        "Select up to six defaults. Parallel view supports seven columns including the main Bible.");
+    for (size_t i = 0; i < bibleModules.size(); ++i) {
+        const bool selected =
+            std::find(currentBible.defaultParallelModules.begin(),
+                      currentBible.defaultParallelModules.end(),
+                      bibleModules[i].name) !=
+            currentBible.defaultParallelModules.end();
+        defaultParallelBrowser->add(
+            module_choice::formatLabel(bibleModules[i]).c_str(), selected ? 1 : 0);
+    }
+
+    struct LimitedBrowserState {
+        Fl_Check_Browser* browser = nullptr;
+        int maximum = 0;
+    };
+    LimitedBrowserState parallelBrowserState{
+        defaultParallelBrowser,
+        static_cast<int>(VerdadApp::BibleSettings::kMaxDefaultParallelCompanions)};
+    defaultParallelBrowser->when(FL_WHEN_CHANGED);
+    defaultParallelBrowser->callback(
+        [](Fl_Widget*, void* data) {
+            auto* state = static_cast<LimitedBrowserState*>(data);
+            if (!state || !state->browser) return;
+
+            if (state->browser->nchecked() <= state->maximum) return;
+
+            const int changedLine = state->browser->value();
+            if (changedLine > 0) state->browser->checked(changedLine, 0);
+            fl_beep(FL_BEEP_ERROR);
+        },
+        &parallelBrowserState);
+    rowY += rowStep * 3;
+
+    std::vector<std::string> interlinearChoiceModules;
+    interlinearChoiceModules.reserve(bibleModules.size() + 1);
+    interlinearChoiceModules.push_back("");
+
+    auto populateInterlinearChoice = [&](Fl_Choice* choice) {
+        choice->add("(None)");
+        for (const auto& module : bibleModules) {
+            std::string label = module_choice::formatLabel(module);
+            choice->add(module_choice::escapeMenuLabel(label).c_str());
+            if (interlinearChoiceModules.size() < bibleModules.size() + 1) {
+                interlinearChoiceModules.push_back(module.name);
+            }
+        }
+        choice->value(0);
+    };
+
+    auto applyInterlinearChoice = [&](Fl_Choice* choice,
+                                      const std::string& moduleName) {
+        auto it = std::find(interlinearChoiceModules.begin(),
+                            interlinearChoiceModules.end(), moduleName);
+        if (it != interlinearChoiceModules.end()) {
+            choice->value(static_cast<int>(it - interlinearChoiceModules.begin()));
+        }
+    };
+
+    auto* interlinearOneLabel = new Fl_Box(
+        labelX, rowY, labelW, 24, "Interlinear module 1:");
+    interlinearOneLabel->align(FL_ALIGN_LEFT | FL_ALIGN_INSIDE);
+    auto* interlinearOneChoice = new WrappingChoice(fieldX, rowY, fieldW, 24);
+    populateInterlinearChoice(interlinearOneChoice);
+    if (!currentBible.interlinearModules.empty()) {
+        applyInterlinearChoice(interlinearOneChoice,
+                               currentBible.interlinearModules[0]);
+    }
+    rowY += rowStep;
+
+    auto* interlinearTwoLabel = new Fl_Box(
+        labelX, rowY, labelW, 24, "Interlinear module 2:");
+    interlinearTwoLabel->align(FL_ALIGN_LEFT | FL_ALIGN_INSIDE);
+    auto* interlinearTwoChoice = new WrappingChoice(fieldX, rowY, fieldW, 24);
+    populateInterlinearChoice(interlinearTwoChoice);
+    if (currentBible.interlinearModules.size() > 1) {
+        applyInterlinearChoice(interlinearTwoChoice,
+                               currentBible.interlinearModules[1]);
+    }
+    rowY += rowStep;
+
+    auto* interlinearHelp = new Fl_Box(
+        labelX, rowY, groupW - (groupPadX * 2), 24,
+        "Interlinear view stacks each selected module beneath the main verse.");
+    interlinearHelp->align(FL_ALIGN_LEFT | FL_ALIGN_INSIDE);
+
+    bibleTab->end();
 
     Fl_Group* dictionariesTab =
         new Fl_Group(groupX, groupY, groupW, groupH, "Dictionaries");
@@ -3971,6 +4098,7 @@ void MainWindow::onViewSettings(Fl_Widget* /*w*/, void* data) {
 
     if (state->accepted) {
         VerdadApp::AppearanceSettings updated = current;
+        VerdadApp::BibleSettings updatedBible = currentBible;
         VerdadApp::PreviewDictionarySettings updatedPreview = currentPreview;
         OfflineTranslationSettings updatedOfflineTranslation =
             currentOfflineTranslation;
@@ -4005,6 +4133,31 @@ void MainWindow::onViewSettings(Fl_Widget* /*w*/, void* data) {
         updated.hoverDelayMs = static_cast<int>(hoverDelaySpinner->value());
         updated.editorIndentWidth = static_cast<int>(indentSpinner->value());
         updated.editorLineHeight = editorLineHeightSpinner->value();
+
+        updatedBible.defaultParallelModules.clear();
+        for (size_t i = 0; i < bibleModules.size(); ++i) {
+            if (defaultParallelBrowser->checked(static_cast<int>(i) + 1)) {
+                updatedBible.defaultParallelModules.push_back(bibleModules[i].name);
+            }
+        }
+
+        updatedBible.interlinearModules.clear();
+        auto appendInterlinearChoice = [&](Fl_Choice* choice) {
+            if (!choice) return;
+            const int index = choice->value();
+            if (index <= 0 ||
+                index >= static_cast<int>(interlinearChoiceModules.size())) {
+                return;
+            }
+            const std::string& module = interlinearChoiceModules[index];
+            if (std::find(updatedBible.interlinearModules.begin(),
+                          updatedBible.interlinearModules.end(), module) ==
+                updatedBible.interlinearModules.end()) {
+                updatedBible.interlinearModules.push_back(module);
+            }
+        };
+        appendInterlinearChoice(interlinearOneChoice);
+        appendInterlinearChoice(interlinearTwoChoice);
 
         const Fl_Menu_Item* greekDictItem = greekDictChoice->mvalue();
         if (hasGreekPreviewDictionaries && greekDictItem && greekDictItem->label()) {
@@ -4092,6 +4245,7 @@ void MainWindow::onViewSettings(Fl_Widget* /*w*/, void* data) {
 
         self->app_->setPreviewDictionarySettings(updatedPreview);
         self->app_->setOfflineTranslationSettings(updatedOfflineTranslation);
+        self->app_->setBibleSettings(updatedBible);
         self->app_->setAppearanceSettings(updated);
         self->app_->savePreferences();
     }

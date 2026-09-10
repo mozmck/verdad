@@ -49,6 +49,7 @@ public:
         int verse = 1;
         bool paragraphMode = false;
         bool parallelMode = false;
+        bool interlinearMode = false;
         std::vector<std::string> parallelModules;
         int biblePaneWidth = 0;
         int bibleScrollY = -1;
@@ -164,6 +165,10 @@ public:
     void applyAppearanceSettings(Fl_Font appFont,
                                  int appFontSize,
                                  const std::string& textCssOverride);
+
+    /// Refresh comparison views and discard cached Bible documents after their
+    /// global companion-module settings change.
+    void applyBibleSettings();
 
     /// Ensure the window has at least one study tab.
     void ensureDefaultStudyTab();

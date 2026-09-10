@@ -281,6 +281,51 @@ div.parallel-cell-last {
     word-break: break-word;
 }
 
+/* Interlinear Bible modules stacked verse-by-verse */
+div.interlinear {
+    width: 100%;
+    display: block;
+}
+
+div.interlinear-verse {
+    display: block;
+    padding: 7px 8px;
+    border-bottom: 1px solid #ddd;
+}
+
+div.interlinear-line {
+    display: block;
+    margin: 2px 0;
+    overflow-wrap: anywhere;
+    word-break: break-word;
+}
+
+div.interlinear-main {
+    margin-bottom: 4px;
+}
+
+span.interlinear-number-spacer {
+    display: inline-block;
+    width: 2.1em;
+}
+
+span.interlinear-module {
+    display: inline-block;
+    width: 5.5em;
+    font-size: 0.78em;
+    font-weight: bold;
+    vertical-align: top;
+    color: #666;
+}
+
+span.interlinear-text {
+    display: inline;
+}
+
+i.interlinear-missing {
+    color: #888;
+}
+
 /* Search result highlighting */
 span.searchhit, .highlight {
     background-color: #ffff80;

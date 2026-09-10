@@ -220,6 +220,15 @@ public:
                                 int selectedVerse = 0,
                                 VerseDecorationCallback verseDecorator = {});
 
+    /// Get rendered XHTML for modules stacked verse-by-verse. The first module
+    /// is the main Bible and later modules are companion lines.
+    std::string getInterlinearText(
+        const std::vector<std::string>& moduleNames,
+        const std::string& book,
+        int chapter,
+        int selectedVerse = 0,
+        VerseDecorationCallback verseDecorator = {});
+
     /// Get commentary text for a given verse reference
     std::string getCommentaryText(const std::string& moduleName,
                                   const std::string& key);

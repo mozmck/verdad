@@ -67,6 +67,9 @@ public:
     /// Toggle parallel Bible view
     void toggleParallel();
 
+    /// Toggle verse-aligned interlinear Bible view.
+    void toggleInterlinear();
+
     /// Toggle paragraph display mode
     void toggleParagraphMode();
 
@@ -81,6 +84,9 @@ public:
 
     /// Check if parallel view is active
     bool isParallel() const { return parallelMode_; }
+
+    /// Check if interlinear view is active.
+    bool isInterlinear() const { return interlinearMode_; }
 
     /// Go to next chapter
     void nextChapter();
@@ -107,6 +113,7 @@ public:
                        int verse,
                        bool paragraphMode,
                        bool parallelMode,
+                       bool interlinearMode,
                        const std::vector<std::string>& parallelModules);
 
     /// Capture current rendered text/scroll for fast restore.
@@ -156,6 +163,7 @@ private:
     Fl_Box* historyRightSeparator_;
     Fl_Box* moduleRightSeparator_;
     Fl_Button* parallelButton_;
+    Fl_Button* interlinearButton_;
     Fl_Button* paragraphButton_;
     Fl_Button* redWordsToggleButton_;
     Fl_Button* parallelAddButton_;
@@ -195,6 +203,7 @@ private:
 
     static constexpr int kMaxParallelColumns = 7;
     bool parallelMode_ = false;
+    bool interlinearMode_ = false;
     std::vector<std::string> parallelModules_;
     std::vector<ParallelHeaderColumn> parallelHeaderColumns_;
 
@@ -210,6 +219,7 @@ private:
     void syncVerseSelectionInPlace(int oldVerse, int newVerse);
     void ensureCurrentVerseSelectionStyle();
     void normalizeParallelModules();
+    std::vector<std::string> effectiveInterlinearModules() const;
     void syncParallelHeader();
     void clearParallelHeader();
     void layoutParallelHeader();
@@ -248,6 +258,7 @@ private:
     static void onChapterChange(Fl_Widget* w, void* data);
     static void onModuleChange(Fl_Widget* w, void* data);
     static void onParallel(Fl_Widget* w, void* data);
+    static void onInterlinear(Fl_Widget* w, void* data);
     static void onParagraphToggle(Fl_Widget* w, void* data);
     static void onRedWordsToggle(Fl_Widget* w, void* data);
     static void onStrongsToggle(Fl_Widget* w, void* data);

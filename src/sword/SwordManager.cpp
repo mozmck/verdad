@@ -4810,6 +4810,126 @@ std::string SwordManager::getParallelText(
     return html;
 }
 
+std::string SwordManager::getInterlinearText(
+    const std::vector<std::string>& moduleNames,
+    const std::string& book,
+    int chapter,
+    int selectedVerse,
+    VerseDecorationCallback verseDecorator) {
+    perf::ScopeTimer timer("SwordManager::getInterlinearText");
+    if (moduleNames.empty()) return "";
+
+    std::lock_guard<std::mutex> lock(mutex_);
+
+    int verseCount = 0;
+    for (const auto& moduleName : moduleNames) {
+        sword::SWModule* mod = getModule(moduleName);
+        if (!mod) continue;
+
+        sword::VerseKey* key = verseKeyForModule(mod);
+        if (!key) continue;
+
+        const std::string ref = book + " " + std::to_string(chapter) + ":1";
+        key->setText(ref.c_str());
+        if (!mod->popError()) {
+            verseCount = key->getVerseMax();
+            break;
+        }
+    }
+    if (verseCount <= 0) return "";
+
+    std::string html;
+    html.reserve(static_cast<size_t>(verseCount) * moduleNames.size() * 112 + 512);
+    html += "<div class=\"interlinear\">\n";
+
+    std::string chapterHeadingHtml;
+    for (const auto& moduleName : moduleNames) {
+        sword::SWModule* mod = getModule(moduleName);
+        if (!mod) continue;
+        chapterHeadingHtml = renderedChapterHeadingLocked(mod, book, chapter);
+        if (!chapterHeadingHtml.empty()) break;
+    }
+    if (chapterHeadingHtml.empty()) {
+        html += "<div class=\"chapter-heading\">CHAPTER ";
+        appendInt(html, chapter);
+        html += ".</div>\n";
+    } else {
+        html += chapterHeadingHtml;
+    }
+
+    struct InterlinearModuleInfo {
+        std::string name;
+        std::string nameAttr;
+        std::string columnAttr;
+        sword::SWModule* module = nullptr;
+    };
+
+    std::vector<InterlinearModuleInfo> modules;
+    modules.reserve(moduleNames.size());
+    for (size_t i = 0; i < moduleNames.size(); ++i) {
+        InterlinearModuleInfo info;
+        info.name = moduleNames[i];
+        info.nameAttr = htmlEscapeAttr(moduleNames[i]);
+        appendInt(info.columnAttr, static_cast<int>(i));
+        info.module = getModule(moduleNames[i]);
+        modules.push_back(std::move(info));
+    }
+
+    for (int verse = 1; verse <= verseCount; ++verse) {
+        const std::string verseRef = book + " " + std::to_string(chapter) +
+                                     ":" + std::to_string(verse);
+        html += "<div class=\"interlinear-verse";
+        if (selectedVerse > 0 && verse == selectedVerse) {
+            html += " verse-selected";
+        }
+        html += "\" id=\"v";
+        appendInt(html, verse);
+        html += "\">\n";
+
+        for (size_t i = 0; i < modules.size(); ++i) {
+            const auto& module = modules[i];
+            html += "<div class=\"interlinear-line";
+            if (i == 0) html += " interlinear-main";
+            html += "\" data-module=\"";
+            html += module.nameAttr;
+            html += "\" data-parallel-col=\"";
+            html += module.columnAttr;
+            html += "\">";
+
+            if (i == 0) {
+                html += "<a class=\"versenum-link\" href=\"verse:";
+                appendInt(html, verse);
+                html += "\"><sup class=\"versenum\">";
+                appendInt(html, verse);
+                html += "</sup></a> ";
+            } else {
+                html += "<span class=\"interlinear-number-spacer\"></span>";
+            }
+
+            html += "<span class=\"interlinear-module\">";
+            html += module.nameAttr;
+            html += "</span> <span class=\"interlinear-text\">";
+
+            std::string verseText = getOrRenderVerseHtmlLocked(
+                module.module, module.name, verseRef);
+            if (verseText.empty()) {
+                html += "<i class=\"interlinear-missing\">No text</i>";
+            } else {
+                appendSanitizedParallelVerseHtml(html, verseText);
+            }
+            html += "</span>";
+            if (i == 0 && verseDecorator) {
+                html += verseDecorator(verseRef);
+            }
+            html += "</div>\n";
+        }
+        html += "</div>\n";
+    }
+
+    html += "</div>\n";
+    return html;
+}
+
 std::string SwordManager::getCommentaryText(const std::string& moduleName,
                                              const std::string& key) {
     std::lock_guard<std::mutex> lock(mutex_);

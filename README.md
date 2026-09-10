@@ -12,13 +12,17 @@ AI assistance.
 
 ### Study workspace
 
-- Multiple study tabs with independent Bible, reference, paragraph or parallel
-  mode, right-pane selections, splitter sizes, and scroll positions.
+- Multiple study tabs with independent Bible, reference, paragraph, parallel,
+  or interlinear mode, right-pane selections, splitter sizes, and scroll
+  positions.
 - A three-pane layout: modules, search, tags, and previews on the left; Bible
   text in the center; commentary, Daily, general books, Studypad, and dictionary
   content on the right.
-- Chapter and reference navigation, paragraph mode, red-letter display, and up
-  to seven parallel Bible columns.
+- Chapter and reference navigation, paragraph mode, red-letter display, up to
+  seven parallel Bible columns, and verse-aligned interlinear display with up
+  to two companion modules.
+- Persistent default companion-module selections for parallel and interlinear
+  views.
 - Controls for Strong's numbers, morphology, footnotes, and cross references.
 - Word-hover previews and context actions for search, Strong's lookup,
   dictionaries, copying verses or selections, and verse tagging.

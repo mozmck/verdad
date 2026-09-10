@@ -623,6 +623,8 @@ MainWindow::SessionState sessionStateFromPreferences(const PreferenceMap& prefs)
         tab.verse = parseIntOr(lookup("verse"), 1);
         tab.paragraphMode = parseBoolOr(lookup("paragraph_mode"), false);
         tab.parallelMode = parseBoolOr(lookup("parallel_mode"), false);
+        tab.interlinearMode = parseBoolOr(lookup("interlinear_mode"), false);
+        if (tab.interlinearMode) tab.parallelMode = false;
         tab.parallelModules = splitCsv(lookup("parallel_modules"));
         tab.biblePaneWidth = parseIntOr(lookup("bible_pane_w"), 0);
         tab.bibleScrollY = parseIntOr(lookup("bible_scroll_y"), -1);
@@ -1093,6 +1095,16 @@ bool VerdadApp::applyPreferencesMap(const PreferenceMap& prefs,
         parseBoolOr(lookup("show_cross_reference_markers"),
                     importedOptions.showCrossReferenceMarkers);
 
+    BibleSettings importedBible = bibleSettings_;
+    if (prefs.find("default_parallel_modules") != prefs.end()) {
+        importedBible.defaultParallelModules =
+            splitCsv(lookup("default_parallel_modules"));
+    }
+    if (prefs.find("interlinear_modules") != prefs.end()) {
+        importedBible.interlinearModules =
+            splitCsv(lookup("interlinear_modules"));
+    }
+
     SearchSettings importedSearch = searchSettings_;
     importedSearch.assistanceMode =
         searchAssistanceModeFromToken(lookup("search_assistance_mode"),
@@ -1184,6 +1196,7 @@ bool VerdadApp::applyPreferencesMap(const PreferenceMap& prefs,
     setPreviewDictionarySettings(importedPreview);
     setOfflineTranslationSettings(importedOfflineTranslation);
     setOptionDisplaySettings(importedOptions);
+    setBibleSettings(importedBible);
     setSearchSettings(importedSearch);
     setAppearanceSettings(importedAppearance);
     setModuleManagerSettings(importedModuleManager);
@@ -1248,6 +1261,10 @@ void VerdadApp::savePreferences() {
         file << "show_morph_markers=" << (optionDisplaySettings_.showMorphMarkers ? 1 : 0) << "\n";
         file << "show_footnote_markers=" << (optionDisplaySettings_.showFootnoteMarkers ? 1 : 0) << "\n";
         file << "show_cross_reference_markers=" << (optionDisplaySettings_.showCrossReferenceMarkers ? 1 : 0) << "\n";
+        file << "default_parallel_modules="
+             << joinCsv(bibleSettings_.defaultParallelModules) << "\n";
+        file << "interlinear_modules="
+             << joinCsv(bibleSettings_.interlinearModules) << "\n";
         const int searchModeLevel = static_cast<int>(searchSettings_.assistanceMode);
         file << "search_assistance_mode="
              << searchAssistanceModeToken(searchSettings_.assistanceMode) << "\n";
@@ -1328,6 +1345,7 @@ void VerdadApp::savePreferences() {
             file << pfx << "verse=" << t.verse << "\n";
             file << pfx << "paragraph_mode=" << (t.paragraphMode ? 1 : 0) << "\n";
             file << pfx << "parallel_mode=" << (t.parallelMode ? 1 : 0) << "\n";
+            file << pfx << "interlinear_mode=" << (t.interlinearMode ? 1 : 0) << "\n";
             file << pfx << "parallel_modules=" << joinCsv(t.parallelModules) << "\n";
             file << pfx << "bible_pane_w=" << t.biblePaneWidth << "\n";
             file << pfx << "bible_scroll_y=" << t.bibleScrollY << "\n";
@@ -1489,6 +1507,36 @@ void VerdadApp::setOptionDisplaySettings(
             appFont(),
             appearanceSettings_.appFontSize,
             textStyleOverrideCss());
+    }
+}
+
+void VerdadApp::setBibleSettings(const BibleSettings& settings) {
+    auto normalizeModules = [](const std::vector<std::string>& modules,
+                               size_t maximum) {
+        std::vector<std::string> normalized;
+        normalized.reserve(std::min(modules.size(), maximum));
+        for (const auto& module : modules) {
+            std::string name = trimCopy(module);
+            if (name.empty() ||
+                std::find(normalized.begin(), normalized.end(), name) !=
+                    normalized.end()) {
+                continue;
+            }
+            normalized.push_back(std::move(name));
+            if (normalized.size() >= maximum) break;
+        }
+        return normalized;
+    };
+
+    bibleSettings_.defaultParallelModules = normalizeModules(
+        settings.defaultParallelModules,
+        BibleSettings::kMaxDefaultParallelCompanions);
+    bibleSettings_.interlinearModules = normalizeModules(
+        settings.interlinearModules,
+        BibleSettings::kMaxInterlinearCompanions);
+
+    if (mainWindow_) {
+        mainWindow_->applyBibleSettings();
     }
 }
 
@@ -1668,6 +1716,8 @@ std::string VerdadApp::textStyleOverrideCss() const {
         << "div.parallel-col-last,\n"
         << "div.parallel-cell,\n"
         << "div.parallel-cell-last,\n"
+        << "div.interlinear,\n"
+        << "div.interlinear-line,\n"
         << "div.commentary-heading,\n"
         << "div.commentary,\n"
         << "div.commentary-text,\n"
@@ -1817,6 +1867,13 @@ std::string VerdadApp::textStyleOverrideCss() const {
             << "}\n"
             << "div.parallel-col {\n"
             << "  border-right-color: " << cssHex(palette.border) << " !important;\n"
+            << "}\n"
+            << "div.interlinear-verse {\n"
+            << "  border-bottom-color: " << cssHex(palette.border) << " !important;\n"
+            << "}\n"
+            << "span.interlinear-module,\n"
+            << "i.interlinear-missing {\n"
+            << "  color: " << cssHex(palette.mutedForeground) << " !important;\n"
             << "}\n"
             << "div.commentary-separator,\n"
             << "hr.daily-devotion-divider {\n"

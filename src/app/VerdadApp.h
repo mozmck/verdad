@@ -1,6 +1,7 @@
 #ifndef VERDAD_APP_H
 #define VERDAD_APP_H
 
+#include <cstddef>
 #include <memory>
 #include <string>
 #include <unordered_map>
@@ -102,6 +103,14 @@ public:
         bool showMorphMarkers = false;
         bool showFootnoteMarkers = true;
         bool showCrossReferenceMarkers = true;
+    };
+
+    struct BibleSettings {
+        static constexpr std::size_t kMaxDefaultParallelCompanions = 6;
+        static constexpr std::size_t kMaxInterlinearCompanions = 2;
+
+        std::vector<std::string> defaultParallelModules;
+        std::vector<std::string> interlinearModules;
     };
 
     struct ModuleManagerSettings {
@@ -252,6 +261,12 @@ public:
     /// Update Bible display option settings and apply them immediately.
     void setOptionDisplaySettings(const OptionDisplaySettings& settings);
 
+    /// Current default companion modules for parallel and interlinear views.
+    const BibleSettings& bibleSettings() const { return bibleSettings_; }
+
+    /// Update the default companion modules used by Bible comparison views.
+    void setBibleSettings(const BibleSettings& settings);
+
     /// Build runtime CSS overrides for HTML-rendered text panes.
     std::string textStyleOverrideCss() const;
 
@@ -306,6 +321,7 @@ private:
     OfflineTranslationSettings offlineTranslationSettings_;
     WikDictScanReport offlineTranslationScanReport_;
     OptionDisplaySettings optionDisplaySettings_;
+    BibleSettings bibleSettings_;
     ModuleManagerSettings moduleManagerSettings_;
     SearchSettings searchSettings_;
     std::string userDataDir_;

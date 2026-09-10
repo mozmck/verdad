@@ -44,6 +44,7 @@ constexpr int kStrongsIconSize = 20;
 constexpr int kHistoryChoiceWidth = 150; // Fits most refs while leaving room for history buttons.
 constexpr int kParagraphButtonW = 25;
 constexpr int kParallelButtonW = 25;
+constexpr int kInterlinearButtonW = 28;
 constexpr int kDisplayOptionsMenuButtonW = 40;
 constexpr int kRedWordsButtonW = 34;
 constexpr int kStrongsButtonW = 34;
@@ -540,6 +541,7 @@ BiblePane::BiblePane(VerdadApp* app, int X, int Y, int W, int H)
     , historyRightSeparator_(nullptr)
     , moduleRightSeparator_(nullptr)
     , parallelButton_(nullptr)
+    , interlinearButton_(nullptr)
     , paragraphButton_(nullptr)
     , redWordsToggleButton_(nullptr)
     , parallelAddButton_(nullptr)
@@ -660,7 +662,8 @@ void BiblePane::resize(int X, int Y, int W, int H) {
         !prevButton_ || !nextButton_ || !historyLeftSeparator_ ||
         !historyBackButton_ || !historyChoice_ || !historyForwardButton_ ||
         !historyRightSeparator_ || !moduleRightSeparator_ ||
-        !parallelButton_ || !paragraphButton_ || !redWordsToggleButton_ ||
+        !parallelButton_ || !interlinearButton_ || !paragraphButton_ ||
+        !redWordsToggleButton_ ||
         !parallelAddButton_ ||
         !strongsToggleButton_ || !morphToggleButton_ ||
         !footnotesToggleButton_ || !crossRefsToggleButton_ ||
@@ -697,7 +700,8 @@ void BiblePane::layoutNavBarControls() {
         !prevButton_ || !nextButton_ || !historyLeftSeparator_ ||
         !historyBackButton_ || !historyChoice_ || !historyForwardButton_ ||
         !historyRightSeparator_ || !moduleRightSeparator_ ||
-        !parallelButton_ || !paragraphButton_ || !redWordsToggleButton_ ||
+        !parallelButton_ || !interlinearButton_ || !paragraphButton_ ||
+        !redWordsToggleButton_ ||
         !parallelAddButton_ || !strongsToggleButton_ || !morphToggleButton_ ||
         !footnotesToggleButton_ || !crossRefsToggleButton_ ||
         !displayOptionsMenuButton_ || !crossRefsRightSeparator_ ||
@@ -752,7 +756,9 @@ void BiblePane::layoutNavBarControls() {
     moduleRightSeparator_->resize(cx, cy + 4, separatorW, std::max(10, nh - 8));
     cx += separatorW + spacing;
 
-    const int visibleParallelControlsW = kParallelButtonW + (parallelMode_ ? spacing + kParallelButtonW : 0);
+    const int visibleComparisonControlsW =
+        kParallelButtonW + spacing + kInterlinearButtonW +
+        (parallelMode_ ? spacing + kParallelButtonW : 0);
     const int expandedDisplayOptionsW =
         kParagraphButtonW + spacing +
         kRedWordsButtonW + spacing +
@@ -761,7 +767,7 @@ void BiblePane::layoutNavBarControls() {
         kFootnotesButtonW + spacing +
         kCrossRefsButtonW +
         spacing + separatorW + spacing +
-        visibleParallelControlsW;
+        visibleComparisonControlsW;
     const bool collapseDisplayOptions = cx + expandedDisplayOptionsW > x() + w() - 2;
 
     if (collapseDisplayOptions) {
@@ -815,6 +821,9 @@ void BiblePane::layoutNavBarControls() {
     } else {
         parallelAddButton_->hide();
     }
+
+    interlinearButton_->resize(cx, cy, kInterlinearButtonW, nh);
+    cx += kInterlinearButtonW + spacing;
 
     int spacerW = std::max(0, (x() + w() - 2) - cx);
     navSpacer_->resize(cx, cy, spacerW, nh);
@@ -922,14 +931,34 @@ void BiblePane::toggleParallel() {
     parallelMode_ = !parallelMode_;
 
     if (parallelMode_) {
+        interlinearMode_ = false;
         normalizeParallelModules();
+        const std::string mainModule = currentModule();
         if (parallelModules_.empty()) {
-            parallelModules_.push_back(currentModule());
+            parallelModules_.push_back(mainModule);
+        } else {
+            parallelModules_.front() = mainModule;
         }
         if (parallelModules_.size() == 1) {
             auto bibles = app_->swordManager().getBibleModules();
+            const auto& defaults = app_->bibleSettings().defaultParallelModules;
+            for (const auto& defaultModule : defaults) {
+                auto installed = std::find_if(
+                    bibles.begin(), bibles.end(),
+                    [&](const ModuleInfo& mod) { return mod.name == defaultModule; });
+                if (installed == bibles.end() || defaultModule == mainModule ||
+                    std::find(parallelModules_.begin(), parallelModules_.end(),
+                              defaultModule) != parallelModules_.end()) {
+                    continue;
+                }
+                parallelModules_.push_back(defaultModule);
+                if (parallelModules_.size() >=
+                    static_cast<size_t>(kMaxParallelColumns)) {
+                    break;
+                }
+            }
             for (const auto& mod : bibles) {
-                if (mod.name != parallelModules_.front()) {
+                if (parallelModules_.size() == 1 && mod.name != mainModule) {
                     parallelModules_.push_back(mod.name);
                     break;
                 }
@@ -939,6 +968,34 @@ void BiblePane::toggleParallel() {
 
     if (parallelButton_) {
         parallelButton_->value(parallelMode_ ? 1 : 0);
+    }
+    if (interlinearButton_) interlinearButton_->value(0);
+    layoutNavBarControls();
+    updateDisplay();
+    notifyContextChanged();
+}
+
+void BiblePane::toggleInterlinear() {
+    if (!interlinearMode_) {
+        const auto modules = effectiveInterlinearModules();
+        if (modules.size() <= 1) {
+            if (app_ && app_->mainWindow()) {
+                app_->mainWindow()->showTransientStatus(
+                    "Choose one or two interlinear modules in Tools > Settings > Bible.",
+                    4.0);
+            }
+            if (interlinearButton_) interlinearButton_->value(0);
+            return;
+        }
+        interlinearMode_ = true;
+        parallelMode_ = false;
+    } else {
+        interlinearMode_ = false;
+    }
+
+    if (parallelButton_) parallelButton_->value(0);
+    if (interlinearButton_) {
+        interlinearButton_->value(interlinearMode_ ? 1 : 0);
     }
     layoutNavBarControls();
     updateDisplay();
@@ -1121,6 +1178,8 @@ void BiblePane::redrawChrome() {
         navBar_->redraw();
     }
     if (parallelAddButton_) parallelAddButton_->redraw();
+    if (parallelButton_) parallelButton_->redraw();
+    if (interlinearButton_) interlinearButton_->redraw();
     if (paragraphButton_) paragraphButton_->redraw();
     if (redWordsToggleButton_) redWordsToggleButton_->redraw();
     if (strongsToggleButton_) strongsToggleButton_->redraw();
@@ -1274,6 +1333,7 @@ void BiblePane::setStudyState(const std::string& module,
                               int verse,
                               bool paragraphMode,
                               bool parallelMode,
+                              bool interlinearMode,
                               const std::vector<std::string>& parallelModules) {
     perf::ScopeTimer timer("BiblePane::setStudyState");
     if (!module.empty()) {
@@ -1291,7 +1351,8 @@ void BiblePane::setStudyState(const std::string& module,
     currentChapter_ = std::max(1, chapter);
     currentVerse_ = std::max(1, verse);
     paragraphMode_ = paragraphMode;
-    parallelMode_ = parallelMode;
+    interlinearMode_ = interlinearMode;
+    parallelMode_ = parallelMode && !interlinearMode_;
     parallelModules_ = parallelModules;
     normalizeParallelModules();
 
@@ -1306,6 +1367,9 @@ void BiblePane::setStudyState(const std::string& module,
 
     if (parallelButton_) {
         parallelButton_->value(parallelMode_ ? 1 : 0);
+    }
+    if (interlinearButton_) {
+        interlinearButton_->value(interlinearMode_ ? 1 : 0);
     }
     if (paragraphButton_) {
         paragraphButton_->value(paragraphMode_ ? 1 : 0);
@@ -1559,6 +1623,12 @@ void BiblePane::buildNavBar() {
     parallelAddButton_->hide();
     cx += parallelAddButton_->w() + 2;
 
+    interlinearButton_ = new Fl_Button(cx, cy, kInterlinearButtonW, nh, "IL");
+    interlinearButton_->callback(onInterlinear, this);
+    interlinearButton_->tooltip("Toggle verse-aligned interlinear Bible view");
+    interlinearButton_->type(FL_TOGGLE_BUTTON);
+    cx += interlinearButton_->w() + 2;
+
     navSpacer_ = new Fl_Box(cx, cy, 0, nh);
 }
 
@@ -1627,6 +1697,24 @@ void BiblePane::updateDisplay() {
         perf::logf("BiblePane::updateDisplay getParallelText (%zu cols): %.3f ms",
                    parallelModules_.size(), step.elapsedMs());
         step.reset();
+    } else if (interlinearMode_) {
+        parallelHeader_->hide();
+        if (parallelAddButton_) parallelAddButton_->hide();
+
+        const auto modules = effectiveInterlinearModules();
+        if (modules.size() <= 1) {
+            html = "<div class=\"chapter\"><p><i>Choose one or two "
+                   "interlinear modules in Tools &gt; Settings &gt; Bible.</i></p></div>";
+            hasVerseMarkup = false;
+        } else {
+            html = app_->swordManager().getInterlinearText(
+                modules, currentBook_, currentChapter_, currentVerse_,
+                verseDecorator);
+            perf::logf(
+                "BiblePane::updateDisplay getInterlinearText (%zu modules): %.3f ms",
+                modules.size(), step.elapsedMs());
+            step.reset();
+        }
     } else {
         parallelHeader_->hide();
         if (parallelAddButton_) {
@@ -1705,11 +1793,42 @@ void BiblePane::normalizeParallelModules() {
     std::vector<std::string> normalized;
     normalized.reserve(parallelModules_.size());
     for (const auto& module : parallelModules_) {
-        if (module.empty()) continue;
+        if (module.empty() ||
+            std::find(normalized.begin(), normalized.end(), module) !=
+                normalized.end()) {
+            continue;
+        }
         normalized.push_back(module);
         if (normalized.size() >= static_cast<size_t>(kMaxParallelColumns)) break;
     }
     parallelModules_.swap(normalized);
+}
+
+std::vector<std::string> BiblePane::effectiveInterlinearModules() const {
+    std::vector<std::string> modules;
+    if (!app_ || moduleName_.empty()) return modules;
+
+    const auto bibles = app_->swordManager().getBibleModules();
+    auto installed = [&](const std::string& name) {
+        return std::find_if(
+                   bibles.begin(), bibles.end(),
+                   [&](const ModuleInfo& mod) { return mod.name == name; }) !=
+               bibles.end();
+    };
+
+    modules.push_back(moduleName_);
+    for (const auto& companion : app_->bibleSettings().interlinearModules) {
+        if (companion.empty() || companion == moduleName_ || !installed(companion) ||
+            std::find(modules.begin(), modules.end(), companion) != modules.end()) {
+            continue;
+        }
+        modules.push_back(companion);
+        if (modules.size() >
+            VerdadApp::BibleSettings::kMaxInterlinearCompanions) {
+            break;
+        }
+    }
+    return modules;
 }
 
 void BiblePane::syncReferenceInput() {
@@ -2152,6 +2271,11 @@ void BiblePane::onModuleChange(Fl_Widget* /*w*/, void* data) {
 void BiblePane::onParallel(Fl_Widget* /*w*/, void* data) {
     auto* self = static_cast<BiblePane*>(data);
     self->toggleParallel();
+}
+
+void BiblePane::onInterlinear(Fl_Widget* /*w*/, void* data) {
+    auto* self = static_cast<BiblePane*>(data);
+    self->toggleInterlinear();
 }
 
 void BiblePane::onParagraphToggle(Fl_Widget* /*w*/, void* data) {

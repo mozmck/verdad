@@ -139,6 +139,8 @@ std::string defaultTextOverrideCss() {
         "div.parallel-col-last,\n"
         "div.parallel-cell,\n"
         "div.parallel-cell-last,\n"
+        "div.interlinear,\n"
+        "div.interlinear-line,\n"
         "div.commentary-heading,\n"
         "div.commentary,\n"
         "div.commentary-text,\n"
