@@ -294,7 +294,9 @@ div.interlinear-verse {
 }
 
 div.interlinear-line {
-    display: block;
+    display: table;
+    table-layout: fixed;
+    width: 100%;
     margin: 2px 0;
     overflow-wrap: anywhere;
     word-break: break-word;
@@ -304,22 +306,27 @@ div.interlinear-main {
     margin-bottom: 4px;
 }
 
-span.interlinear-number-spacer {
-    display: inline-block;
-    width: 2.1em;
+span.interlinear-number-gutter {
+    display: table-cell;
+    width: 32px;
+    padding-right: 4px;
+    vertical-align: top;
 }
 
 span.interlinear-module {
-    display: inline-block;
-    width: 5.5em;
+    display: table-cell;
+    width: 120px;
+    padding-right: 10px;
     font-size: 0.78em;
     font-weight: bold;
     vertical-align: top;
+    white-space: nowrap;
     color: #666;
 }
 
 span.interlinear-text {
-    display: inline;
+    display: table-cell;
+    vertical-align: top;
 }
 
 i.interlinear-missing {

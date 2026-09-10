@@ -41,6 +41,7 @@ constexpr int kDailyReadingPlanButtonW = 30;
 constexpr int kToolbarIconSize = 16;
 constexpr int kDisplayOptionsIconSize = 18;
 constexpr int kStrongsIconSize = 20;
+constexpr int kInterlinearIconSize = 17;
 constexpr int kHistoryChoiceWidth = 150; // Fits most refs while leaving room for history buttons.
 constexpr int kParagraphButtonW = 25;
 constexpr int kParallelButtonW = 25;
@@ -64,6 +65,7 @@ enum DisplayOptionMenuIndex {
 enum class BibleToolbarIcon {
     DisplayOptions,
     Strongs,
+    Interlinear,
     DailyReadingPlan,
 };
 
@@ -119,6 +121,8 @@ int bibleToolbarIconSize(BibleToolbarIcon icon) {
         return kDisplayOptionsIconSize;
     case BibleToolbarIcon::Strongs:
         return kStrongsIconSize;
+    case BibleToolbarIcon::Interlinear:
+        return kInterlinearIconSize;
     case BibleToolbarIcon::DailyReadingPlan:
         return kToolbarIconSize;
     }
@@ -152,6 +156,17 @@ std::string bibleToolbarIconSvg(BibleToolbarIcon icon) {
         d="M673 857q20 -72 35 -122t26.5 -80.5t20.5 -44.5t17 -14q14 0 36 11t43 26.5t36 31t15 24.5q0 25 -11.5 62.5t-30.5 82t-43 93t-48.5 94.5t-48.5 87t-42 70q-2 5 -3.5 22t-1.5 37q0 36 10.5 63t28.5 44.5t42.5 26.5t52.5 9q40 0 83.5 -18.5t74.5 -65.5l9 4q7 20 7 53q0 39 -15 73.5t-41 60t-62.5 40t-79.5 14.5q-39 0 -72 -14t-58 -45t-39 -80t-14 -118l-3 -1q-82 129 -165.5 197.5t-158.5 68.5q-39 0 -67.5 -16.5t-49 -43.5t-34 -61.5t-21 -71.5t-10.5 -72.5t-3 -63.5q0 -65 9 -136.5t27.5 -140t47 -130.5t67 -109t87 -74.5t107.5 -27.5q45 0 81 22.5t65.5 58.5t52.5 81.5t41 92.5zM649 950q-16 -40 -34 -75.5t-40 -62.5t-48 -43t-58 -16q-42 0 -79.5 21.5t-69.5 57.5t-58 83.5t-44 99t-27.5 103.5t-9.5 97q0 30 5.5 58.5t18 51t34.5 36.5t55 14q44 0 87.5 -20t84.5 -55t80 -84t74 -106q5 -35 12 -76t17 -84z"/>
   <path fill=")SVG" + foreground + R"SVG("
         d="M1409 1535q-23 -17 -44.5 -26.5t-51.5 -9.5q-32 0 -74.5 11.5t-108.5 34.5q-7 -7 -14.5 -19t-10.5 -25q31 -24 69.5 -51t83.5 -55q-35 -38 -59 -70t-39 -59.5t-21.5 -53.5t-6.5 -52q0 -32 9.5 -66.5t30 -75t52.5 -88t77 -106.5q-28 -30 -52.5 -55t-43 -48t-29 -44.5t-10.5 -45.5q0 -29 13 -56q23 -48 48.5 -91.5t51.5 -88.5q11 -3 25 -1.5t25 6.5q-1 8 -1 17v16q0 21 3 40.5t11 39.5t22 42t37 48q42 45 89.5 92.5t96.5 94t98 91t94 85.5q32 -34 54.5 -60.5t37 -46.5t21 -36t6.5 -31q0 -23 -15.5 -43.5t-52.5 -52.5q-30 -26 -49 -44t-29.5 -32.5t-14 -26.5t-3.5 -26q0 -24 29.5 -67.5t101.5 -109.5q8 -2 21 2t23 9q-1 10 -1.5 17t-0.5 13q0 11 3 20t12 19.5t25 25.5t42 38q58 52 81 82.5t23 55.5q0 19 -8.5 47t-35.5 69.5t-76.5 99.5t-131.5 137q43 39 73.5 67.5t52.5 49.5t37.5 36t28.5 27q39 36 60 65t21 52q0 18 -8 37q-20 46 -38 90t-37 93q-25 2 -44 -3q-15 -40 -35.5 -74t-44 -64t-49.5 -57t-52 -53q-53 -52 -114.5 -110t-121.5 -113t-113.5 -103t-91.5 -81q-44 58 -58.5 99.5t-14.5 78.5q0 30 13.5 61t43 68t76.5 82t115 105q2 5 0 10z"/>
+</svg>
+)SVG";
+    case BibleToolbarIcon::Interlinear:
+        // Outlined from Linux Libertine O Regular so the icon does not depend
+        // on the font being installed at runtime.
+        return R"SVG(
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 26.25 20.8">
+  <g fill=")SVG" + foreground + R"SVG(" transform="translate(0 20.703125)">
+    <path d="M6.109375-3.90625v-12.828125c0-2.65625.546875-2.8125 2.78125-2.90625.203125-.203125.203125-.875 0-1.0625-1.40625.03125-2.9375.0625-4.15625.0625-1.09375 0-2.625-.03125-4.125-.0625-.1875.1875-.1875.859375 0 1.0625 2.234375.09375 2.78125.25 2.78125 2.90625V-3.90625c0 2.65625-.546875 2.8125-2.78125 2.921875-.1875.1875-.1875.859375 0 1.046875C2.046875.03125 3.578125 0 4.765625 0c1.125 0 2.6875.03125 4.125.0625.203125-.1875.203125-.859375 0-1.046875-2.234375-.109375-2.78125-.265625-2.78125-2.921875Z"/>
+    <path transform="translate(10)" d="M4.765625 0h6.78125c.90625 0 3.84375.0625 3.84375.0625.328125-1.59375.640625-3.671875.828125-5.34375-.3125-.125-.671875-.1875-1.046875-.15625-.640625 2.296875-1.828125 4.1875-5.21875 4.1875h-2.015625c-1.25 0-1.828125-.609375-1.828125-2.234375v-13.25c0-2.65625.546875-2.8125 2.78125-2.90625.203125-.203125.203125-.875 0-1.0625-1.4375.03125-2.9375.0625-4.15625.0625-1.1875 0-2.65625-.03125-4.125-.0625-.1875.1875-.1875.859375 0 1.0625 2.234375.09375 2.78125.25 2.78125 2.90625V-3.90625c0 2.65625-.546875 2.8125-2.78125 2.921875-.1875.1875-.1875.859375 0 1.046875C1.859375.03125 3.6875 0 4.765625 0Z"/>
+  </g>
 </svg>
 )SVG";
     case BibleToolbarIcon::DailyReadingPlan:
@@ -1319,6 +1334,9 @@ void BiblePane::syncToolbarIcons() {
     if (strongsToggleButton_) {
         configureBibleToolbarIcon(strongsToggleButton_, BibleToolbarIcon::Strongs);
     }
+    if (interlinearButton_) {
+        configureBibleToolbarIcon(interlinearButton_, BibleToolbarIcon::Interlinear);
+    }
     if (dailyReadingPlanButton_) {
         configureBibleToolbarIcon(dailyReadingPlanButton_, BibleToolbarIcon::DailyReadingPlan);
     }
@@ -1623,7 +1641,8 @@ void BiblePane::buildNavBar() {
     parallelAddButton_->hide();
     cx += parallelAddButton_->w() + 2;
 
-    interlinearButton_ = new Fl_Button(cx, cy, kInterlinearButtonW, nh, "IL");
+    interlinearButton_ = new Fl_Button(cx, cy, kInterlinearButtonW, nh, nullptr);
+    configureBibleToolbarIcon(interlinearButton_, BibleToolbarIcon::Interlinear);
     interlinearButton_->callback(onInterlinear, this);
     interlinearButton_->tooltip("Toggle verse-aligned interlinear Bible view");
     interlinearButton_->type(FL_TOGGLE_BUTTON);
@@ -1823,8 +1842,8 @@ std::vector<std::string> BiblePane::effectiveInterlinearModules() const {
             continue;
         }
         modules.push_back(companion);
-        if (modules.size() >
-            VerdadApp::BibleSettings::kMaxInterlinearCompanions) {
+        if (modules.size() >=
+            1 + VerdadApp::BibleSettings::kMaxInterlinearCompanions) {
             break;
         }
     }

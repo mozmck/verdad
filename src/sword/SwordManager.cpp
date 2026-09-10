@@ -4894,7 +4894,7 @@ std::string SwordManager::getInterlinearText(
             html += module.nameAttr;
             html += "\" data-parallel-col=\"";
             html += module.columnAttr;
-            html += "\">";
+            html += "\"><span class=\"interlinear-number-gutter\">";
 
             if (i == 0) {
                 html += "<a class=\"versenum-link\" href=\"verse:";
@@ -4902,9 +4902,8 @@ std::string SwordManager::getInterlinearText(
                 html += "\"><sup class=\"versenum\">";
                 appendInt(html, verse);
                 html += "</sup></a> ";
-            } else {
-                html += "<span class=\"interlinear-number-spacer\"></span>";
             }
+            html += "</span>";
 
             html += "<span class=\"interlinear-module\">";
             html += module.nameAttr;
@@ -4917,11 +4916,10 @@ std::string SwordManager::getInterlinearText(
             } else {
                 appendSanitizedParallelVerseHtml(html, verseText);
             }
-            html += "</span>";
             if (i == 0 && verseDecorator) {
                 html += verseDecorator(verseRef);
             }
-            html += "</div>\n";
+            html += "</span></div>\n";
         }
         html += "</div>\n";
     }
