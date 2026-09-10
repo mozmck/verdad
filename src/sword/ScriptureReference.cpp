@@ -2,10 +2,13 @@
 
 #include "sword/SwordManager.h"
 
+#include <versificationmgr.h>
+
 #include <algorithm>
 #include <cctype>
 #include <regex>
 #include <sstream>
+#include <unordered_map>
 #include <utility>
 
 namespace verdad {
@@ -67,35 +70,68 @@ bool anyBookKeyPrefixMatches(const std::vector<std::string>& queryKeys,
     return false;
 }
 
-struct VerseReferenceRange {
-    int start = 0;
-    int end = 0;
-};
-
-bool findValidVerseReferenceSuffix(const std::string& candidate,
-                                   int basePos,
-                                   VerseReferenceRange& rangeOut) {
-    size_t pos = 0;
-    while (pos < candidate.size()) {
-        while (pos < candidate.size() &&
-               std::isspace(static_cast<unsigned char>(candidate[pos]))) {
-            ++pos;
+// Use SWORD's explicit aliases (Mt, Mk, Lk, Jn, etc.) before trying
+// unambiguous prefixes of canonical names. Do not use fuzzy matching in prose.
+const sword::VersificationMgr::Book* referenceBook(const std::string& name) {
+    static const auto* system =
+        sword::VersificationMgr::getSystemVersificationMgr()->getVersificationSystem("KJV");
+    static const auto aliases = [] {
+        std::unordered_map<std::string, int> result;
+        for (const sword::abbrev* alias = sword::builtin_abbrevs;
+             *alias->ab; ++alias) {
+            int number = system->getBookNumberByOSISName(alias->osis);
+            if (number > 0) {
+                for (const auto& key : bookLookupKeys(alias->ab)) result[key] = number - 1;
+            }
         }
-        if (pos >= candidate.size()) break;
-
-        std::string suffix = candidate.substr(pos);
-        if (SwordManager::isValidVerseRef(suffix)) {
-            rangeOut.start = basePos + static_cast<int>(pos);
-            rangeOut.end = basePos + static_cast<int>(candidate.size());
-            return true;
+        for (int i = 0; i < system->getBookCount(); ++i) {
+            const auto* book = system->getBook(i);
+            for (const char* label : {book->getLongName(), book->getOSISName(),
+                                      book->getPreferredAbbreviation()}) {
+                for (const auto& key : bookLookupKeys(label)) result[key] = i;
+            }
         }
-
-        while (pos < candidate.size() &&
-               !std::isspace(static_cast<unsigned char>(candidate[pos]))) {
-            ++pos;
+        // Preserve the application's established interpretation of Jud.
+        result["jud"] = system->getBookNumberByOSISName("Judg") - 1;
+        return result;
+    }();
+    const auto keys = bookLookupKeys(name);
+    for (const auto& key : keys) {
+        auto it = aliases.find(key);
+        if (it != aliases.end()) return system->getBook(it->second);
+    }
+    const sword::VersificationMgr::Book* match = nullptr;
+    for (int i = 0; i < system->getBookCount(); ++i) {
+        const auto* book = system->getBook(i);
+        for (const char* label : {book->getLongName(), book->getOSISName(),
+                                  book->getPreferredAbbreviation()}) {
+            const std::string candidate = normalizeBookLookupKey(label);
+            for (const auto& key : keys) {
+                if (key.size() < 2 || candidate.rfind(key, 0) != 0) continue;
+                if (match && match != book) return nullptr;
+                match = book;
+            }
         }
     }
-    return false;
+    return match;
+}
+
+bool referenceWordChar(char c) {
+    const auto uc = static_cast<unsigned char>(c);
+    return std::isalnum(uc) || c == '_' || uc >= 128;
+}
+
+bool listSeparator(const std::string& text, int start, int end) {
+    bool separator = false;
+    for (int i = start; i < end; ++i) {
+        if (text[i] == ',' || text[i] == ';') {
+            if (separator) return false;
+            separator = true;
+        } else if (text[i] != ' ' && text[i] != '\t' && text[i] != '\r') {
+            return false;
+        }
+    }
+    return separator;
 }
 
 } // namespace
@@ -254,21 +290,92 @@ std::string normalizeLinkedVerseRef(const std::string& rawRef) {
     return trimCopy(out.str());
 }
 
-std::vector<std::pair<int, int>> verseReferenceRanges(const std::string& text) {
-    static const std::regex refRe(
-        R"(((?:[1-3]\s+)?[A-Za-z]+(?:\s+[A-Za-z]+)*\s+\d+:\d+(?:-\d+)?))");
+std::vector<VerseReference> verseReferences(const std::string& text) {
+    // A token may name a book or inherit it from the preceding list item.
+    // Keep newlines out of the grammar so context never leaks into a new paragraph.
+    static const std::regex tokenRe(
+        R"(((?:(?:[1-3]|III|II|I)[ \t]*)?[A-Za-z]+\.?(?:[ \t]+[A-Za-z]+\.?){0,4}[ \t]*)?([0-9]+)(?:[ \t]*:[ \t]*([0-9]+))?(?:[ \t]*(?:-|–|—)[ \t]*([0-9]+)(?:[ \t]*:[ \t]*([0-9]+))?)?)",
+        std::regex::icase);
 
-    std::vector<std::pair<int, int>> ranges;
-    auto begin = std::sregex_iterator(text.begin(), text.end(), refRe);
-    auto end = std::sregex_iterator();
-    for (auto it = begin; it != end; ++it) {
-        std::string candidate = (*it)[1].str();
-        VerseReferenceRange range;
-        if (findValidVerseReferenceSuffix(candidate,
-                                          static_cast<int>((*it).position(1)),
-                                          range)) {
-            ranges.emplace_back(range.start, range.end);
+    std::vector<VerseReference> references;
+    const sword::VersificationMgr::Book* lastBook = nullptr;
+    int lastChapter = 0;
+    int lastEnd = 0;
+    std::smatch token;
+    size_t searchStart = 0;
+    while (std::regex_search(text.begin() + searchStart, text.end(), token, tokenRe)) {
+        int start = static_cast<int>(searchStart + token.position());
+        const int end = start + static_cast<int>(token.length());
+        // If a prose prefix consumed an ordinal ("see 1 John"), retry from
+        // that number when validation fails, rather than losing the book number.
+        searchStart = token[1].matched ? searchStart + token.position(2) : end;
+        if ((start > 0 && referenceWordChar(text[start - 1])) ||
+            (end < static_cast<int>(text.size()) &&
+             (referenceWordChar(text[end]) || text[end] == ':'))) continue;
+
+        const sword::VersificationMgr::Book* book = nullptr;
+        if (token[1].matched) {
+            const std::string name = token[1].str();
+            size_t offset = 0;
+            while (offset < name.size()) {
+                book = referenceBook(trimCopy(name.substr(offset)));
+                if (book) {
+                    start += static_cast<int>(offset);
+                    break;
+                }
+                offset = name.find_first_of(" \t", offset);
+                if (offset == std::string::npos) break;
+                offset = name.find_first_not_of(" \t", offset);
+            }
+        } else if (lastBook && listSeparator(text, lastEnd, start)) {
+            book = lastBook;
         }
+        if (!book) continue;
+
+        int first, chapter, verse, endChapter, endVerse;
+        try {
+            first = std::stoi(token[2].str());
+            if (token[3].matched) {
+                chapter = first;
+                verse = std::stoi(token[3].str());
+            } else {
+                // Bare numbers mean verses only in a list or a single-chapter book.
+                if (token[1].matched && book->getChapterMax() != 1) continue;
+                chapter = token[1].matched ? 1 : lastChapter;
+                verse = first;
+            }
+            endChapter = token[5].matched ? std::stoi(token[4].str()) : chapter;
+            endVerse = token[5].matched ? std::stoi(token[5].str()) :
+                       token[4].matched ? std::stoi(token[4].str()) : verse;
+        } catch (...) {
+            continue;
+        }
+        if (chapter <= 0 || chapter > book->getChapterMax() ||
+            endChapter < chapter || endChapter > book->getChapterMax() ||
+            verse <= 0 || verse > book->getVerseMax(chapter) ||
+            endVerse <= 0 || endVerse > book->getVerseMax(endChapter) ||
+            (endChapter == chapter && endVerse < verse)) continue;
+
+        std::string target = std::string(book->getLongName()) + " " +
+                             std::to_string(chapter) + ":" + std::to_string(verse);
+        if (token[4].matched) {
+            target += "-";
+            if (endChapter != chapter) target += std::to_string(endChapter) + ":";
+            target += std::to_string(endVerse);
+        }
+        references.push_back({start, end, std::move(target)});
+        lastBook = book;
+        lastChapter = endChapter;
+        lastEnd = end;
+        searchStart = end;
+    }
+    return references;
+}
+
+std::vector<std::pair<int, int>> verseReferenceRanges(const std::string& text) {
+    std::vector<std::pair<int, int>> ranges;
+    for (const auto& ref : verseReferences(text)) {
+        ranges.emplace_back(ref.start, ref.end);
     }
     return ranges;
 }
@@ -282,15 +389,14 @@ std::string verseReferenceAtPosition(const std::string& text,
     if (text.empty()) return "";
 
     pos = std::clamp(pos, 0, static_cast<int>(text.size()));
-    for (const auto& range : verseReferenceRanges(text)) {
-        bool inside = (pos >= range.first && pos < range.second);
+    for (const auto& range : verseReferences(text)) {
+        bool inside = (pos >= range.start && pos < range.end);
         bool onRightEdge =
-            (pos > 0 && (pos - 1) >= range.first && (pos - 1) < range.second);
+            (pos > 0 && (pos - 1) >= range.start && (pos - 1) < range.end);
         if (!inside && !onRightEdge) continue;
-        if (startOut) *startOut = range.first;
-        if (endOut) *endOut = range.second;
-        return text.substr(static_cast<size_t>(range.first),
-                           static_cast<size_t>(range.second - range.first));
+        if (startOut) *startOut = range.start;
+        if (endOut) *endOut = range.end;
+        return range.reference;
     }
     return "";
 }

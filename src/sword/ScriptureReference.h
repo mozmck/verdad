@@ -22,6 +22,13 @@ std::string canonicalBookLabelForModule(SwordManager& manager,
 std::string normalizeSingleLinkedVerseRef(const std::string& rawRef);
 std::string normalizeLinkedVerseRef(const std::string& rawRef);
 
+struct VerseReference {
+    int start = 0;
+    int end = 0;
+    std::string reference; // Fully qualified target, independent of surrounding text.
+};
+
+std::vector<VerseReference> verseReferences(const std::string& text);
 std::vector<std::pair<int, int>> verseReferenceRanges(const std::string& text);
 std::string verseReferenceAtPosition(const std::string& text,
                                      int pos,

@@ -295,6 +295,23 @@ if(BUILD_TESTING)
     endif()
     add_test(NAME search-regressions COMMAND verdad-search-tests)
 
+    get_target_property(SCRIPTURE_TEST_SOURCES verdad-bench SOURCES)
+    list(REMOVE_ITEM SCRIPTURE_TEST_SOURCES src/bench_main.cpp)
+    add_executable(verdad-scripture-tests
+        tests/ScriptureReferenceTests.cpp
+        ${SCRIPTURE_TEST_SOURCES}
+    )
+    target_include_directories(verdad-scripture-tests PRIVATE
+        $<TARGET_PROPERTY:verdad-bench,INCLUDE_DIRECTORIES>
+    )
+    target_link_libraries(verdad-scripture-tests PRIVATE
+        $<TARGET_PROPERTY:verdad-bench,LINK_LIBRARIES>
+    )
+    target_compile_definitions(verdad-scripture-tests PRIVATE
+        $<TARGET_PROPERTY:verdad-bench,COMPILE_DEFINITIONS>
+    )
+    add_test(NAME scripture-references COMMAND verdad-scripture-tests)
+
     add_executable(verdad-morphology-tests
         tests/MorphologyTests.cpp
         src/translation/MorphologyProvider.cpp

@@ -805,20 +805,21 @@ void parseHtmlToEditorContent(const std::string& html,
     }
 }
 
-std::string escapeAndAutoLink(const std::string& text) {
+std::string escapeAndAutoLink(const std::string& text, int start, int end,
+                              const std::vector<scripture::VerseReference>& references) {
     std::string out;
-    size_t cursor = 0;
-    for (const auto& range : scripture::verseReferenceRanges(text)) {
-        size_t pos = static_cast<size_t>(range.first);
-        size_t len = static_cast<size_t>(range.second - range.first);
-        std::string candidate = text.substr(pos, len);
-
-        out += escapeHtml(text.substr(cursor, pos - cursor));
-        out += "<a href=\"sword://" + escapeHtml(candidate) + "\">" +
-               escapeHtml(candidate) + "</a>";
-        cursor = pos + len;
+    int cursor = start;
+    for (const auto& ref : references) {
+        if (ref.end <= start) continue;
+        if (ref.start >= end) break;
+        const int linkStart = std::max(start, ref.start);
+        const int linkEnd = std::min(end, ref.end);
+        out += escapeHtml(text.substr(cursor, linkStart - cursor));
+        out += "<a href=\"sword://" + escapeHtml(ref.reference) + "\">" +
+               escapeHtml(text.substr(linkStart, linkEnd - linkStart)) + "</a>";
+        cursor = linkEnd;
     }
-    out += escapeHtml(text.substr(cursor));
+    out += escapeHtml(text.substr(cursor, end - cursor));
     return out;
 }
 
@@ -965,7 +966,8 @@ std::string serializeInlineRange(const std::string& text,
                                  const std::vector<CharFormat>& formats,
                                  int start,
                                  int end,
-                                 int baseSize) {
+                                 int baseSize,
+                                 const std::vector<scripture::VerseReference>& references) {
     if (start >= end || start < 0 || end > static_cast<int>(text.size())) {
         return "";
     }
@@ -980,8 +982,8 @@ std::string serializeInlineRange(const std::string& text,
             continue;
         }
 
-        std::string chunk = text.substr(runStart, i - runStart);
-        html += wrapStyledText(escapeAndAutoLink(chunk), current, baseSize);
+        html += wrapStyledText(escapeAndAutoLink(text, runStart, i, references),
+                               current, baseSize);
         runStart = i;
         if (i < end) {
             current = formatAt(formats, i);
@@ -1056,7 +1058,8 @@ std::string serializeListRun(const std::vector<EditorLine>& lines,
                              const std::vector<CharFormat>& formats,
                              int baseSize,
                              int indentWidth,
-                             HtmlExportFlavor flavor) {
+                             HtmlExportFlavor flavor,
+                             const std::vector<scripture::VerseReference>& references) {
     std::string html;
     std::vector<bool> listStack;
     int baseLevel = -1;
@@ -1132,7 +1135,7 @@ std::string serializeListRun(const std::vector<EditorLine>& lines,
         std::string itemHtml = serializeInlineRange(text, formats,
                                                     lines[cursor].start + line.prefix.prefixLen,
                                                     lines[cursor].end,
-                                                    baseSize);
+                                                    baseSize, references);
         html += itemHtml.empty() ? "&nbsp;" : itemHtml;
         if (flavor == HtmlExportFlavor::Odt) {
             html += "</div>";
@@ -1162,6 +1165,7 @@ std::string serializeEditorContent(const std::string& text,
                                    int indentWidth) {
     if (text.empty()) return "";
 
+    const auto references = scripture::verseReferences(text);
     std::vector<EditorLine> lines;
     int start = 0;
     for (int i = 0; i <= static_cast<int>(text.size()); ++i) {
@@ -1187,7 +1191,8 @@ std::string serializeEditorContent(const std::string& text,
         }
 
         if (isListLine(lines[i].text)) {
-            html += serializeListRun(lines, i, text, formats, baseSize, indentWidth, flavor);
+            html += serializeListRun(lines, i, text, formats, baseSize, indentWidth, flavor,
+                                     references);
             continue;
         }
 
@@ -1231,12 +1236,12 @@ std::string serializeEditorContent(const std::string& text,
                 html += serializeInlineRange(text, formats,
                                              lines[i].start + indentLen,
                                              lines[i].end,
-                                             baseSize);
+                                             baseSize, references);
             } else {
                 html += serializeInlineRange(text, formats,
                                              lines[i].start + indentLen,
                                              lines[i].end,
-                                             baseSize);
+                                             baseSize, references);
             }
             firstLine = false;
             ++i;
