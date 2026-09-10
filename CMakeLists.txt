@@ -10,6 +10,21 @@ if(NOT CMAKE_CONFIGURATION_TYPES AND NOT CMAKE_BUILD_TYPE)
         "Debug" "Release" "RelWithDebInfo" "MinSizeRel")
 endif()
 
+# Multi-config generators choose the configuration at build time. Make an
+# unqualified Ninja Multi-Config build match the single-config Release default;
+# explicit --config selections (including Debug) still take precedence. All
+# vendored libraries added below are then built with that same configuration.
+if(CMAKE_GENERATOR STREQUAL "Ninja Multi-Config")
+    if(NOT CMAKE_DEFAULT_BUILD_TYPE)
+        set(CMAKE_DEFAULT_BUILD_TYPE Release CACHE STRING
+            "Default Ninja Multi-Config build type")
+    endif()
+    if(NOT CMAKE_DEFAULT_CONFIGS)
+        set(CMAKE_DEFAULT_CONFIGS Release CACHE STRING
+            "Default Ninja Multi-Config target configurations")
+    endif()
+endif()
+
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
@@ -522,7 +537,7 @@ if(UNIX AND NOT APPLE AND VERDAD_BUNDLE_SHARED_SWORD)
                 DESTDIR=${VERDAD_BUNDLE_DIR}
                 ${CMAKE_COMMAND}
                 -DCMAKE_INSTALL_PREFIX=/
-                -DCMAKE_INSTALL_CONFIG_NAME=${CMAKE_BUILD_TYPE}
+                -DCMAKE_INSTALL_CONFIG_NAME=$<CONFIG>
                 -DCMAKE_INSTALL_LOCAL_ONLY=1
                 -P ${CMAKE_BINARY_DIR}/cmake_install.cmake
         COMMAND ${CMAKE_COMMAND} -E copy "${CMAKE_SOURCE_DIR}/install.sh"
@@ -576,7 +591,7 @@ if(UNIX AND NOT APPLE AND VERDAD_BUNDLE_SHARED_SWORD)
                     DESTDIR=${VERDAD_DEB_PACKAGE_ROOT}
                     ${CMAKE_COMMAND}
                     -DCMAKE_INSTALL_PREFIX=/usr
-                    -DCMAKE_INSTALL_CONFIG_NAME=${CMAKE_BUILD_TYPE}
+                    -DCMAKE_INSTALL_CONFIG_NAME=$<CONFIG>
                     -DCMAKE_INSTALL_LOCAL_ONLY=1
                     -P ${CMAKE_BINARY_DIR}/cmake_install.cmake
             COMMAND ${CMAKE_COMMAND} -E rename
@@ -646,7 +661,7 @@ if(UNIX AND NOT APPLE)
                 VERDAD_SKIP_BUNDLED_SWORD_INSTALL=1
                 ${CMAKE_COMMAND}
                 -DCMAKE_INSTALL_PREFIX=/usr
-                -DCMAKE_INSTALL_CONFIG_NAME=${CMAKE_BUILD_TYPE}
+                -DCMAKE_INSTALL_CONFIG_NAME=$<CONFIG>
                 -DCMAKE_INSTALL_LOCAL_ONLY=1
                 -P ${CMAKE_BINARY_DIR}/cmake_install.cmake
         COMMAND ${CMAKE_COMMAND}

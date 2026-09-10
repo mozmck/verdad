@@ -106,17 +106,17 @@ jobs:
             -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
 
       - name: Build
-        run: cmake --build build -j$(nproc)
+        run: cmake --build build --config Release -j$(nproc)
 
       - name: Show ccache stats
         if: always()
         run: ccache --show-stats
 
       - name: Package (tar.gz)
-        run: cmake --build build --target bundle
+        run: cmake --build build --config Release --target bundle
 
       - name: Package (AppImage)
-        run: cmake --build build --target appimage
+        run: cmake --build build --config Release --target appimage
 
       - name: Upload artifact
         uses: actions/upload-artifact@v7
@@ -208,8 +208,8 @@ jobs:
             -DSWORD_NO_XZ=Yes \
             -DCMAKE_INSTALL_PREFIX="${{ github.workspace }}/deps/sword" \
             -DCMAKE_OSX_DEPLOYMENT_TARGET=11.0
-          cmake --build sword-build -j$(sysctl -n hw.logicalcpu)
-          cmake --install sword-build
+          cmake --build sword-build --config Release -j$(sysctl -n hw.logicalcpu)
+          cmake --install sword-build --config Release
 
       - name: Configure Verdad
         run: |
@@ -221,17 +221,17 @@ jobs:
             -DCMAKE_OSX_DEPLOYMENT_TARGET=11.0
 
       - name: Build Verdad
-        run: cmake --build build -j$(sysctl -n hw.logicalcpu)
+        run: cmake --build build --config Release -j$(sysctl -n hw.logicalcpu)
 
       - name: Show ccache stats
         if: always()
         run: ccache --show-stats
 
       - name: Package (.app bundle)
-        run: cmake --build build --target app
+        run: cmake --build build --config Release --target app
 
       - name: Create DMG
-        run: cmake --build build --target dmg
+        run: cmake --build build --config Release --target dmg
 
       - name: Upload artifact
         uses: actions/upload-artifact@v7
@@ -321,8 +321,8 @@ jobs:
             -DSWORD_NO_XZ=Yes \
             -DCMAKE_INSTALL_PREFIX="${{ github.workspace }}/deps/sword" \
             -DCMAKE_OSX_DEPLOYMENT_TARGET=10.15
-          cmake --build sword-build -j$(sysctl -n hw.logicalcpu)
-          cmake --install sword-build
+          cmake --build sword-build --config Release -j$(sysctl -n hw.logicalcpu)
+          cmake --install sword-build --config Release
 
       - name: Configure Verdad
         run: |
@@ -334,17 +334,17 @@ jobs:
             -DCMAKE_OSX_DEPLOYMENT_TARGET=10.15
 
       - name: Build Verdad
-        run: cmake --build build -j$(sysctl -n hw.logicalcpu)
+        run: cmake --build build --config Release -j$(sysctl -n hw.logicalcpu)
 
       - name: Show ccache stats
         if: always()
         run: ccache --show-stats
 
       - name: Package (.app bundle)
-        run: cmake --build build --target app
+        run: cmake --build build --config Release --target app
 
       - name: Create DMG
-        run: cmake --build build --target dmg
+        run: cmake --build build --config Release --target dmg
 
       - name: Upload artifact
         uses: actions/upload-artifact@v7

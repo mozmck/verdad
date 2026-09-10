@@ -165,8 +165,8 @@ Verdad is a C++17 CMake project. FLTK and litehtml are included as submodules.
 ```bash
 git submodule update --init --recursive
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
-cmake --build build -j$(nproc)
-ctest --test-dir build --output-on-failure
+cmake --build build --config Release -j$(nproc)
+ctest --test-dir build -C Release --output-on-failure
 ./build/verdad
 ```
 
@@ -178,7 +178,7 @@ For a debug build:
 
 ```bash
 cmake -S . -B build-debug -DCMAKE_BUILD_TYPE=Debug
-cmake --build build-debug -j$(nproc)
+cmake --build build-debug --config Debug -j$(nproc)
 ```
 
 ### Debian and Ubuntu build dependencies
@@ -220,9 +220,9 @@ Available CMake packaging targets depend on the host platform:
 For example:
 
 ```bash
-cmake --build build --target appimage
-cmake --build build --target bundle
-cmake --build build --target deb
+cmake --build build --config Release --target appimage
+cmake --build build --config Release --target bundle
+cmake --build build --config Release --target deb
 ```
 
 The Linux AppImage, archive, and Debian package bundle the SWORD runtime and
@@ -238,7 +238,7 @@ packages Linux, macOS, and Windows artifacts.
 To install directly from a source build:
 
 ```bash
-cmake --install build --prefix "$HOME/.local"
+cmake --install build --config Release --prefix "$HOME/.local"
 ```
 
 Or use the repository installer after building:
@@ -251,7 +251,7 @@ To use the standalone installer, build and unpack the prebuilt bundle, then run
 `install.sh` from inside the unpacked directory:
 
 ```bash
-cmake --build build --target bundle
+cmake --build build --config Release --target bundle
 tar -xzf build/verdad-*.tar.gz -C /tmp
 /tmp/verdad-*/install.sh
 ```
