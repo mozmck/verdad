@@ -314,6 +314,10 @@ void LeftPane::setSearchAssistanceMode(SearchAssistanceMode mode) {
     syncSearchAssistanceButtons();
 }
 
+void LeftPane::setSearchResultSort(SearchResultSort sort) {
+    if (searchPanel_) searchPanel_->setResultSort(sort);
+}
+
 void LeftPane::syncSearchAssistanceButtons() {
     if (!exactSearchModeButton_ || !spellingSearchModeButton_ ||
         !synonymsSearchModeButton_ || !smartSearchModeButton_) {

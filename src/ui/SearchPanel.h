@@ -20,6 +20,7 @@ namespace verdad {
 
 class VerdadApp;
 class SearchResultBrowser;
+enum class SearchResultSort;
 
 /// Panel for displaying search results within the left pane tabs
 class SearchPanel : public Fl_Group {
@@ -53,6 +54,9 @@ public:
 
     /// Set extra line spacing between search result rows, in pixels.
     void setResultLineSpacing(int pixels);
+
+    /// Apply the persisted result ordering without rerunning the search.
+    void setResultSort(SearchResultSort sort);
 
 private:
     friend class SearchResultBrowser;

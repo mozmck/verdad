@@ -830,7 +830,7 @@ SearchPanel::SearchPanel(VerdadApp* app, int X, int Y, int W, int H)
     sortChoice_->add("Relevance");
     sortChoice_->add("Canonical");
     sortChoice_->add("By module");
-    sortChoice_->value(1);
+    sortChoice_->value(app_ ? static_cast<int>(app_->searchSettings().resultSort) : 0);
     sortChoice_->tooltip("Result ordering");
     sortChoice_->callback(onSortChoiceChanged, this);
 
@@ -902,6 +902,20 @@ void SearchPanel::setResultLineSpacing(int pixels) {
     const int spacing = std::clamp(pixels, 0, 16);
     if (resultBrowser_->linespacing() == spacing) return;
     resultBrowser_->linespacing(spacing);
+    rebuildResultBrowserItems();
+}
+
+void SearchPanel::setResultSort(SearchResultSort sort) {
+    if (!sortChoice_) return;
+    const int value = std::clamp(static_cast<int>(sort), 0, 2);
+    if (sortChoice_->value() == value) return;
+    sortChoice_->value(value);
+    if (results_.empty()) return;
+    std::string canonicalModule;
+    if (app_ && app_->mainWindow() && app_->mainWindow()->biblePane()) {
+        canonicalModule = trimCopy(app_->mainWindow()->biblePane()->currentModule());
+    }
+    sortResultsForDisplay(canonicalModule);
     rebuildResultBrowserItems();
 }
 
@@ -2535,7 +2549,15 @@ void SearchPanel::onFilterChoiceChanged(Fl_Widget* /*w*/, void* data) {
 
 void SearchPanel::onSortChoiceChanged(Fl_Widget* /*w*/, void* data) {
     auto* self = static_cast<SearchPanel*>(data);
-    if (!self || self->results_.empty()) return;
+    if (!self) return;
+    if (self->app_ && self->sortChoice_) {
+        auto settings = self->app_->searchSettings();
+        settings.resultSort = static_cast<SearchResultSort>(
+            std::clamp(self->sortChoice_->value(), 0, 2));
+        self->app_->setSearchSettings(settings);
+        self->app_->savePreferences();
+    }
+    if (self->results_.empty()) return;
     SearchPanel::LazySnippetContext lazyContext = self->lazySnippetContext_;
     const bool resumeLazySnippets = lazyContext.active;
     self->cancelPendingResultAppend();

@@ -4,6 +4,7 @@
 #include "reading/ReadingPlanManager.h"
 #include "sword/SwordManager.h"
 #include "search/SearchIndexer.h"
+#include "search/SemanticSearch.h"
 #include "tags/TagManager.h"
 #include "ui/MainWindow.h"
 #include "ui/BiblePane.h"
@@ -193,6 +194,14 @@ std::string trimCopy(const std::string& s) {
     }
 
     return s.substr(start, end - start);
+}
+
+std::string lowerCopy(std::string text) {
+    std::transform(text.begin(), text.end(), text.begin(),
+                   [](unsigned char c) {
+                       return static_cast<char>(std::tolower(c));
+                   });
+    return text;
 }
 
 int parseIntOr(const std::string& text, int fallback) {
@@ -433,6 +442,24 @@ SearchAssistanceMode searchAssistanceModeFromToken(
     if (token == "spelling" || token == "spell") return SearchAssistanceMode::Spelling;
     if (token == "synonyms" || token == "synonym") return SearchAssistanceMode::Synonyms;
     if (token == "smart" || token == "smarter") return SearchAssistanceMode::Smart;
+    return fallback;
+}
+
+const char* searchResultSortToken(SearchResultSort sort) {
+    switch (sort) {
+    case SearchResultSort::Canonical: return "canonical";
+    case SearchResultSort::Module: return "module";
+    case SearchResultSort::Relevance:
+    default: return "relevance";
+    }
+}
+
+SearchResultSort searchResultSortFromToken(const std::string& text,
+                                           SearchResultSort fallback) {
+    const std::string token = lowerCopy(trimCopy(text));
+    if (token == "relevance") return SearchResultSort::Relevance;
+    if (token == "canonical") return SearchResultSort::Canonical;
+    if (token == "module" || token == "by_module") return SearchResultSort::Module;
     return fallback;
 }
 
@@ -742,6 +769,9 @@ bool VerdadApp::initialize(int argc, char* argv[]) {
     searchIndexer_ = std::make_unique<SearchIndexer>(
         joinPath(getConfigDir(), "module_index.db"),
         importedModuleMgr_.get());
+    semanticSearch_ = std::make_unique<SemanticSearchService>(
+        joinPath(getConfigDir(), "semantic_search"));
+    searchIndexer_->setSemanticSearchService(semanticSearch_.get());
 
     // Set up FLTK
     applyThemePalette(appearanceSettings_.themeMode);
@@ -1131,6 +1161,19 @@ bool VerdadApp::applyPreferencesMap(const PreferenceMap& prefs,
             importedSearch.assistanceMode = SearchAssistanceMode::Exact;
         }
     }
+    importedSearch.resultSort = searchResultSortFromToken(
+        lookup("search_result_sort"), importedSearch.resultSort);
+    importedSearch.semanticSearchEnabled = parseBoolOr(
+        lookup("semantic_search_enabled"), importedSearch.semanticSearchEnabled);
+    for (const auto& [key, value] : prefs) {
+        constexpr const char* prefix = "semantic_reference_";
+        if (key.rfind(prefix, 0) != 0) continue;
+        std::string language = lowerCopy(trimCopy(key.substr(std::strlen(prefix))));
+        std::string module = trimCopy(value);
+        if (!language.empty() && !module.empty()) {
+            importedSearch.semanticReferenceModules[language] = module;
+        }
+    }
 
     PreviewDictionarySettings importedPreview = previewDictionarySettings_;
     importedPreview.greekModule =
@@ -1274,6 +1317,20 @@ void VerdadApp::savePreferences() {
              << (searchModeLevel >= static_cast<int>(SearchAssistanceMode::Synonyms) ? 1 : 0) << "\n";
         file << "search_smarter_search="
              << (searchSettings_.assistanceMode == SearchAssistanceMode::Smart ? 1 : 0) << "\n";
+        file << "search_result_sort="
+             << searchResultSortToken(searchSettings_.resultSort) << "\n";
+        file << "semantic_search_enabled="
+             << (searchSettings_.semanticSearchEnabled ? 1 : 0) << "\n";
+        std::vector<std::string> semanticLanguages;
+        semanticLanguages.reserve(searchSettings_.semanticReferenceModules.size());
+        for (const auto& [language, module] : searchSettings_.semanticReferenceModules) {
+            if (!language.empty() && !module.empty()) semanticLanguages.push_back(language);
+        }
+        std::sort(semanticLanguages.begin(), semanticLanguages.end());
+        for (const auto& language : semanticLanguages) {
+            file << "semantic_reference_" << language << "="
+                 << searchSettings_.semanticReferenceModules.at(language) << "\n";
+        }
         file << "preview_dict_greek=" << previewDictionarySettings_.greekModule << "\n";
         file << "preview_dict_hebrew=" << previewDictionarySettings_.hebrewModule << "\n";
         file << "offline_translation_hover_enabled="
@@ -1566,8 +1623,14 @@ void VerdadApp::setModuleManagerSettings(
 
 void VerdadApp::setSearchSettings(const SearchSettings& settings) {
     searchSettings_ = settings;
+    if (semanticSearch_) {
+        semanticSearch_->setEnabled(searchSettings_.semanticSearchEnabled);
+        semanticSearch_->setReferenceModules(
+            searchSettings_.semanticReferenceModules);
+    }
     if (mainWindow_ && mainWindow_->leftPane()) {
         mainWindow_->leftPane()->setSearchAssistanceMode(searchSettings_.assistanceMode);
+        mainWindow_->leftPane()->setSearchResultSort(searchSettings_.resultSort);
     }
 }
 

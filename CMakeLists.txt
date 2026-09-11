@@ -144,7 +144,9 @@ set(SOURCES
     src/sword/SwordPaths.cpp
     src/search/SearchIndexer.cpp
     src/search/SearchSnippet.cpp
+    src/search/SemanticSearch.cpp
     src/search/SmartSearch.cpp
+    src/search/TopicSearch.cpp
     src/reading/ReadingPlanGenerator.cpp
     src/reading/ReadingPlanManager.cpp
     src/reading/ReadingPlanUtils.cpp
@@ -184,7 +186,9 @@ set(HEADERS
     src/sword/SwordPaths.h
     src/search/SearchIndexer.h
     src/search/SearchSnippet.h
+    src/search/SemanticSearch.h
     src/search/SmartSearch.h
+    src/search/TopicSearch.h
     src/reading/DateUtils.h
     src/reading/ReadingPlanGenerator.h
     src/reading/ReadingPlanManager.h
@@ -291,7 +295,9 @@ if(BUILD_TESTING)
         tests/SearchTests.cpp
         src/search/SearchIndexer.cpp
         src/search/SearchSnippet.cpp
+        src/search/SemanticSearch.cpp
         src/search/SmartSearch.cpp
+        src/search/TopicSearch.cpp
         src/import/ImportedModuleManager.cpp
         src/sword/SwordPaths.cpp
         src/app/PlatformPaths.cpp

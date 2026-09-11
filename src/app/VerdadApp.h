@@ -14,6 +14,7 @@ namespace verdad {
 
 class SwordManager;
 class SearchIndexer;
+class SemanticSearchService;
 class TagManager;
 class ReadingPlanManager;
 class ImportedModuleManager;
@@ -24,6 +25,12 @@ enum class SearchAssistanceMode {
     Spelling,
     Synonyms,
     Smart,
+};
+
+enum class SearchResultSort {
+    Relevance,
+    Canonical,
+    Module,
 };
 
 /// Main application class - owns all managers and the main window
@@ -123,6 +130,9 @@ public:
 
     struct SearchSettings {
         SearchAssistanceMode assistanceMode = SearchAssistanceMode::Smart;
+        SearchResultSort resultSort = SearchResultSort::Relevance;
+        bool semanticSearchEnabled = false;
+        std::unordered_map<std::string, std::string> semanticReferenceModules;
     };
 
     VerdadApp();
@@ -152,6 +162,9 @@ public:
     /// Get the search indexer (may be nullptr if initialization failed)
     SearchIndexer* searchIndexer() { return searchIndexer_.get(); }
     const SearchIndexer* searchIndexer() const { return searchIndexer_.get(); }
+
+    SemanticSearchService* semanticSearch() { return semanticSearch_.get(); }
+    const SemanticSearchService* semanticSearch() const { return semanticSearch_.get(); }
 
     /// Get the main window
     MainWindow* mainWindow() { return mainWindow_.get(); }
@@ -311,6 +324,7 @@ private:
 
     std::unique_ptr<SwordManager> swordMgr_;
     std::unique_ptr<SearchIndexer> searchIndexer_;
+    std::unique_ptr<SemanticSearchService> semanticSearch_;
     std::unique_ptr<TagManager> tagMgr_;
     std::unique_ptr<ReadingPlanManager> readingPlanMgr_;
     std::unique_ptr<ImportedModuleManager> importedModuleMgr_;

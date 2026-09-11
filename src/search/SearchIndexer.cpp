@@ -1,7 +1,9 @@
 #include "import/ImportedModuleManager.h"
 #include "search/SearchIndexer.h"
 #include "search/SearchSnippet.h"
+#include "search/SemanticSearch.h"
 #include "search/SmartSearch.h"
+#include "search/TopicSearch.h"
 #include "sword/SwordPaths.h"
 
 #include <markupfiltmgr.h>
@@ -1165,6 +1167,26 @@ bool matchesBibleScope(const SearchIndexer::SearchRequest& request,
     return true;
 }
 
+bool matchesBibleReferenceScope(const SearchIndexer::SearchRequest& request,
+                                const std::string& reference) {
+    if (request.bibleScope == SearchIndexer::SearchRequest::BibleScope::All) return true;
+    sword::VerseKey key;
+    key.setText(reference.c_str());
+    if (key.popError()) return false;
+    switch (request.bibleScope) {
+    case SearchIndexer::SearchRequest::BibleScope::OldTestament:
+        return key.getTestament() != 2;
+    case SearchIndexer::SearchRequest::BibleScope::NewTestament:
+        return key.getTestament() == 2;
+    case SearchIndexer::SearchRequest::BibleScope::CurrentBook:
+        return normalizeFilterToken(key.getBookName() ? key.getBookName() : "") ==
+               normalizeFilterToken(request.currentBook);
+    case SearchIndexer::SearchRequest::BibleScope::All:
+    default:
+        return true;
+    }
+}
+
 bool bindText(sqlite3_stmt* stmt, int index, const std::string& value) {
     return sqlite3_bind_text(stmt, index, value.c_str(), -1, SQLITE_TRANSIENT) == SQLITE_OK;
 }
@@ -1765,6 +1787,9 @@ SearchIndexer::SearchIndexer(const std::string& dbPath,
                              const ImportedModuleManager* importedModuleMgr)
     : dbPath_(dbPath)
     , importedModuleMgr_(importedModuleMgr) {
+    std::filesystem::path topicPath(dbPath_);
+    topicPath.replace_filename("topic_index.db");
+    topicSearchProvider_ = std::make_unique<TopicSearchProvider>(topicPath.string());
     int existingSchemaVersion = readSearchDatabaseUserVersion(dbPath_);
     if (existingSchemaVersion > 0 && existingSchemaVersion < kSearchSchemaVersion) {
         removeSearchDatabaseCacheFiles(dbPath_);
@@ -1806,6 +1831,21 @@ SearchIndexer::SearchIndexer(const std::string& dbPath,
     }
 
     workerThread_ = std::thread(&SearchIndexer::workerLoop, this);
+}
+
+bool SearchIndexer::topicIndexAvailable() const {
+    if (!topicSearchProvider_) return false;
+    std::lock_guard<std::mutex> lock(catalogMutex_);
+    for (const auto& [name, entry] : moduleCatalog_) {
+        if (lowerCopy(name) == "nave") {
+            return topicSearchProvider_->readyForSignature(entry.signature);
+        }
+    }
+    return false;
+}
+
+std::uint64_t SearchIndexer::topicIndexBytes() const {
+    return topicSearchProvider_ ? topicSearchProvider_->databaseBytes() : 0;
 }
 
 SearchIndexer::ScopedSuspend::~ScopedSuspend() {
@@ -2075,6 +2115,9 @@ void SearchIndexer::synchronizeModules(const std::vector<ModuleInfo>& modules) {
     nextCatalog.reserve(modules.size());
     std::unordered_set<std::string> activeModules;
 
+    std::string naveModule;
+    std::string naveSignature;
+    std::unordered_map<std::string, std::string> semanticModuleSignatures;
     for (const auto& module : modules) {
         std::string resourceType = searchResourceTypeTokenForModuleType(module.type);
         if (!isSearchableResourceTypeToken(resourceType) || module.name.empty()) {
@@ -2087,12 +2130,25 @@ void SearchIndexer::synchronizeModules(const std::vector<ModuleInfo>& modules) {
         entry.moduleToken = normalizeFilterToken(module.name);
         entry.signature = buildModuleSignature(module, resourceType, entry.moduleToken);
         activeModules.insert(module.name);
+        semanticModuleSignatures[module.name] = entry.signature;
+        if (lowerCopy(module.name) == "nave") {
+            naveModule = module.name;
+            naveSignature = entry.signature;
+        }
         nextCatalog.emplace(module.name, std::move(entry));
     }
 
     {
         std::lock_guard<std::mutex> lock(catalogMutex_);
         moduleCatalog_ = std::move(nextCatalog);
+    }
+
+    if (!naveModule.empty() && topicSearchProvider_ &&
+        !topicSearchProvider_->readyForSignature(naveSignature)) {
+        queueModuleIndex(naveModule, true);
+    }
+    if (semanticSearchService_) {
+        semanticSearchService_->setModuleSignatures(semanticModuleSignatures);
     }
 
     if (!db_) return;
@@ -2748,7 +2804,7 @@ std::vector<SearchResult> SearchIndexer::buildResultSnippets(
         smartQueryTerms = smart_search::queryTerms(query, language,
                                                    smartOptions.includeSynonyms);
         spellingAlternatives = buildSmartSpellingAlternatives(
-            SearchRequest{}, query, smartOptions);
+            SearchRequest{}, query, language, smartOptions);
     }
 
     const bool includeXhtml = kind == SnippetKind::Strongs;
@@ -3276,9 +3332,8 @@ std::unordered_map<std::string, std::vector<std::string>>
 SearchIndexer::buildSmartSpellingAlternatives(
     const SearchRequest& request,
     const std::string& query,
+    const std::string& language,
     SmartSearchOptions options) const {
-
-    (void)request;
 
     std::unordered_map<std::string, std::vector<std::string>> alternatives;
     std::vector<std::string> tokens = smart_search::queryTerms(query);
@@ -3323,6 +3378,52 @@ SearchIndexer::buildSmartSpellingAlternatives(
         candidate.orthographicHit = candidate.orthographicHit || orthographicHit;
     };
 
+    std::vector<std::string> vocabularyModules;
+    if (!request.moduleName.empty()) {
+        vocabularyModules.push_back(request.moduleName);
+    } else if (!language.empty()) {
+        const std::string wantedLanguage = lowerCopy(language);
+        std::lock_guard<std::mutex> catalogLock(catalogMutex_);
+        for (const auto& [name, entry] : moduleCatalog_) {
+            if (lowerCopy(entry.info.language) != wantedLanguage) continue;
+            if (!request.resourceTypes.empty() &&
+                std::find(request.resourceTypes.begin(), request.resourceTypes.end(),
+                          entry.resourceType) == request.resourceTypes.end()) {
+                continue;
+            }
+            vocabularyModules.push_back(name);
+        }
+    }
+
+    std::lock_guard<std::mutex> lock(dbMutex_);
+    sqlite3_stmt* scopedTermStmt = nullptr;
+    if (!vocabularyModules.empty()) {
+        std::ostringstream scopedSql;
+        scopedSql << "SELECT 1 FROM spell_module_terms "
+                     "WHERE term = ? AND module_name IN (";
+        for (size_t i = 0; i < vocabularyModules.size(); ++i) {
+            if (i) scopedSql << ",";
+            scopedSql << "?";
+        }
+        scopedSql << ") LIMIT 1";
+        if (sqlite3_prepare_v2(db_, scopedSql.str().c_str(), -1,
+                               &scopedTermStmt, nullptr) != SQLITE_OK) {
+            scopedTermStmt = nullptr;
+        }
+    }
+
+    auto termAllowedByScope = [&](const std::string& term) {
+        if (!scopedTermStmt) return true;
+        sqlite3_reset(scopedTermStmt);
+        sqlite3_clear_bindings(scopedTermStmt);
+        bindText(scopedTermStmt, 1, term);
+        for (size_t i = 0; i < vocabularyModules.size(); ++i) {
+            bindText(scopedTermStmt, static_cast<int>(i) + 2,
+                     vocabularyModules[i]);
+        }
+        return sqlite3_step(scopedTermStmt) == SQLITE_ROW;
+    };
+
     auto readCandidates = [&](sqlite3_stmt* stmt,
                               std::unordered_map<std::string, Candidate>& candidates,
                               bool exactHit,
@@ -3335,11 +3436,13 @@ SearchIndexer::buildSmartSpellingAlternatives(
                sqlite3_step(stmt) == SQLITE_ROW) {
             ++rows;
             const char* term = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 0));
+            const std::string candidateTerm = term ? term : "";
+            if (!termAllowedByScope(candidateTerm)) continue;
             const char* stripped = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 1));
             const char* phonetic = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 2));
             int totalCount = sqlite3_column_int(stmt, 3);
             addCandidate(candidates,
-                         term ? term : "",
+                         candidateTerm,
                          stripped ? stripped : "",
                          phonetic ? phonetic : "",
                          totalCount,
@@ -3351,8 +3454,6 @@ SearchIndexer::buildSmartSpellingAlternatives(
         }
         return rows;
     };
-
-    std::lock_guard<std::mutex> lock(dbMutex_);
 
     for (const auto& rawToken : tokens) {
         // A wildcard is an explicit request, never a misspelling.
@@ -3512,6 +3613,7 @@ SearchIndexer::buildSmartSpellingAlternatives(
         }
     }
 
+    if (scopedTermStmt) sqlite3_finalize(scopedTermStmt);
     return alternatives;
 }
 
@@ -3526,59 +3628,216 @@ std::vector<SearchResult> SearchIndexer::searchSmart(
     std::vector<SearchResult> results;
     if (!db_ || query.empty()) return results;
 
-    auto spellingAlternatives = buildSmartSpellingAlternatives(request, query, options);
-
-    // Build the expanded FTS query (synonyms, spelling alternatives, prefix matching)
-    std::string smartFtsContent = smart_search::buildSmartFtsQuery(
+    auto spellingAlternatives = buildSmartSpellingAlternatives(
+        request, query, language, options);
+    smart_search::SmartQueryPlan queryPlan = smart_search::buildSmartQueryPlan(
         query, language, spellingAlternatives, toQueryExpansionOptions(options));
-    if (smartFtsContent.empty()) return results;
+    if (queryPlan.lexicalSources.empty()) return results;
 
-    const int limit = (maxResults > 0) ? maxResults : request.maxResults;
-
-    sqlite3_stmt* stmt = nullptr;
+    const int requestedLimit = (maxResults > 0) ? maxResults : request.maxResults;
+    constexpr int kCandidateLimitPerSource = 250;
     MetadataFilter filter = buildMetadataFilter(request, "e");
+
+    auto resultId = [](const SearchResult& result) {
+        return result.resourceType + "\x1f" + result.module + "\x1f" + result.key;
+    };
+
+    std::unordered_map<std::string, SearchResult> candidates;
+    std::vector<smart_search::WeightedRankList> rankedLists;
+    rankedLists.reserve(queryPlan.lexicalSources.size());
+
+    bool bibleOnly = !request.resourceTypes.empty();
+    for (const auto& type : request.resourceTypes) {
+        if (type != "bible") bibleOnly = false;
+    }
+    const std::string bm25Expression = bibleOnly
+        ? "bm25(library_index, 0.0, 1.0, 0.0)"
+        : "bm25(library_index, 5.0, 1.0, 0.25)";
+
     {
         std::lock_guard<std::mutex> lock(dbMutex_);
 
-        std::string sql =
-            "SELECT e.resource_type, e.module_name, e.key_text, e.title "
-            "FROM library_index "
-            "JOIN library_entries e ON e.entry_id = library_index.rowid "
-            "WHERE library_index MATCH ? ";
-        if (!filter.sql.empty()) {
-            sql += "AND ";
-            sql += filter.sql;
-            sql += " ";
-        }
-        sql +=
-            "ORDER BY bm25(library_index)";
-        if (limit > 0) {
-            sql += " LIMIT ?";
-        }
-        if (sqlite3_prepare_v2(db_, sql.c_str(), -1, &stmt, nullptr) != SQLITE_OK) {
-            return results;
-        }
+        for (const auto& source : queryPlan.lexicalSources) {
+            std::string sql =
+                "SELECT e.resource_type, e.module_name, e.key_text, e.title "
+                "FROM library_index "
+                "JOIN library_entries e ON e.entry_id = library_index.rowid "
+                "WHERE library_index MATCH ? ";
+            if (!filter.sql.empty()) {
+                sql += "AND ";
+                sql += filter.sql;
+                sql += " ";
+            }
+            sql += "ORDER BY " + bm25Expression + " LIMIT ?";
 
-        bindText(stmt, 1, smartFtsContent);
-        bindMetadataFilterValues(stmt, 2, filter);
-        if (limit > 0) {
-            sqlite3_bind_int(stmt, static_cast<int>(filter.values.size()) + 2, limit);
-        }
+            sqlite3_stmt* stmt = nullptr;
+            if (sqlite3_prepare_v2(db_, sql.c_str(), -1, &stmt, nullptr) != SQLITE_OK) {
+                continue;
+            }
+            bindText(stmt, 1, source.ftsQuery);
+            bindMetadataFilterValues(stmt, 2, filter);
+            sqlite3_bind_int(stmt, static_cast<int>(filter.values.size()) + 2,
+                             kCandidateLimitPerSource);
 
-        while (sqlite3_step(stmt) == SQLITE_ROW) {
+            smart_search::WeightedRankList ranked;
+            ranked.source = source.source;
+            ranked.weight = source.weight;
+            if (source.source == smart_search::RetrievalSource::ExactPhrase ||
+                source.source == smart_search::RetrievalSource::OriginalTerms) {
+                ranked.originalTermCoverage = queryPlan.coreTerms.size();
+            }
+            while (sqlite3_step(stmt) == SQLITE_ROW) {
+                SearchResult result;
+                const char* type = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 0));
+                const char* module = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 1));
+                const char* key = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 2));
+                const char* title = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 3));
+
+                result.resourceType = type ? type : "";
+                result.module = module ? module : request.moduleName;
+                result.key = key ? key : "";
+                result.title = title ? title : result.key;
+                std::string id = resultId(result);
+                candidates.emplace(id, result);
+                ranked.resultIds.push_back(std::move(id));
+            }
+            sqlite3_finalize(stmt);
+            if (!ranked.resultIds.empty()) rankedLists.push_back(std::move(ranked));
+        }
+    }
+
+    if (bibleOnly && !request.moduleName.empty() && topicSearchProvider_ &&
+        queryPlan.excludedTerms.empty()) {
+        std::ostringstream topicQuery;
+        for (const auto& term : queryPlan.coreTerms) {
+            std::string clean = term;
+            if (!clean.empty() && clean.back() == '*') clean.pop_back();
+            if (clean.empty()) continue;
+            if (topicQuery.tellp() > 0) topicQuery << ' ';
+            topicQuery << clean;
+        }
+        const std::vector<TopicHit> topicHits = topicSearchProvider_->search(
+            topicQuery.str(), kCandidateLimitPerSource);
+        smart_search::WeightedRankList exactTopics;
+        exactTopics.source = smart_search::RetrievalSource::NaveExactTopic;
+        exactTopics.weight = 2.25;
+        smart_search::WeightedRankList expandedTopics;
+        expandedTopics.source = smart_search::RetrievalSource::NaveExpandedTopic;
+        expandedTopics.weight = 1.0;
+        for (const auto& hit : topicHits) {
+            if (!matchesBibleReferenceScope(request, hit.reference)) continue;
             SearchResult result;
-            const char* type = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 0));
-            const char* module = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 1));
-            const char* key = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 2));
-            const char* title = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 3));
-
-            result.resourceType = type ? type : "";
-            result.module = module ? module : request.moduleName;
-            result.key = key ? key : "";
-            result.title = title ? title : result.key;
-            results.push_back(std::move(result));
+            result.resourceType = "bible";
+            result.module = request.moduleName;
+            result.key = hit.reference;
+            result.title = hit.reference;
+            std::string id = resultId(result);
+            candidates.emplace(id, result);
+            (hit.exactTopic ? exactTopics : expandedTopics).resultIds.push_back(
+                std::move(id));
         }
-        sqlite3_finalize(stmt);
+        if (!exactTopics.resultIds.empty()) rankedLists.push_back(std::move(exactTopics));
+        if (!expandedTopics.resultIds.empty()) rankedLists.push_back(std::move(expandedTopics));
+    }
+
+    if (bibleOnly && !request.moduleName.empty() && queryPlan.excludedTerms.empty() &&
+        semanticSearchService_ &&
+        semanticSearchService_->available()) {
+        std::vector<SemanticHit> semanticHits = semanticSearchService_->search(
+            language, request.moduleName, query, kCandidateLimitPerSource);
+        smart_search::WeightedRankList ranked;
+        ranked.source = smart_search::RetrievalSource::Semantic;
+        ranked.weight = 1.75;
+        for (const auto& hit : semanticHits) {
+            SearchResult result;
+            result.resourceType = "bible";
+            result.module = request.moduleName;
+            result.key = hit.reference;
+            result.title = hit.reference;
+            std::string id = resultId(result);
+            candidates.emplace(id, result);
+            ranked.resultIds.push_back(std::move(id));
+        }
+        if (!ranked.resultIds.empty()) rankedLists.push_back(std::move(ranked));
+    }
+
+    // TSK is corroboration only: it may strengthen an already retrieved
+    // verse, but it never expands the candidate set.
+    if (bibleOnly && !request.moduleName.empty() && !rankedLists.empty()) {
+        CatalogSnapshot tskCatalog;
+        std::string tskModule;
+        {
+            std::lock_guard<std::mutex> catalogLock(catalogMutex_);
+            for (const auto& [name, entry] : moduleCatalog_) {
+                if (lowerCopy(name) != "tsk") continue;
+                tskModule = name;
+                tskCatalog.info = entry.info;
+                tskCatalog.resourceType = entry.resourceType;
+                tskCatalog.moduleToken = entry.moduleToken;
+                tskCatalog.moduleSignature = entry.signature;
+                break;
+            }
+        }
+        if (!tskModule.empty()) {
+            const std::vector<std::string> seeds =
+                smart_search::fuseRankedResults(rankedLists, 50);
+            std::unordered_map<std::string, std::string> candidateByReference;
+            for (const auto& [id, result] : candidates) {
+                if (result.resourceType == "bible" && result.module == request.moduleName) {
+                    candidateByReference[lowerCopy(trimCopy(result.key))] = id;
+                }
+            }
+
+            ModuleScanSource tskSource;
+            std::string tskError;
+            if (prepareModuleLookupSource(tskModule, tskCatalog,
+                                          importedModuleMgr_, tskError, tskSource) &&
+                tskSource.mod) {
+                smart_search::WeightedRankList corroborated;
+                corroborated.source = smart_search::RetrievalSource::TskCorroboration;
+                corroborated.weight = 0.25;
+                std::unordered_set<std::string> seen;
+                for (const auto& seedId : seeds) {
+                    auto seed = candidates.find(seedId);
+                    if (seed == candidates.end() || seed->second.resourceType != "bible") continue;
+                    tskSource.mod->setKey(seed->second.key.c_str());
+                    if (tskSource.mod->popError()) continue;
+                    const char* raw = tskSource.mod->getRawEntry();
+                    TopicDocument links = TopicSearchProvider::documentFromSwordEntry(
+                        "", "", raw ? raw : "");
+                    for (const auto& reference : links.references) {
+                        auto target = candidateByReference.find(
+                            lowerCopy(trimCopy(reference)));
+                        if (target != candidateByReference.end() &&
+                            target->second != seedId && seen.insert(target->second).second) {
+                            corroborated.resultIds.push_back(target->second);
+                        }
+                    }
+                }
+                if (!corroborated.resultIds.empty()) {
+                    rankedLists.push_back(std::move(corroborated));
+                }
+            }
+        }
+    }
+
+    const size_t finalLimit = requestedLimit > 0
+        ? static_cast<size_t>(requestedLimit)
+        : 0;
+    std::unordered_map<std::string, std::int64_t> canonicalOrders;
+    if (bibleOnly) {
+        for (const auto& [id, result] : candidates) {
+            sword::VerseKey key(result.key.c_str());
+            if (!key.popError()) canonicalOrders[id] = key.getIndex();
+        }
+    }
+    std::vector<std::string> orderedIds =
+        smart_search::fuseRankedResults(rankedLists, finalLimit, 60.0,
+                                        canonicalOrders);
+    results.reserve(orderedIds.size());
+    for (const auto& id : orderedIds) {
+        auto it = candidates.find(id);
+        if (it != candidates.end()) results.push_back(std::move(it->second));
     }
 
     if (!includeSnippets) return results;
@@ -3921,7 +4180,11 @@ void SearchIndexer::indexModuleNow(const std::string& moduleName) {
 
     bool cancelled = false;
     bool failed = false;
+    bool committed = false;
     std::string failureMessage;
+    const bool buildNaveTopics = lowerCopy(moduleName) == "nave";
+    std::vector<TopicDocument> topicDocuments;
+    if (buildNaveTopics) topicDocuments.reserve(source.keyedEntries.size());
 
     if (source.imported) {
         for (size_t i = 0; i < source.importedEntries.size(); ++i) {
@@ -3955,6 +4218,20 @@ void SearchIndexer::indexModuleNow(const std::string& moduleName) {
             if (titleIt != source.entryTitles.end()) {
                 std::string trimmedTitle = trimCopy(titleIt->second);
                 if (!trimmedTitle.empty()) title = std::move(trimmedTitle);
+            }
+
+            if (buildNaveTopics && source.mod) {
+                source.mod->setKey(key.c_str());
+                if (!source.mod->popError()) {
+                    const char* raw = source.mod->getRawEntry();
+                    const std::string rawEntry = raw ? raw : "";
+                    const char* plain = source.mod->stripText();
+                    topicDocuments.push_back(
+                        TopicSearchProvider::documentFromSwordEntry(
+                            title,
+                            trimCopy(plain ? plain : ""),
+                            rawEntry));
+                }
             }
 
             if (!insertDictionaryKey(key, title, position++)) {
@@ -4049,6 +4326,11 @@ void SearchIndexer::indexModuleNow(const std::string& moduleName) {
             source.mod->setKey(key.c_str());
             if (source.mod->popError()) continue;
 
+            std::string rawEntry;
+            if (buildNaveTopics) {
+                const char* raw = source.mod->getRawEntry();
+                rawEntry = raw ? raw : "";
+            }
             const char* plainRaw = source.mod->stripText();
             std::string plain = trimCopy(plainRaw ? plainRaw : "");
             std::string title = key;
@@ -4062,6 +4344,10 @@ void SearchIndexer::indexModuleNow(const std::string& moduleName) {
                 failed = true;
                 failureMessage = "Failed to insert indexed module entry.";
                 break;
+            }
+            if (buildNaveTopics) {
+                topicDocuments.push_back(TopicSearchProvider::documentFromSwordEntry(
+                    title, plain, rawEntry));
             }
         }
     }
@@ -4095,6 +4381,7 @@ void SearchIndexer::indexModuleNow(const std::string& moduleName) {
 
         if (marked) {
             sqlite3_exec(writeDb, "COMMIT;", nullptr, nullptr, nullptr);
+            committed = true;
             setProgress(100);
         } else {
             sqlite3_exec(writeDb, "ROLLBACK;", nullptr, nullptr, nullptr);
@@ -4118,6 +4405,15 @@ void SearchIndexer::indexModuleNow(const std::string& moduleName) {
     sqlite3_finalize(markIndexed);
     sqlite3_finalize(deleteError);
     sqlite3_close(writeDb);
+
+    if (committed && buildNaveTopics && topicSearchProvider_) {
+        std::string topicError;
+        if (!topicSearchProvider_->rebuild(source.moduleSignature,
+                                           topicDocuments, topicError)) {
+            std::cerr << "SearchIndexer: unable to rebuild Nave topic index ("
+                      << topicError << ")\n";
+        }
+    }
 }
 
 } // namespace verdad

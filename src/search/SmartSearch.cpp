@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cctype>
 #include <cmath>
+#include <limits>
 #include <sstream>
 #include <string_view>
 #include <unordered_map>
@@ -1154,31 +1155,103 @@ std::vector<std::string> generateTypoVariants(const std::string& word) {
 std::vector<std::string> queryTerms(const std::string& query,
                                   const std::string& language,
                                   bool includeSynonyms) {
-    std::vector<std::string> words;
-    std::istringstream input(query);
-    std::string raw;
-    while (input >> raw) {
+    struct ParsedWord {
+        std::string text;
+        bool quoted = false;
+        bool excluded = false;
+    };
+
+    auto cleanWord = [](const std::string& raw) {
         auto isWord = [](unsigned char c) {
             return std::isalnum(c) || c == '\'' || c == '-' || c >= 0x80;
         };
-        size_t start = 0, end = raw.size();
-        while (start < end && !isWord(raw[start])) ++start;
-        while (end > start && !isWord(raw[end - 1]) && raw[end - 1] != '*') --end;
+        size_t start = 0;
+        size_t end = raw.size();
+        while (start < end && !isWord(static_cast<unsigned char>(raw[start]))) ++start;
+        while (end > start &&
+               !isWord(static_cast<unsigned char>(raw[end - 1])) &&
+               raw[end - 1] != '*') {
+            --end;
+        }
         const bool prefix = end > start && raw[end - 1] == '*';
         if (prefix) --end;
-        if (start < end) words.push_back(raw.substr(start, end - start) + (prefix ? "*" : ""));
+        return start < end
+            ? raw.substr(start, end - start) + (prefix ? "*" : "")
+            : std::string();
+    };
+
+    std::vector<ParsedWord> parsed;
+    size_t pos = 0;
+    while (pos < query.size()) {
+        while (pos < query.size() &&
+               std::isspace(static_cast<unsigned char>(query[pos]))) {
+            ++pos;
+        }
+        if (pos >= query.size()) break;
+
+        bool excluded = false;
+        if (query[pos] == '-' && pos + 1 < query.size() &&
+            !std::isspace(static_cast<unsigned char>(query[pos + 1]))) {
+            excluded = true;
+            ++pos;
+        }
+
+        const bool quoted = pos < query.size() && query[pos] == '"';
+        std::string raw;
+        if (quoted) {
+            ++pos;
+            const size_t start = pos;
+            while (pos < query.size() && query[pos] != '"') ++pos;
+            raw = query.substr(start, pos - start);
+            if (pos < query.size()) ++pos;
+        } else {
+            const size_t start = pos;
+            while (pos < query.size() &&
+                   !std::isspace(static_cast<unsigned char>(query[pos]))) {
+                ++pos;
+            }
+            raw = query.substr(start, pos - start);
+        }
+
+        std::string text;
+        if (quoted) {
+            std::istringstream phraseInput(raw);
+            std::string piece;
+            while (phraseInput >> piece) {
+                piece = cleanWord(piece);
+                if (piece.empty()) continue;
+                if (!text.empty()) text += ' ';
+                text += piece;
+            }
+        } else {
+            text = cleanWord(raw);
+        }
+        if (!text.empty()) parsed.push_back({std::move(text), quoted, excluded});
+    }
+
+    std::vector<std::string> words;
+    std::vector<bool> quotedWords;
+    for (const auto& word : parsed) {
+        if (word.excluded) continue;
+        words.push_back(word.text);
+        quotedWords.push_back(word.quoted);
     }
 
     if (!includeSynonyms) return words;
     const auto& index = synonymIndex(language);
     std::vector<std::string> terms;
     for (size_t i = 0; i < words.size();) {
+        if (quotedWords[i]) {
+            terms.push_back(words[i]);
+            ++i;
+            continue;
+        }
         std::string phrase;
         size_t matched = 1;
         std::string term = words[i];
         // Longest known expression wins; never reinterpret explicit prefixes.
         for (size_t j = i; j < words.size() && j < i + 4; ++j) {
-            if (words[j].back() == '*') break;
+            if (quotedWords[j] || words[j].back() == '*') break;
             if (!phrase.empty()) phrase += " ";
             phrase += words[j];
             if (j > i && index.count(toLower(phrase))) {
@@ -1245,6 +1318,314 @@ std::string buildSmartFtsQuery(
     }
     fts << ")";
     return fts.str();
+}
+
+namespace {
+
+std::vector<std::string> markedQueryTerms(const std::string& query,
+                                          bool wantQuoted,
+                                          bool wantExcluded) {
+    std::vector<std::string> terms;
+    size_t pos = 0;
+    while (pos < query.size()) {
+        while (pos < query.size() &&
+               std::isspace(static_cast<unsigned char>(query[pos]))) {
+            ++pos;
+        }
+        if (pos >= query.size()) break;
+
+        bool excluded = false;
+        if (query[pos] == '-' && pos + 1 < query.size() &&
+            !std::isspace(static_cast<unsigned char>(query[pos + 1]))) {
+            excluded = true;
+            ++pos;
+        }
+        const bool quoted = pos < query.size() && query[pos] == '"';
+        const size_t start = quoted ? ++pos : pos;
+        if (quoted) {
+            while (pos < query.size() && query[pos] != '"') ++pos;
+        } else {
+            while (pos < query.size() &&
+                   !std::isspace(static_cast<unsigned char>(query[pos]))) {
+                ++pos;
+            }
+        }
+        const std::string fragment = query.substr(start, pos - start);
+        if (quoted && pos < query.size()) ++pos;
+        if (quoted != wantQuoted || excluded != wantExcluded) continue;
+
+        const std::vector<std::string> pieces = queryTerms(fragment);
+        if (pieces.empty()) continue;
+        std::ostringstream combined;
+        for (size_t i = 0; i < pieces.size(); ++i) {
+            if (i) combined << ' ';
+            combined << pieces[i];
+        }
+        if (!combined.str().empty()) terms.push_back(combined.str());
+    }
+    return terms;
+}
+
+bool containsTerm(const std::vector<std::string>& terms, const std::string& term) {
+    const std::string lowerTerm = toLower(term);
+    return std::any_of(terms.begin(), terms.end(), [&](const std::string& candidate) {
+        return toLower(candidate) == lowerTerm;
+    });
+}
+
+void appendExcludedTerms(std::ostringstream& out,
+                         const std::vector<std::string>& excludedTerms) {
+    for (std::string term : excludedTerms) {
+        term = toLower(term);
+        const bool prefix = !term.empty() && term.back() == '*';
+        if (prefix) term.pop_back();
+        if (term.empty()) continue;
+        out << " NOT " << quoteFtsToken(term);
+        if (prefix) out << '*';
+    }
+}
+
+bool isSoftQueryTerm(const std::string& rawTerm, const std::string& language) {
+    if (rawTerm.empty() || rawTerm.back() == '*') return false;
+
+    static const std::unordered_map<std::string, std::unordered_set<std::string>> softByLanguage = {
+        {"en", {"a", "about", "an", "are", "bible", "can", "could", "do", "does",
+                "for", "from", "give", "how", "i", "in", "is", "me", "my", "of",
+                "please", "say", "scripture", "scriptures", "should", "show", "tell",
+                "the", "to", "verse", "verses", "we", "what", "where", "which", "who",
+                "why", "with"}},
+        {"es", {"acerca", "biblia", "como", "cual", "cuales", "de", "dime", "el", "en",
+                "es", "la", "las", "los", "me", "que", "sobre", "un", "una", "versiculo",
+                "versiculos"}},
+        {"de", {"aus", "bibel", "das", "der", "die", "ein", "eine", "gibt", "ist", "mir",
+                "sag", "uber", "vers", "verse", "von", "was", "wie", "zu"}},
+        {"fr", {"au", "aux", "bible", "comment", "dans", "de", "des", "dis", "du", "est",
+                "la", "le", "les", "me", "que", "quel", "quelle", "sur", "un", "une",
+                "verset", "versets"}},
+        {"pt", {"a", "aos", "biblia", "como", "da", "das", "de", "diga", "do", "dos", "e",
+                "em", "me", "o", "os", "que", "sobre", "um", "uma", "versiculo", "versiculos"}}
+    };
+
+    auto langIt = softByLanguage.find(toLower(language));
+    if (langIt == softByLanguage.end()) langIt = softByLanguage.find("en");
+    return langIt->second.count(toLower(doStripDiacritics(rawTerm))) != 0;
+}
+
+std::string buildTermGroupQuery(
+    const std::vector<std::string>& terms,
+    const std::string& language,
+    const std::unordered_map<std::string, std::vector<std::string>>& spellingAlternatives,
+    bool synonyms,
+    bool spelling,
+    bool automaticPrefix,
+    const std::vector<std::string>& protectedTerms,
+    const std::vector<std::string>& excludedTerms) {
+    if (terms.empty()) return "";
+
+    std::ostringstream out;
+    out << "{title content}:(";
+    for (size_t index = 0; index < terms.size(); ++index) {
+        if (index) out << " AND ";
+        std::string term = toLower(terms[index]);
+        const bool explicitPrefix = !term.empty() && term.back() == '*';
+        if (explicitPrefix) term.pop_back();
+        if (term.empty()) return "";
+        const bool protectedTerm = containsTerm(protectedTerms, term);
+
+        std::vector<std::string> alternatives{term};
+        if (synonyms && !explicitPrefix && !protectedTerm) {
+            alternatives = expandSynonyms(term, language);
+        }
+        if (spelling && !explicitPrefix && !protectedTerm) {
+            auto append = [&](const std::string& key) {
+                auto it = spellingAlternatives.find(key);
+                if (it != spellingAlternatives.end()) {
+                    alternatives.insert(alternatives.end(), it->second.begin(), it->second.end());
+                }
+            };
+            append(term);
+            std::string stripped = toLower(doStripDiacritics(term));
+            if (stripped != term) append(stripped);
+        }
+
+        std::unordered_set<std::string> seen;
+        std::vector<std::string> unique;
+        for (auto alternative : alternatives) {
+            alternative = toLower(alternative);
+            if (!alternative.empty() && seen.insert(alternative).second) {
+                unique.push_back(std::move(alternative));
+            }
+        }
+        if (unique.empty()) return "";
+
+        const bool grouped = unique.size() > 1;
+        if (grouped) out << "(";
+        for (size_t alt = 0; alt < unique.size(); ++alt) {
+            if (alt) out << " OR ";
+            out << quoteFtsToken(unique[alt]);
+        }
+        if (grouped) out << ")";
+        if (explicitPrefix || (automaticPrefix && !protectedTerm && term.size() >= 4 &&
+                               term.find(' ') == std::string::npos)) {
+            if (grouped) {
+                out << " OR " << quoteFtsToken(term) << "*";
+            } else {
+                out << "*";
+            }
+        }
+    }
+    appendExcludedTerms(out, excludedTerms);
+    out << ")";
+    return out.str();
+}
+
+bool containsExplicitPrefix(const std::vector<std::string>& terms) {
+    return std::any_of(terms.begin(), terms.end(), [](const std::string& term) {
+        return !term.empty() && term.back() == '*';
+    });
+}
+
+} // namespace
+
+SmartQueryPlan buildSmartQueryPlan(
+    const std::string& query,
+    const std::string& language,
+    const std::unordered_map<std::string, std::vector<std::string>>& spellingAlternatives,
+    QueryExpansionOptions options) {
+    SmartQueryPlan plan;
+    plan.originalTerms = queryTerms(query, language, options.includeSynonyms);
+    if (plan.originalTerms.empty()) return plan;
+    plan.quotedTerms = markedQueryTerms(query, true, false);
+    plan.excludedTerms = markedQueryTerms(query, false, true);
+    std::vector<std::string> excludedPhrases = markedQueryTerms(query, true, true);
+    plan.excludedTerms.insert(plan.excludedTerms.end(),
+                              excludedPhrases.begin(), excludedPhrases.end());
+
+    for (const auto& term : plan.originalTerms) {
+        if (isSoftQueryTerm(term, language)) {
+            plan.softTerms.push_back(term);
+        } else {
+            plan.coreTerms.push_back(term);
+        }
+    }
+    if (plan.coreTerms.empty()) {
+        plan.coreTerms = plan.originalTerms;
+        plan.softTerms.clear();
+    }
+
+    const bool explicitPrefix = containsExplicitPrefix(plan.coreTerms);
+    auto add = [&](RetrievalSource source, double weight, std::string ftsQuery) {
+        if (!ftsQuery.empty()) {
+            plan.lexicalSources.push_back({source, std::move(ftsQuery), weight});
+        }
+    };
+
+    if (!explicitPrefix &&
+        (plan.coreTerms.size() > 1 || !plan.quotedTerms.empty())) {
+        std::ostringstream phrase;
+        for (size_t i = 0; i < plan.coreTerms.size(); ++i) {
+            if (i) phrase << ' ';
+            phrase << plan.coreTerms[i];
+        }
+        std::ostringstream exactQuery;
+        exactQuery << "{title content}:(" << quoteFtsToken(phrase.str());
+        appendExcludedTerms(exactQuery, plan.excludedTerms);
+        exactQuery << ')';
+        add(RetrievalSource::ExactPhrase, 3.0,
+            exactQuery.str());
+    }
+
+    const std::string originalQuery = buildTermGroupQuery(
+        plan.coreTerms, language, spellingAlternatives, false, false, false,
+        plan.quotedTerms, plan.excludedTerms);
+    add(RetrievalSource::OriginalTerms, 2.5, originalQuery);
+    if (explicitPrefix) return plan;
+
+    if (options.includeSynonyms) {
+        std::string expanded = buildTermGroupQuery(
+            plan.coreTerms, language, spellingAlternatives, true, false, false,
+            plan.quotedTerms, plan.excludedTerms);
+        if (expanded != originalQuery) {
+            add(RetrievalSource::Synonyms, 1.25, std::move(expanded));
+        }
+    }
+    if (options.includeSpelling && !spellingAlternatives.empty()) {
+        std::string corrected = buildTermGroupQuery(
+            plan.coreTerms, language, spellingAlternatives, false, true, false,
+            plan.quotedTerms, plan.excludedTerms);
+        if (corrected != originalQuery) {
+            add(RetrievalSource::Spelling, 1.0, std::move(corrected));
+        }
+    }
+    if (options.includePartialWords) {
+        std::string relaxed = buildTermGroupQuery(
+            plan.coreTerms, language, spellingAlternatives, false, false, true,
+            plan.quotedTerms, plan.excludedTerms);
+        if (relaxed != originalQuery) {
+            add(RetrievalSource::AutomaticPrefix, 0.6, std::move(relaxed));
+        }
+    }
+    return plan;
+}
+
+std::vector<std::string> fuseRankedResults(
+    const std::vector<WeightedRankList>& rankedLists,
+    size_t maxResults,
+    double rankConstant,
+    const std::unordered_map<std::string, std::int64_t>& canonicalOrders) {
+    std::unordered_map<std::string, RankedCandidate> scores;
+    for (const auto& list : rankedLists) {
+        std::unordered_set<std::string> seen;
+        for (size_t index = 0; index < list.resultIds.size(); ++index) {
+            const std::string& id = list.resultIds[index];
+            if (id.empty() || !seen.insert(id).second) continue;
+            RankedCandidate& score = scores[id];
+            score.id = id;
+            const size_t rank = index + 1;
+            score.fusedScore += list.weight / (rankConstant + static_cast<double>(rank));
+            score.originalTermCoverage = std::max(score.originalTermCoverage,
+                                                  list.originalTermCoverage);
+            if (list.source == RetrievalSource::Semantic) {
+                score.semanticRank = std::min(score.semanticRank, rank);
+            } else if (list.source != RetrievalSource::NaveExactTopic &&
+                       list.source != RetrievalSource::NaveExpandedTopic &&
+                       list.source != RetrievalSource::TskCorroboration) {
+                score.bestLexicalRank = std::min(score.bestLexicalRank, rank);
+            }
+        }
+    }
+
+    std::vector<RankedCandidate> ordered;
+    ordered.reserve(scores.size());
+    for (auto& [id, score] : scores) {
+        auto canonical = canonicalOrders.find(id);
+        if (canonical != canonicalOrders.end()) score.canonicalOrder = canonical->second;
+        ordered.push_back(std::move(score));
+    }
+    std::sort(ordered.begin(), ordered.end(), [](const auto& lhs, const auto& rhs) {
+        if (lhs.fusedScore != rhs.fusedScore) {
+            return lhs.fusedScore > rhs.fusedScore;
+        }
+        if (lhs.originalTermCoverage != rhs.originalTermCoverage) {
+            return lhs.originalTermCoverage > rhs.originalTermCoverage;
+        }
+        if (lhs.bestLexicalRank != rhs.bestLexicalRank) {
+            return lhs.bestLexicalRank < rhs.bestLexicalRank;
+        }
+        if (lhs.semanticRank != rhs.semanticRank) {
+            return lhs.semanticRank < rhs.semanticRank;
+        }
+        if (lhs.canonicalOrder != rhs.canonicalOrder) {
+            return lhs.canonicalOrder < rhs.canonicalOrder;
+        }
+        return lhs.id < rhs.id;
+    });
+    if (maxResults > 0 && ordered.size() > maxResults) ordered.resize(maxResults);
+
+    std::vector<std::string> result;
+    result.reserve(ordered.size());
+    for (auto& entry : ordered) result.push_back(std::move(entry.id));
+    return result;
 }
 
 std::vector<ScoredMatch> scoreSmartResults(

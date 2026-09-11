@@ -3,6 +3,7 @@
 
 #include <atomic>
 #include <condition_variable>
+#include <cstdint>
 #include <deque>
 #include <functional>
 #include <mutex>
@@ -20,6 +21,8 @@ struct sqlite3;
 namespace verdad {
 
 class ImportedModuleManager;
+class SemanticSearchService;
+class TopicSearchProvider;
 
 /// SQLite FTS5-backed search index for searchable SWORD modules.
 /// The database only stores module index data (no tags/settings data).
@@ -111,8 +114,16 @@ public:
     /// True when the SQLite search backend opened successfully and the FTS schema exists.
     bool indexBackendAvailable() const { return backendAvailable_.load(); }
 
+    /// Attach the optional dense-retrieval service. Ownership remains with the app.
+    void setSemanticSearchService(SemanticSearchService* service) {
+        semanticSearchService_ = service;
+    }
+
     /// Human-readable backend status when the search index backend is unavailable.
     std::string backendStatusMessage() const;
+
+    bool topicIndexAvailable() const;
+    std::uint64_t topicIndexBytes() const;
 
     /// True if the index currently contains any searchable rows.
     bool hasAnyIndexedData() const;
@@ -246,6 +257,7 @@ private:
     std::unordered_map<std::string, std::vector<std::string>>
     buildSmartSpellingAlternatives(const SearchRequest& request,
                                    const std::string& query,
+                                   const std::string& language,
                                    SmartSearchOptions options = SmartSearchOptions()) const;
 
     static void applyPragmas(sqlite3* db);
@@ -254,6 +266,8 @@ private:
     std::string dbPath_;
     sqlite3* db_ = nullptr;
     const ImportedModuleManager* importedModuleMgr_ = nullptr;
+    SemanticSearchService* semanticSearchService_ = nullptr;
+    std::unique_ptr<TopicSearchProvider> topicSearchProvider_;
     std::atomic<bool> backendAvailable_{false};
     mutable std::mutex backendStatusMutex_;
     std::string backendStatusMessage_;

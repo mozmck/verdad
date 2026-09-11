@@ -15,6 +15,7 @@
 #include "reading/DateUtils.h"
 #include "sword/SwordManager.h"
 #include "search/SearchIndexer.h"
+#include "search/SemanticSearch.h"
 #include "app/PerfTrace.h"
 #include "tags/TagManager.h"
 
@@ -48,6 +49,7 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <iomanip>
 #include <optional>
 #include <regex>
 #include <set>
@@ -79,6 +81,27 @@ std::string trimCopy(const std::string& s) {
         --end;
     }
     return s.substr(start, end - start);
+}
+
+std::string lowerAsciiCopy(std::string text) {
+    std::transform(text.begin(), text.end(), text.begin(),
+                   [](unsigned char c) {
+                       return static_cast<char>(std::tolower(c));
+                   });
+    return text;
+}
+
+std::string formatStorageSize(std::uint64_t bytes) {
+    if (bytes == 0) return "none";
+    constexpr double kMiB = 1024.0 * 1024.0;
+    constexpr double kKiB = 1024.0;
+    std::ostringstream out;
+    if (bytes >= static_cast<std::uint64_t>(kMiB)) {
+        out << std::fixed << std::setprecision(1) << (bytes / kMiB) << " MiB";
+    } else {
+        out << std::fixed << std::setprecision(1) << (bytes / kKiB) << " KiB";
+    }
+    return out.str();
 }
 
 void applyToggleButtonPressedColorRecursively(Fl_Widget* widget) {
@@ -3607,6 +3630,7 @@ void MainWindow::onViewSettings(Fl_Widget* /*w*/, void* data) {
 
     auto current = self->app_->appearanceSettings();
     auto currentBible = self->app_->bibleSettings();
+    auto currentSearch = self->app_->searchSettings();
     auto currentPreview = self->app_->previewDictionarySettings();
     auto currentOfflineTranslation =
         self->app_->offlineTranslationSettings();
@@ -3639,11 +3663,13 @@ void MainWindow::onViewSettings(Fl_Widget* /*w*/, void* data) {
     int appearanceRowCount = 8;
     int bibleRowCount = 7;
     int dictionaryRowCount = 7 + static_cast<int>(languageCodes.size());
+    int searchRowCount = 13;
     int editorRowCount = 2;
     int dataRowCount = 1;
     int maxRowCount = std::max({appearanceRowCount,
                                 bibleRowCount,
                                 dictionaryRowCount,
+                                searchRowCount,
                                 editorRowCount,
                                 dataRowCount});
     int tabsH = tabsHeaderH + (groupPadY * 2) + (maxRowCount * rowStep);
@@ -3997,6 +4023,233 @@ void MainWindow::onViewSettings(Fl_Widget* /*w*/, void* data) {
 
     dictionariesTab->end();
 
+    Fl_Group* searchTab =
+        new Fl_Group(groupX, groupY, groupW, groupH, "Search");
+    searchTab->begin();
+
+    rowY = groupY + groupPadY;
+    auto* assistanceLabel = new Fl_Box(
+        labelX, rowY, labelW, 24, "Default assistance:");
+    assistanceLabel->align(FL_ALIGN_LEFT | FL_ALIGN_INSIDE);
+    auto* assistanceChoice = new WrappingChoice(fieldX, rowY, 190, 24);
+    assistanceChoice->add("Exact");
+    assistanceChoice->add("Spelling");
+    assistanceChoice->add("Synonyms");
+    assistanceChoice->add("Smart");
+    assistanceChoice->value(static_cast<int>(currentSearch.assistanceMode));
+    rowY += rowStep;
+
+    auto* resultSortLabel = new Fl_Box(
+        labelX, rowY, labelW, 24, "Default result order:");
+    resultSortLabel->align(FL_ALIGN_LEFT | FL_ALIGN_INSIDE);
+    auto* resultSortChoice = new WrappingChoice(fieldX, rowY, 190, 24);
+    resultSortChoice->add("Relevance");
+    resultSortChoice->add("Canonical");
+    resultSortChoice->add("By module");
+    resultSortChoice->value(static_cast<int>(currentSearch.resultSort));
+    rowY += rowStep;
+
+    auto* semanticEnabledCheck = new Fl_Check_Button(
+        labelX, rowY, groupW - (groupPadX * 2), 24,
+        "Use semantic retrieval when a verified model pack and index are ready");
+    semanticEnabledCheck->value(currentSearch.semanticSearchEnabled ? 1 : 0);
+    rowY += rowStep;
+
+    SemanticSearchService* semanticService = self->app_->semanticSearch();
+    std::string semanticStatus = "Model: Not installed. Enhanced BM25 and Bible topics remain active.";
+    if (semanticService) {
+        semanticStatus = std::string("Model: ") +
+            semanticPackStateLabel(semanticService->state()) + ". " +
+            semanticService->statusMessage();
+    }
+    auto* semanticStatusBox = new Fl_Box(
+        labelX, rowY, groupW - (groupPadX * 2), 24);
+    semanticStatusBox->align(FL_ALIGN_LEFT | FL_ALIGN_INSIDE);
+    semanticStatusBox->copy_label(semanticStatus.c_str());
+    rowY += rowStep;
+
+    SearchIndexer* searchIndexer = self->app_->searchIndexer();
+    std::string generatedIndexStatus = std::string("Nave topics: ") +
+        (searchIndexer && searchIndexer->topicIndexAvailable() ? "Ready (" : "Not available (") +
+        formatStorageSize(searchIndexer ? searchIndexer->topicIndexBytes() : 0) +
+        "). Semantic indexes: " +
+        formatStorageSize(semanticService ? semanticService->indexBytes() : 0) + ".";
+    auto* generatedIndexStatusBox = new Fl_Box(
+        labelX, rowY, groupW - (groupPadX * 2), 24);
+    generatedIndexStatusBox->align(FL_ALIGN_LEFT | FL_ALIGN_INSIDE);
+    generatedIndexStatusBox->copy_label(generatedIndexStatus.c_str());
+    rowY += rowStep;
+
+    auto* referenceLabel = new Fl_Box(
+        labelX, rowY, labelW, 24, "Reference Bibles:");
+    referenceLabel->align(FL_ALIGN_LEFT | FL_ALIGN_INSIDE);
+    auto* semanticReferenceBrowser = new Fl_Check_Browser(
+        fieldX, rowY, fieldW, (rowStep * 4) - 8);
+    semanticReferenceBrowser->tooltip(
+        "Select at most one reference Bible for each language. Only selected languages build vector indexes.");
+
+    struct SemanticReferenceRow {
+        std::string language;
+        std::string module;
+    };
+    std::vector<SemanticReferenceRow> semanticReferenceRows;
+    semanticReferenceRows.reserve(bibleModules.size());
+    for (const auto& module : bibleModules) {
+        std::string language = lowerAsciiCopy(trimCopy(module.language));
+        if (language.empty()) language = "und";
+        std::string label = languageDisplayName(language) + " - " +
+                            module_choice::formatLabel(module);
+        auto selected = currentSearch.semanticReferenceModules.find(language);
+        const bool checked = selected != currentSearch.semanticReferenceModules.end() &&
+                             selected->second == module.name;
+        semanticReferenceBrowser->add(label.c_str(), checked ? 1 : 0);
+        semanticReferenceRows.push_back({language, module.name});
+    }
+    struct SemanticReferenceBrowserState {
+        Fl_Check_Browser* browser = nullptr;
+        const std::vector<SemanticReferenceRow>* rows = nullptr;
+    };
+    SemanticReferenceBrowserState semanticReferenceState{
+        semanticReferenceBrowser, &semanticReferenceRows};
+    semanticReferenceBrowser->when(FL_WHEN_CHANGED);
+    semanticReferenceBrowser->callback(
+        [](Fl_Widget*, void* data) {
+            auto* state = static_cast<SemanticReferenceBrowserState*>(data);
+            if (!state || !state->browser || !state->rows) return;
+            const int changed = state->browser->value();
+            if (changed <= 0 ||
+                changed > static_cast<int>(state->rows->size()) ||
+                !state->browser->checked(changed)) return;
+            const std::string& language = (*state->rows)[changed - 1].language;
+            for (size_t i = 0; i < state->rows->size(); ++i) {
+                if (static_cast<int>(i) + 1 != changed &&
+                    (*state->rows)[i].language == language) {
+                    state->browser->checked(static_cast<int>(i) + 1, 0);
+                }
+            }
+        },
+        &semanticReferenceState);
+    rowY += rowStep * 4;
+
+    auto* semanticHelp = new Fl_Box(
+        labelX, rowY, groupW - (groupPadX * 2), 40,
+        "Without the optional pack, Smart search uses enhanced BM25 plus Nave/TSK. "
+        "Generated semantic indexes remain outside module_index.db.");
+    semanticHelp->align(FL_ALIGN_LEFT | FL_ALIGN_INSIDE | FL_ALIGN_WRAP);
+    rowY += rowStep + 12;
+
+    auto* semanticDownloadButton = new Fl_Button(
+        fieldX, rowY, 155, 26, "Model page (~160 MB)");
+    auto* semanticInstallButton = new Fl_Button(
+        fieldX + 165, rowY, 135, 26, "Install from file...");
+    auto* semanticRemoveButton = new Fl_Button(
+        fieldX + 310, rowY, 85, 26, "Remove");
+    if (!semanticService ||
+        semanticService->packManager().state() == SemanticPackState::NotInstalled) {
+        semanticRemoveButton->deactivate();
+    }
+
+    struct SemanticPackUiState {
+        SemanticSearchService* service = nullptr;
+        SearchIndexer* indexer = nullptr;
+        Fl_Box* status = nullptr;
+        Fl_Box* indexStatus = nullptr;
+        Fl_Button* removeButton = nullptr;
+    };
+    SemanticPackUiState semanticPackUiState{
+        semanticService, searchIndexer, semanticStatusBox,
+        generatedIndexStatusBox, semanticRemoveButton};
+    semanticDownloadButton->callback(
+        [](Fl_Widget*, void*) {
+            openExternalUrl("https://huggingface.co/intfloat/multilingual-e5-small");
+        });
+    semanticDownloadButton->tooltip(
+        "Open the multilingual E5 model page. Install Verdad's verified platform pack here later with Install from file.");
+    semanticInstallButton->callback(
+        [](Fl_Widget*, void* data) {
+            auto* state = static_cast<SemanticPackUiState*>(data);
+            if (!state || !state->service) return;
+            Fl_Native_File_Chooser chooser;
+            chooser.title("Install Semantic Search Pack");
+            chooser.type(Fl_Native_File_Chooser::BROWSE_FILE);
+            chooser.filter("Semantic pack\t*.zip");
+            if (chooser.show() != 0 || !chooser.filename()) return;
+
+            std::string tempDir = makeUniqueTempDir("verdad-semantic-pack-");
+            if (tempDir.empty() || !runUnzipArchive(chooser.filename(), tempDir)) {
+                if (!tempDir.empty()) {
+                    std::error_code cleanupError;
+                    fs::remove_all(tempDir, cleanupError);
+                }
+                fl_alert("Unable to extract the semantic search pack.");
+                return;
+            }
+            fs::path packRoot(tempDir);
+            if (!fs::exists(packRoot / "manifest.conf")) {
+                std::error_code ec;
+                for (const auto& entry : fs::directory_iterator(packRoot, ec)) {
+                    if (entry.is_directory(ec) &&
+                        fs::exists(entry.path() / "manifest.conf", ec)) {
+                        packRoot = entry.path();
+                        break;
+                    }
+                }
+            }
+            std::string error;
+            const bool installed = state->service->packManager().installFromDirectory(
+                packRoot.string(), error);
+            std::error_code cleanupError;
+            fs::remove_all(tempDir, cleanupError);
+            if (!installed) {
+                fl_alert("%s", error.c_str());
+                return;
+            }
+            const std::string message = std::string("Model: ") +
+                semanticPackStateLabel(state->service->state()) + ". " +
+                state->service->statusMessage();
+            state->status->copy_label(message.c_str());
+            state->status->redraw();
+            const std::string indexMessage = std::string("Nave topics: ") +
+                (state->indexer && state->indexer->topicIndexAvailable()
+                     ? "Ready (" : "Not available (") +
+                formatStorageSize(state->indexer ? state->indexer->topicIndexBytes() : 0) +
+                "). Semantic indexes: " +
+                formatStorageSize(state->service->indexBytes()) + ".";
+            state->indexStatus->copy_label(indexMessage.c_str());
+            state->indexStatus->redraw();
+            state->removeButton->activate();
+        },
+        &semanticPackUiState);
+    semanticRemoveButton->callback(
+        [](Fl_Widget*, void* data) {
+            auto* state = static_cast<SemanticPackUiState*>(data);
+            if (!state || !state->service) return;
+            if (fl_choice("Remove the semantic model pack and generated indexes?",
+                          "Cancel", "Remove", nullptr) != 1) return;
+            std::string error;
+            if (!state->service->removeIndexes(error) ||
+                !state->service->packManager().remove(error)) {
+                fl_alert("%s", error.c_str());
+                return;
+            }
+            const std::string message = std::string("Model: ") +
+                semanticPackStateLabel(state->service->state()) + ". " +
+                state->service->statusMessage();
+            state->status->copy_label(message.c_str());
+            state->status->redraw();
+            const std::string indexMessage = std::string("Nave topics: ") +
+                (state->indexer && state->indexer->topicIndexAvailable()
+                     ? "Ready (" : "Not available (") +
+                formatStorageSize(state->indexer ? state->indexer->topicIndexBytes() : 0) +
+                "). Semantic indexes: none.";
+            state->indexStatus->copy_label(indexMessage.c_str());
+            state->indexStatus->redraw();
+            state->removeButton->deactivate();
+        },
+        &semanticPackUiState);
+
+    searchTab->end();
+
     Fl_Group* editorTab =
         new Fl_Group(groupX, groupY, groupW, groupH, "Editor");
     editorTab->begin();
@@ -4099,6 +4352,7 @@ void MainWindow::onViewSettings(Fl_Widget* /*w*/, void* data) {
     if (state->accepted) {
         VerdadApp::AppearanceSettings updated = current;
         VerdadApp::BibleSettings updatedBible = currentBible;
+        VerdadApp::SearchSettings updatedSearch = currentSearch;
         VerdadApp::PreviewDictionarySettings updatedPreview = currentPreview;
         OfflineTranslationSettings updatedOfflineTranslation =
             currentOfflineTranslation;
@@ -4133,6 +4387,20 @@ void MainWindow::onViewSettings(Fl_Widget* /*w*/, void* data) {
         updated.hoverDelayMs = static_cast<int>(hoverDelaySpinner->value());
         updated.editorIndentWidth = static_cast<int>(indentSpinner->value());
         updated.editorLineHeight = editorLineHeightSpinner->value();
+
+        updatedSearch.assistanceMode = static_cast<SearchAssistanceMode>(
+            std::clamp(assistanceChoice->value(), 0, 3));
+        updatedSearch.resultSort = static_cast<SearchResultSort>(
+            std::clamp(resultSortChoice->value(), 0, 2));
+        updatedSearch.semanticSearchEnabled = semanticEnabledCheck->value() != 0;
+        updatedSearch.semanticReferenceModules.clear();
+        for (size_t i = 0; i < semanticReferenceRows.size(); ++i) {
+            if (semanticReferenceBrowser->checked(static_cast<int>(i) + 1)) {
+                updatedSearch.semanticReferenceModules[
+                    semanticReferenceRows[i].language] =
+                    semanticReferenceRows[i].module;
+            }
+        }
 
         updatedBible.defaultParallelModules.clear();
         for (size_t i = 0; i < bibleModules.size(); ++i) {
@@ -4246,6 +4514,7 @@ void MainWindow::onViewSettings(Fl_Widget* /*w*/, void* data) {
         self->app_->setPreviewDictionarySettings(updatedPreview);
         self->app_->setOfflineTranslationSettings(updatedOfflineTranslation);
         self->app_->setBibleSettings(updatedBible);
+        self->app_->setSearchSettings(updatedSearch);
         self->app_->setAppearanceSettings(updated);
         self->app_->savePreferences();
     }

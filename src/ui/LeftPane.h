@@ -18,6 +18,7 @@ class SearchPanel;
 class TagPanel;
 class HtmlWidget;
 enum class SearchAssistanceMode;
+enum class SearchResultSort;
 
 /// Left pane with search box, tabs (modules/search/tags),
 /// and a preview area at the bottom.
@@ -78,6 +79,7 @@ public:
 
     /// Set the persisted search assistance mode selector.
     void setSearchAssistanceMode(SearchAssistanceMode mode);
+    void setSearchResultSort(SearchResultSort sort);
 
     /// Current preview widget height in pixels.
     int previewHeight() const;
