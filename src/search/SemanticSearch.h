@@ -28,6 +28,8 @@ struct SemanticPackManifest {
     std::string modelRevision;
     int dimensions = 0;
     std::string workerPath;
+    std::string modelPath;
+    std::string tokenizerPath;
     std::uint64_t expectedDownloadBytes = 0;
 };
 
@@ -76,6 +78,36 @@ public:
 private:
     std::vector<std::int8_t> encode(const std::string& text) const;
     int dimensions_;
+};
+
+/// Persistent local worker client used by installed production packs.  The
+/// worker owns ONNX Runtime and the model tokenizer; Verdad only exchanges framed
+/// UTF-8 requests and normalized int8 vectors with it.
+class WorkerSemanticEncoder final : public SemanticEncoder {
+public:
+    WorkerSemanticEncoder(std::string packDirectory,
+                          SemanticPackManifest manifest);
+    ~WorkerSemanticEncoder() override;
+
+    WorkerSemanticEncoder(const WorkerSemanticEncoder&) = delete;
+    WorkerSemanticEncoder& operator=(const WorkerSemanticEncoder&) = delete;
+
+    bool available() const override;
+    std::string modelId() const override;
+    std::string modelRevision() const override;
+    int dimensions() const override;
+    bool encodeQuery(const std::string& text,
+                     std::vector<std::int8_t>& vectorOut,
+                     std::string& errorOut) override;
+    bool encodePassages(const std::vector<std::string>& texts,
+                        std::vector<std::vector<std::int8_t>>& vectorsOut,
+                        std::string& errorOut) override;
+
+    std::string startupError() const;
+
+private:
+    class Impl;
+    std::unique_ptr<Impl> impl_;
 };
 
 /// Adds the worker crash policy to any concrete encoder: recreate the backend
@@ -180,6 +212,7 @@ public:
     SemanticPackState state() const;
     std::string statusMessage() const;
     bool available() const;
+    bool runtimeReady() const;
     bool enabled() const;
     void setEnabled(bool enabled);
     void setReferenceModules(
@@ -189,6 +222,11 @@ public:
 
     /// Test seam and future worker attachment point.
     void setEncoder(std::shared_ptr<SemanticEncoder> encoder);
+
+    /// Reverify and activate the currently installed production pack.  This is
+    /// called at startup and after Install from file completes.
+    bool reloadInstalledPack(std::string& errorOut);
+    void deactivatePack();
 
     bool buildIndex(const std::string& language,
                     const std::string& moduleName,
@@ -203,6 +241,10 @@ public:
                                     size_t maxResults) const;
     bool removeIndexes(std::string& errorOut);
     std::uint64_t indexBytes() const;
+    bool indexReady(const std::string& language,
+                    const std::string& moduleName) const;
+    bool indexCheckpointAvailable(const std::string& language,
+                                  const std::string& moduleName) const;
 
 private:
     std::string indexPath(const std::string& language,
@@ -218,6 +260,7 @@ private:
     mutable std::unordered_map<std::string, std::shared_ptr<SemanticVectorIndex>> indexes_;
     mutable SemanticPackState transientState_ = SemanticPackState::NotInstalled;
     mutable std::string transientError_;
+    mutable bool runtimeHealthy_ = false;
     bool enabled_ = false;
     std::unordered_map<std::string, std::string> referenceModules_;
     std::unordered_map<std::string, std::string> moduleSignatures_;

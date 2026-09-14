@@ -2924,9 +2924,37 @@ void MainWindow::updateStatusBar() {
     }
 
     if (text.empty() && app_ && app_->searchIndexer()) {
+        std::string language;
         std::string module;
         int pct = 0;
-        if (app_->searchIndexer()->activeIndexingTask(module, pct)) {
+        if (app_->searchIndexer()->activeSemanticIndexingTask(
+                language, module, pct)) {
+            semanticIndexingObserved_ = true;
+            observedSemanticLanguage_ = language;
+            observedSemanticModule_ = module;
+            text = "Building semantic index " + module + " (" +
+                   languageDisplayName(language) + "): " +
+                   std::to_string(pct) + "%";
+        } else if (app_->searchIndexer()->hasSemanticIndexWork()) {
+            text = "Semantic index build queued...";
+        } else if (semanticIndexingObserved_) {
+            semanticIndexingObserved_ = false;
+            const auto status = app_->searchIndexer()->semanticIndexStatus(
+                observedSemanticLanguage_, observedSemanticModule_);
+            if (status.state == SearchIndexer::SemanticIndexBuildState::Ready) {
+                text = "Semantic index ready: " + observedSemanticModule_ + " (" +
+                       languageDisplayName(observedSemanticLanguage_) + ").";
+            } else if (status.state ==
+                       SearchIndexer::SemanticIndexBuildState::Error) {
+                text = "Semantic index failed: " + observedSemanticModule_ +
+                       ". See Settings > Search.";
+            } else {
+                text = "Semantic index incomplete: " + observedSemanticModule_ +
+                       ". Build indexes will resume it.";
+            }
+            transientStatusText_ = text;
+            transientStatusUntil_ = now + std::chrono::milliseconds(5000);
+        } else if (app_->searchIndexer()->activeIndexingTask(module, pct)) {
             text = "Indexing " + module + ": " + std::to_string(pct) + "%";
         } else if (app_->searchIndexer()->isIndexing()) {
             text = "Indexing modules...";
@@ -3663,7 +3691,7 @@ void MainWindow::onViewSettings(Fl_Widget* /*w*/, void* data) {
     int appearanceRowCount = 8;
     int bibleRowCount = 7;
     int dictionaryRowCount = 7 + static_cast<int>(languageCodes.size());
-    int searchRowCount = 13;
+    int searchRowCount = 15;
     int editorRowCount = 2;
     int dataRowCount = 1;
     int maxRowCount = std::max({appearanceRowCount,
@@ -4069,11 +4097,7 @@ void MainWindow::onViewSettings(Fl_Widget* /*w*/, void* data) {
     rowY += rowStep;
 
     SearchIndexer* searchIndexer = self->app_->searchIndexer();
-    std::string generatedIndexStatus = std::string("Nave topics: ") +
-        (searchIndexer && searchIndexer->topicIndexAvailable() ? "Ready (" : "Not available (") +
-        formatStorageSize(searchIndexer ? searchIndexer->topicIndexBytes() : 0) +
-        "). Semantic indexes: " +
-        formatStorageSize(semanticService ? semanticService->indexBytes() : 0) + ".";
+    std::string generatedIndexStatus = "Semantic index status is being checked.";
     auto* generatedIndexStatusBox = new Fl_Box(
         labelX, rowY, groupW - (groupPadX * 2), 24);
     generatedIndexStatusBox->align(FL_ALIGN_LEFT | FL_ALIGN_INSIDE);
@@ -4099,6 +4123,29 @@ void MainWindow::onViewSettings(Fl_Widget* /*w*/, void* data) {
         if (language.empty()) language = "und";
         std::string label = languageDisplayName(language) + " - " +
                             module_choice::formatLabel(module);
+        if (searchIndexer) {
+            const auto status = searchIndexer->semanticIndexStatus(
+                language, module.name);
+            switch (status.state) {
+            case SearchIndexer::SemanticIndexBuildState::Ready:
+                label += " [ready]";
+                break;
+            case SearchIndexer::SemanticIndexBuildState::Building:
+                label += " [building " + std::to_string(status.percent) + "%]";
+                break;
+            case SearchIndexer::SemanticIndexBuildState::Queued:
+                label += " [queued]";
+                break;
+            case SearchIndexer::SemanticIndexBuildState::Incomplete:
+                label += " [incomplete]";
+                break;
+            case SearchIndexer::SemanticIndexBuildState::Error:
+                label += " [error]";
+                break;
+            case SearchIndexer::SemanticIndexBuildState::NotBuilt:
+                break;
+            }
+        }
         auto selected = currentSearch.semanticReferenceModules.find(language);
         const bool checked = selected != currentSearch.semanticReferenceModules.end() &&
                              selected->second == module.name;
@@ -4132,14 +4179,15 @@ void MainWindow::onViewSettings(Fl_Widget* /*w*/, void* data) {
     rowY += rowStep * 4;
 
     auto* semanticHelp = new Fl_Box(
-        labelX, rowY, groupW - (groupPadX * 2), 40,
+        labelX, rowY, groupW - (groupPadX * 2), 54,
         "Without the optional pack, Smart search uses enhanced BM25 plus Nave/TSK. "
-        "Generated semantic indexes remain outside module_index.db.");
+        "Upstream model files are not directly installable; create the verified ZIP "
+        "with tools/semantic/build_linux_pack.py.");
     semanticHelp->align(FL_ALIGN_LEFT | FL_ALIGN_INSIDE | FL_ALIGN_WRAP);
-    rowY += rowStep + 12;
+    rowY += 60;
 
     auto* semanticDownloadButton = new Fl_Button(
-        fieldX, rowY, 155, 26, "Model page (~160 MB)");
+        fieldX, rowY, 155, 26, "Model source...");
     auto* semanticInstallButton = new Fl_Button(
         fieldX + 165, rowY, 135, 26, "Install from file...");
     auto* semanticRemoveButton = new Fl_Button(
@@ -4155,20 +4203,36 @@ void MainWindow::onViewSettings(Fl_Widget* /*w*/, void* data) {
         Fl_Box* status = nullptr;
         Fl_Box* indexStatus = nullptr;
         Fl_Button* removeButton = nullptr;
+        Fl_Check_Browser* references = nullptr;
+        const std::vector<SemanticReferenceRow>* referenceRows = nullptr;
+        Fl_Button* installButton = nullptr;
+        Fl_Button* buildButton = nullptr;
+        Fl_Button* cancelBuildButton = nullptr;
     };
-    SemanticPackUiState semanticPackUiState{
-        semanticService, searchIndexer, semanticStatusBox,
-        generatedIndexStatusBox, semanticRemoveButton};
+    SemanticPackUiState semanticPackUiState;
+    semanticPackUiState.service = semanticService;
+    semanticPackUiState.indexer = searchIndexer;
+    semanticPackUiState.status = semanticStatusBox;
+    semanticPackUiState.indexStatus = generatedIndexStatusBox;
+    semanticPackUiState.removeButton = semanticRemoveButton;
+    semanticPackUiState.references = semanticReferenceBrowser;
+    semanticPackUiState.referenceRows = &semanticReferenceRows;
+    semanticPackUiState.installButton = semanticInstallButton;
     semanticDownloadButton->callback(
         [](Fl_Widget*, void*) {
-            openExternalUrl("https://huggingface.co/intfloat/multilingual-e5-small");
+            openExternalUrl(
+                "https://huggingface.co/intfloat/multilingual-e5-small/tree/main/onnx");
         });
     semanticDownloadButton->tooltip(
-        "Open the multilingual E5 model page. Install Verdad's verified platform pack here later with Install from file.");
+        "Open the upstream model files. Verdad requires the ZIP produced by tools/semantic/build_linux_pack.py.");
     semanticInstallButton->callback(
         [](Fl_Widget*, void* data) {
             auto* state = static_cast<SemanticPackUiState*>(data);
             if (!state || !state->service) return;
+            if (state->indexer && state->indexer->hasSemanticIndexWork()) {
+                fl_message("Cancel the current semantic index build before replacing the model pack.");
+                return;
+            }
             Fl_Native_File_Chooser chooser;
             chooser.title("Install Semantic Search Pack");
             chooser.type(Fl_Native_File_Chooser::BROWSE_FILE);
@@ -4204,6 +4268,11 @@ void MainWindow::onViewSettings(Fl_Widget* /*w*/, void* data) {
                 fl_alert("%s", error.c_str());
                 return;
             }
+            if (!state->service->reloadInstalledPack(error)) {
+                fl_alert("The pack was verified, but its worker could not start:\n%s",
+                         error.c_str());
+            }
+            if (state->indexer) state->indexer->clearSemanticIndexBuildStatus();
             const std::string message = std::string("Model: ") +
                 semanticPackStateLabel(state->service->state()) + ". " +
                 state->service->statusMessage();
@@ -4218,20 +4287,29 @@ void MainWindow::onViewSettings(Fl_Widget* /*w*/, void* data) {
             state->indexStatus->copy_label(indexMessage.c_str());
             state->indexStatus->redraw();
             state->removeButton->activate();
+            if (state->buildButton && state->service->state() == SemanticPackState::Ready) {
+                state->buildButton->activate();
+            }
         },
         &semanticPackUiState);
     semanticRemoveButton->callback(
         [](Fl_Widget*, void* data) {
             auto* state = static_cast<SemanticPackUiState*>(data);
             if (!state || !state->service) return;
+            if (state->indexer && state->indexer->hasSemanticIndexWork()) {
+                fl_message("Cancel the semantic index build before removing the model pack.");
+                return;
+            }
             if (fl_choice("Remove the semantic model pack and generated indexes?",
                           "Cancel", "Remove", nullptr) != 1) return;
             std::string error;
+            state->service->deactivatePack();
             if (!state->service->removeIndexes(error) ||
                 !state->service->packManager().remove(error)) {
                 fl_alert("%s", error.c_str());
                 return;
             }
+            if (state->indexer) state->indexer->clearSemanticIndexBuildStatus();
             const std::string message = std::string("Model: ") +
                 semanticPackStateLabel(state->service->state()) + ". " +
                 state->service->statusMessage();
@@ -4245,8 +4323,220 @@ void MainWindow::onViewSettings(Fl_Widget* /*w*/, void* data) {
             state->indexStatus->copy_label(indexMessage.c_str());
             state->indexStatus->redraw();
             state->removeButton->deactivate();
+            if (state->buildButton) state->buildButton->deactivate();
         },
         &semanticPackUiState);
+    rowY += rowStep;
+
+    auto* semanticBuildButton = new Fl_Button(
+        fieldX, rowY, 155, 26, "Build indexes");
+    auto* semanticCancelBuildButton = new Fl_Button(
+        fieldX + 165, rowY, 135, 26, "Cancel build");
+    semanticPackUiState.buildButton = semanticBuildButton;
+    semanticPackUiState.cancelBuildButton = semanticCancelBuildButton;
+    semanticCancelBuildButton->deactivate();
+    if (!semanticService || semanticService->state() != SemanticPackState::Ready) {
+        semanticBuildButton->deactivate();
+    }
+    semanticCancelBuildButton->callback(
+        [](Fl_Widget*, void* data) {
+            auto* state = static_cast<SemanticPackUiState*>(data);
+            if (!state || !state->indexer) return;
+            state->indexer->cancelSemanticIndexBuild();
+            if (state->indexStatus) {
+                state->indexStatus->copy_label(
+                    "Semantic index: Cancelling; completed-book progress will be retained.");
+                state->indexStatus->redraw();
+            }
+        },
+        &semanticPackUiState);
+    semanticBuildButton->callback(
+        [](Fl_Widget*, void* data) {
+            auto* state = static_cast<SemanticPackUiState*>(data);
+            if (!state || !state->service || !state->indexer ||
+                !state->references || !state->referenceRows ||
+                state->indexer->hasSemanticIndexWork()) {
+                return;
+            }
+
+            std::vector<SemanticReferenceRow> selected;
+            std::unordered_map<std::string, std::string> references;
+            for (size_t i = 0; i < state->referenceRows->size(); ++i) {
+                if (state->references->checked(static_cast<int>(i) + 1)) {
+                    const auto& row = (*state->referenceRows)[i];
+                    selected.push_back(row);
+                    references[row.language] = row.module;
+                }
+            }
+            if (selected.empty()) {
+                fl_alert("Select at least one reference Bible first.");
+                return;
+            }
+
+            std::string error;
+            if (!state->service->runtimeReady() &&
+                !state->service->reloadInstalledPack(error)) {
+                fl_alert("The semantic worker is unavailable:\n%s", error.c_str());
+                return;
+            }
+            state->service->setReferenceModules(references);
+            size_t queued = 0;
+            for (const auto& selectedBible : selected) {
+                if (state->indexer->queueSemanticIndex(
+                        selectedBible.language, selectedBible.module)) {
+                    ++queued;
+                }
+            }
+            if (queued == 0) {
+                state->indexStatus->copy_label(
+                    "Semantic index: All selected reference Bibles are already ready.");
+            } else {
+                state->indexStatus->copy_label(
+                    "Semantic index build queued. It will continue after Settings closes.");
+            }
+            state->indexStatus->redraw();
+            state->buildButton->deactivate();
+            state->cancelBuildButton->activate();
+            state->removeButton->deactivate();
+            if (state->installButton) state->installButton->deactivate();
+        },
+        &semanticPackUiState);
+
+    auto refreshSemanticUi = [&]() {
+        if (!semanticService || !searchIndexer) return;
+
+        const SemanticPackState packState =
+            semanticService->packManager().state();
+        std::string modelMessage = std::string("Model pack: ") +
+            semanticPackStateLabel(packState) + ". " +
+            semanticService->packManager().statusMessage();
+        if (packState == SemanticPackState::Ready &&
+            !semanticService->runtimeReady()) {
+            modelMessage += " Worker unavailable: " +
+                            semanticService->statusMessage();
+        }
+        semanticStatusBox->copy_label(modelMessage.c_str());
+        semanticStatusBox->redraw();
+
+        size_t selectedCount = 0;
+        size_t readyCount = 0;
+        bool incomplete = false;
+        bool queued = false;
+        SearchIndexer::SemanticIndexBuildStatus active;
+        SearchIndexer::SemanticIndexBuildStatus failed;
+        std::string activeLanguage;
+        std::string activeModule;
+        int activePercent = 0;
+        if (searchIndexer->activeSemanticIndexingTask(
+                activeLanguage, activeModule, activePercent)) {
+            active.state = SearchIndexer::SemanticIndexBuildState::Building;
+            active.language = activeLanguage;
+            active.moduleName = activeModule;
+            active.percent = activePercent;
+        }
+        for (size_t i = 0; i < semanticReferenceRows.size(); ++i) {
+            if (!semanticReferenceBrowser->checked(static_cast<int>(i) + 1)) {
+                continue;
+            }
+            ++selectedCount;
+            const auto status = searchIndexer->semanticIndexStatus(
+                semanticReferenceRows[i].language,
+                semanticReferenceRows[i].module);
+            switch (status.state) {
+            case SearchIndexer::SemanticIndexBuildState::Ready:
+                ++readyCount;
+                break;
+            case SearchIndexer::SemanticIndexBuildState::Building:
+                active = status;
+                break;
+            case SearchIndexer::SemanticIndexBuildState::Queued:
+                queued = true;
+                break;
+            case SearchIndexer::SemanticIndexBuildState::Incomplete:
+                incomplete = true;
+                break;
+            case SearchIndexer::SemanticIndexBuildState::Error:
+                if (failed.error.empty()) failed = status;
+                break;
+            case SearchIndexer::SemanticIndexBuildState::NotBuilt:
+                break;
+            }
+        }
+
+        std::string indexMessage;
+        const std::string stored = formatStorageSize(semanticService->indexBytes());
+        const bool working = searchIndexer->hasSemanticIndexWork();
+        if (!active.moduleName.empty()) {
+            indexMessage = "Semantic: Building " + active.moduleName + "/" +
+                           active.language + ": " +
+                           std::to_string(active.percent) + "% (" + stored +
+                           " stored).";
+        } else if (!failed.error.empty()) {
+            std::string shortError = failed.error;
+            if (shortError.size() > 60) shortError.resize(60);
+            indexMessage = "Semantic: Error " + failed.moduleName + "/" +
+                           failed.language + ": " + shortError;
+        } else if (working && selectedCount == 0) {
+            indexMessage = "Semantic: Build queued (" + stored + " stored).";
+        } else if (selectedCount == 0) {
+            indexMessage = "Semantic: Not configured (" + stored + " stored).";
+        } else if (readyCount == selectedCount) {
+            if (selectedCount == 1) {
+                for (size_t i = 0; i < semanticReferenceRows.size(); ++i) {
+                    if (semanticReferenceBrowser->checked(static_cast<int>(i) + 1)) {
+                        indexMessage = "Semantic: Ready " +
+                            semanticReferenceRows[i].module + "/" +
+                            semanticReferenceRows[i].language + " (" + stored + ").";
+                        break;
+                    }
+                }
+            } else {
+                indexMessage = "Semantic: Ready (" +
+                               std::to_string(readyCount) + " of " +
+                               std::to_string(selectedCount) + ", " + stored + ").";
+            }
+        } else if (queued) {
+            indexMessage = "Semantic: Queued (" +
+                           std::to_string(readyCount) + " of " +
+                           std::to_string(selectedCount) + " ready).";
+        } else if (incomplete) {
+            indexMessage = "Semantic: Incomplete (" +
+                           std::to_string(readyCount) + " of " +
+                           std::to_string(selectedCount) + " ready; " + stored +
+                           " stored).";
+        } else {
+            indexMessage = "Semantic: Not ready (" +
+                           std::to_string(readyCount) + " of " +
+                           std::to_string(selectedCount) + "; " + stored + " stored).";
+        }
+        const std::string naveMessage = std::string("Nave: ") +
+            (searchIndexer->topicIndexAvailable() ? "Ready (" : "Not available (") +
+            formatStorageSize(searchIndexer->topicIndexBytes()) + "). ";
+        indexMessage = naveMessage + indexMessage;
+        generatedIndexStatusBox->copy_label(indexMessage.c_str());
+        generatedIndexStatusBox->redraw();
+
+        const bool canBuild = packState == SemanticPackState::Ready &&
+                              semanticService->runtimeReady() &&
+                              selectedCount > 0 && readyCount < selectedCount &&
+                              !working;
+        if (canBuild) semanticBuildButton->activate();
+        else semanticBuildButton->deactivate();
+        if (working) semanticCancelBuildButton->activate();
+        else semanticCancelBuildButton->deactivate();
+        if (working) {
+            semanticInstallButton->deactivate();
+            semanticRemoveButton->deactivate();
+        } else {
+            semanticInstallButton->activate();
+            if (packState == SemanticPackState::NotInstalled) {
+                semanticRemoveButton->deactivate();
+            } else {
+                semanticRemoveButton->activate();
+            }
+        }
+    };
+    refreshSemanticUi();
 
     searchTab->end();
 
@@ -4346,7 +4636,12 @@ void MainWindow::onViewSettings(Fl_Widget* /*w*/, void* data) {
     ui_font::applyCurrentAppUiFont(dlg);
     dlg->show();
     while (dlg->shown()) {
-        Fl::wait();
+        Fl::wait(0.25);
+        refreshSemanticUi();
+    }
+
+    if (!state->accepted && semanticService) {
+        semanticService->setReferenceModules(currentSearch.semanticReferenceModules);
     }
 
     if (state->accepted) {

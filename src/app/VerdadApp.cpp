@@ -736,6 +736,10 @@ VerdadApp::VerdadApp()
 
 VerdadApp::~VerdadApp() {
     savePreferences();
+    // Stop background indexing before destroying the semantic service or the
+    // imported-module provider referenced by SearchIndexer.
+    searchIndexer_.reset();
+    semanticSearch_.reset();
     if (instance_ == this) {
         instance_ = nullptr;
     }

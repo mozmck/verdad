@@ -260,11 +260,14 @@ private:
 
     bool tabCacheEvictionScheduled_ = false;
     bool statusPollScheduled_ = false;
+    bool semanticIndexingObserved_ = false;
     bool dailyDateCheckScheduled_ = false;
     bool userDataSyncPollScheduled_ = false;
     std::string lastDailyDateIso_;
     std::string lastStatusBarText_;
     std::string transientStatusText_;
+    std::string observedSemanticLanguage_;
+    std::string observedSemanticModule_;
     std::chrono::steady_clock::time_point transientStatusUntil_{};
     std::unordered_map<std::string, std::string> userDataSnapshot_;
     std::unordered_map<std::string, std::string> pendingUserDataSnapshot_;

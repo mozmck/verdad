@@ -291,6 +291,24 @@ target_compile_definitions(verdad-bench PRIVATE VERDAD_NO_APP_FONT_LOOKUP)
 
 if(BUILD_TESTING)
     find_package(Threads REQUIRED)
+    if(UNIX)
+        add_executable(verdad-fake-semantic-worker
+            tests/FakeSemanticWorker.cpp)
+        set(VERDAD_FAKE_SEMANTIC_PACK_DIR
+            "${CMAKE_CURRENT_BINARY_DIR}/tests/fake-semantic-pack")
+        add_custom_command(
+            OUTPUT "${VERDAD_FAKE_SEMANTIC_PACK_DIR}/manifest.conf"
+            COMMAND ${CMAKE_COMMAND}
+                    -DWORKER=$<TARGET_FILE:verdad-fake-semantic-worker>
+                    -DOUTPUT_DIR=${VERDAD_FAKE_SEMANTIC_PACK_DIR}
+                    -P ${CMAKE_SOURCE_DIR}/cmake/CreateFakeSemanticPack.cmake
+            DEPENDS
+                verdad-fake-semantic-worker
+                ${CMAKE_SOURCE_DIR}/cmake/CreateFakeSemanticPack.cmake
+            VERBATIM)
+        add_custom_target(verdad-fake-semantic-pack
+            DEPENDS "${VERDAD_FAKE_SEMANTIC_PACK_DIR}/manifest.conf")
+    endif()
     add_executable(verdad-search-tests
         tests/SearchTests.cpp
         src/search/SearchIndexer.cpp
@@ -311,6 +329,12 @@ if(BUILD_TESTING)
         SQLite::SQLite3
         Threads::Threads
     )
+    if(UNIX)
+        add_dependencies(verdad-search-tests verdad-fake-semantic-pack)
+        target_compile_definitions(verdad-search-tests PRIVATE
+            VERDAD_FAKE_SEMANTIC_WORKER_PATH="$<TARGET_FILE:verdad-fake-semantic-worker>"
+            VERDAD_FAKE_SEMANTIC_PACK_PATH="${VERDAD_FAKE_SEMANTIC_PACK_DIR}")
+    endif()
     if(WIN32)
         target_compile_definitions(verdad-search-tests PRIVATE NOMINMAX)
     endif()
@@ -363,6 +387,16 @@ if(BUILD_TESTING)
             NAME german-morphology-importer
             COMMAND ${Python3_EXECUTABLE}
                     ${CMAKE_SOURCE_DIR}/tests/test_import_apertium_german_morphology.py
+        )
+        add_test(
+            NAME semantic-pack-builder
+            COMMAND ${Python3_EXECUTABLE}
+                    ${CMAKE_SOURCE_DIR}/tests/test_semantic_pack_builder.py
+        )
+        add_test(
+            NAME semantic-worker-protocol
+            COMMAND ${Python3_EXECUTABLE}
+                    ${CMAKE_SOURCE_DIR}/tests/test_semantic_worker_protocol.py
         )
     endif()
 endif()

@@ -2,7 +2,10 @@
 
 #include <algorithm>
 #include <array>
+#include <cerrno>
+#include <cctype>
 #include <cmath>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
@@ -10,6 +13,17 @@
 #include <random>
 #include <sstream>
 #include <system_error>
+#include <unordered_set>
+
+#if defined(_WIN32)
+#include <windows.h>
+#else
+#include <poll.h>
+#include <signal.h>
+#include <sys/types.h>
+#include <sys/wait.h>
+#include <unistd.h>
+#endif
 
 namespace verdad {
 namespace {
@@ -21,6 +35,15 @@ constexpr std::uint64_t kMaxVectorIndexBytes = 25ULL * 1024ULL * 1024ULL;
 constexpr int kRequiredModelDimensions = 384;
 constexpr const char* kRequiredModelId = "intfloat/multilingual-e5-small";
 constexpr const char* kNormalizationVersion = "e5-context-v1";
+constexpr std::uint32_t kMaxWorkerFrameBytes = 64U * 1024U * 1024U;
+constexpr std::array<unsigned char, 4> kWorkerMagic{{'V', 'S', 'W', '1'}};
+
+enum class WorkerOperation : unsigned char {
+    Hello = 1,
+    EncodeQuery = 2,
+    EncodePassages = 3,
+    Shutdown = 4
+};
 
 std::string trimCopy(const std::string& text) {
     size_t first = text.find_first_not_of(" \t\r\n");
@@ -55,6 +78,46 @@ bool safeRelativePath(const fs::path& path) {
     for (const auto& part : path) {
         if (part == "..") return false;
     }
+    return true;
+}
+
+void appendUint32(std::vector<unsigned char>& buffer, std::uint32_t value) {
+    buffer.push_back(static_cast<unsigned char>(value & 0xffU));
+    buffer.push_back(static_cast<unsigned char>((value >> 8) & 0xffU));
+    buffer.push_back(static_cast<unsigned char>((value >> 16) & 0xffU));
+    buffer.push_back(static_cast<unsigned char>((value >> 24) & 0xffU));
+}
+
+bool takeUint32(const std::vector<unsigned char>& buffer,
+                size_t& offset,
+                std::uint32_t& value) {
+    if (offset + 4 > buffer.size()) return false;
+    value = static_cast<std::uint32_t>(buffer[offset]) |
+            (static_cast<std::uint32_t>(buffer[offset + 1]) << 8) |
+            (static_cast<std::uint32_t>(buffer[offset + 2]) << 16) |
+            (static_cast<std::uint32_t>(buffer[offset + 3]) << 24);
+    offset += 4;
+    return true;
+}
+
+bool appendProtocolString(std::vector<unsigned char>& buffer,
+                          const std::string& value) {
+    if (value.size() > kMaxWorkerFrameBytes) return false;
+    appendUint32(buffer, static_cast<std::uint32_t>(value.size()));
+    buffer.insert(buffer.end(), value.begin(), value.end());
+    return buffer.size() <= kMaxWorkerFrameBytes;
+}
+
+bool takeProtocolString(const std::vector<unsigned char>& buffer,
+                        size_t& offset,
+                        std::string& value) {
+    std::uint32_t size = 0;
+    if (!takeUint32(buffer, offset, size) ||
+        size > kMaxWorkerFrameBytes || offset + size > buffer.size()) {
+        return false;
+    }
+    value.assign(reinterpret_cast<const char*>(buffer.data() + offset), size);
+    offset += size;
     return true;
 }
 
@@ -168,6 +231,7 @@ bool loadManifest(const fs::path& path,
         return false;
     }
     std::string line;
+    std::unordered_set<std::string> manifestPaths;
     while (std::getline(input, line)) {
         line = trimCopy(line);
         if (line.empty() || line.front() == '#') continue;
@@ -181,6 +245,8 @@ bool loadManifest(const fs::path& path,
             else if (key == "model_revision") manifest.modelRevision = value;
             else if (key == "dimensions") manifest.dimensions = std::stoi(value);
             else if (key == "worker") manifest.workerPath = value;
+            else if (key == "model") manifest.modelPath = value;
+            else if (key == "tokenizer") manifest.tokenizerPath = value;
             else if (key == "expected_download_bytes") manifest.expectedDownloadBytes = std::stoull(value);
             else if (key == "file") {
                 size_t first = value.find('|');
@@ -193,6 +259,15 @@ bool loadManifest(const fs::path& path,
                 file.path = value.substr(0, first);
                 file.bytes = std::stoull(value.substr(first + 1, second - first - 1));
                 file.sha256 = trimCopy(value.substr(second + 1));
+                const std::string normalizedPath = file.path.lexically_normal().generic_string();
+                const bool validHash = file.sha256.size() == 64 &&
+                    std::all_of(file.sha256.begin(), file.sha256.end(),
+                        [](unsigned char c) { return std::isxdigit(c) != 0; });
+                if (normalizedPath.empty() || !validHash ||
+                    !manifestPaths.insert(normalizedPath).second) {
+                    errorOut = "The semantic pack manifest has an invalid file entry.";
+                    return false;
+                }
                 files.push_back(std::move(file));
             }
         } catch (const std::exception&) {
@@ -202,20 +277,25 @@ bool loadManifest(const fs::path& path,
     }
     if (manifest.formatVersion != 1 || manifest.modelId != kRequiredModelId ||
         manifest.dimensions != kRequiredModelDimensions ||
-        manifest.modelRevision.empty() || manifest.workerPath.empty() || files.empty()) {
+        manifest.modelRevision.empty() || manifest.workerPath.empty() ||
+        manifest.modelPath.empty() || manifest.tokenizerPath.empty() || files.empty()) {
         errorOut = "The semantic pack manifest is incomplete or incompatible.";
         return false;
     }
-    if (!safeRelativePath(manifest.workerPath)) {
-        errorOut = "The semantic worker path is unsafe.";
+    if (!safeRelativePath(manifest.workerPath) ||
+        !safeRelativePath(manifest.modelPath) ||
+        !safeRelativePath(manifest.tokenizerPath)) {
+        errorOut = "The semantic pack contains an unsafe runtime path.";
         return false;
     }
-    const bool workerListed = std::any_of(files.begin(), files.end(),
-        [&](const ManifestFile& file) {
-            return file.path.lexically_normal() == fs::path(manifest.workerPath).lexically_normal();
+    auto listed = [&](const std::string& path) {
+        return std::any_of(files.begin(), files.end(), [&](const ManifestFile& file) {
+            return file.path.lexically_normal() == fs::path(path).lexically_normal();
         });
-    if (!workerListed) {
-        errorOut = "The semantic worker is not covered by the pack manifest.";
+    };
+    if (!listed(manifest.workerPath) || !listed(manifest.modelPath) ||
+        !listed(manifest.tokenizerPath)) {
+        errorOut = "The semantic runtime paths are not covered by the pack manifest.";
         return false;
     }
     return true;
@@ -337,6 +417,381 @@ bool DeterministicSemanticEncoder::encodePassages(
     vectorsOut.reserve(texts.size());
     for (const auto& text : texts) vectorsOut.push_back(encode(text));
     return true;
+}
+
+class WorkerSemanticEncoder::Impl {
+public:
+    Impl(std::string packDirectory, SemanticPackManifest manifest)
+        : packDirectory_(std::move(packDirectory)), manifest_(std::move(manifest)) {
+        start();
+    }
+
+    ~Impl() { stop(); }
+
+    bool available() const {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return ready_;
+    }
+
+    std::string modelId() const {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return modelId_;
+    }
+
+    std::string modelRevision() const {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return modelRevision_;
+    }
+
+    int dimensions() const {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return dimensions_;
+    }
+
+    std::string startupError() const {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return startupError_;
+    }
+
+    bool encode(WorkerOperation operation,
+                const std::vector<std::string>& texts,
+                std::vector<std::vector<std::int8_t>>& vectorsOut,
+                std::string& errorOut) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        vectorsOut.clear();
+        if (!ready_) {
+            errorOut = startupError_.empty()
+                           ? "The semantic worker is not running."
+                           : startupError_;
+            return false;
+        }
+        if (!exchange(operation, texts, vectorsOut, errorOut)) {
+            ready_ = false;
+            if (errorOut.empty()) errorOut = "The semantic worker stopped responding.";
+            return false;
+        }
+        return true;
+    }
+
+private:
+#if defined(_WIN32)
+    void start() {
+        startupError_ =
+            "This semantic worker pack does not support Windows process launching.";
+    }
+
+    void stop() {}
+
+    bool exchange(WorkerOperation,
+                  const std::vector<std::string>&,
+                  std::vector<std::vector<std::int8_t>>&,
+                  std::string&) {
+        return false;
+    }
+#else
+    static bool writeAll(int fd, const unsigned char* data, size_t size) {
+        while (size > 0) {
+            const ssize_t written = ::write(fd, data, size);
+            if (written > 0) {
+                data += written;
+                size -= static_cast<size_t>(written);
+                continue;
+            }
+            if (written < 0 && errno == EINTR) continue;
+            return false;
+        }
+        return true;
+    }
+
+    static bool readAll(int fd,
+                        unsigned char* data,
+                        size_t size,
+                        int timeoutMillis) {
+        while (size > 0) {
+            pollfd descriptor{};
+            descriptor.fd = fd;
+            descriptor.events = POLLIN;
+            int pollResult;
+            do {
+                pollResult = ::poll(&descriptor, 1, timeoutMillis);
+            } while (pollResult < 0 && errno == EINTR);
+            if (pollResult <= 0 ||
+                (descriptor.revents & (POLLERR | POLLHUP | POLLNVAL))) {
+                return false;
+            }
+            const ssize_t count = ::read(fd, data, size);
+            if (count > 0) {
+                data += count;
+                size -= static_cast<size_t>(count);
+                continue;
+            }
+            if (count < 0 && errno == EINTR) continue;
+            return false;
+        }
+        return true;
+    }
+
+    bool writeFrame(const std::vector<unsigned char>& payload) {
+        if (payload.empty() || payload.size() > kMaxWorkerFrameBytes) return false;
+        std::vector<unsigned char> header;
+        header.reserve(4);
+        appendUint32(header, static_cast<std::uint32_t>(payload.size()));
+        return writeAll(writeFd_, header.data(), header.size()) &&
+               writeAll(writeFd_, payload.data(), payload.size());
+    }
+
+    bool readFrame(std::vector<unsigned char>& payload) {
+        std::array<unsigned char, 4> header{};
+        if (!readAll(readFd_, header.data(), header.size(), 120000)) return false;
+        std::vector<unsigned char> encodedHeader(header.begin(), header.end());
+        size_t offset = 0;
+        std::uint32_t size = 0;
+        if (!takeUint32(encodedHeader, offset, size) || size == 0 ||
+            size > kMaxWorkerFrameBytes) return false;
+        payload.resize(size);
+        return readAll(readFd_, payload.data(), payload.size(), 120000);
+    }
+
+    bool exchange(WorkerOperation operation,
+                  const std::vector<std::string>& texts,
+                  std::vector<std::vector<std::int8_t>>& vectorsOut,
+                  std::string& errorOut) {
+        std::vector<unsigned char> request(kWorkerMagic.begin(), kWorkerMagic.end());
+        request.push_back(static_cast<unsigned char>(operation));
+        if (texts.size() > 4096) {
+            errorOut = "The semantic worker request is too large.";
+            return false;
+        }
+        appendUint32(request, static_cast<std::uint32_t>(texts.size()));
+        for (const auto& text : texts) {
+            if (!appendProtocolString(request, text)) {
+                errorOut = "The semantic worker request is too large.";
+                return false;
+            }
+        }
+        if (!writeFrame(request)) {
+            errorOut = "Unable to write to the semantic worker.";
+            return false;
+        }
+
+        std::vector<unsigned char> response;
+        if (!readFrame(response)) {
+            errorOut = "The semantic worker exited or timed out.";
+            return false;
+        }
+        if (response.size() < kWorkerMagic.size() + 1 ||
+            !std::equal(kWorkerMagic.begin(), kWorkerMagic.end(), response.begin())) {
+            errorOut = "The semantic worker returned an incompatible response.";
+            return false;
+        }
+        size_t offset = kWorkerMagic.size();
+        const unsigned char status = response[offset++];
+        if (status != 0) {
+            if (!takeProtocolString(response, offset, errorOut) || errorOut.empty()) {
+                errorOut = "The semantic worker reported an unspecified error.";
+            }
+            return false;
+        }
+
+        std::uint32_t dimensions = 0;
+        if (!takeUint32(response, offset, dimensions) || dimensions == 0 ||
+            dimensions > 4096) {
+            errorOut = "The semantic worker returned invalid dimensions.";
+            return false;
+        }
+        if (operation == WorkerOperation::Hello) {
+            std::string modelId;
+            std::string revision;
+            if (!takeProtocolString(response, offset, modelId) ||
+                !takeProtocolString(response, offset, revision) ||
+                offset != response.size()) {
+                errorOut = "The semantic worker handshake is malformed.";
+                return false;
+            }
+            if (modelId != manifest_.modelId ||
+                revision != manifest_.modelRevision ||
+                static_cast<int>(dimensions) != manifest_.dimensions) {
+                errorOut = "The semantic worker does not match the installed pack.";
+                return false;
+            }
+            modelId_ = std::move(modelId);
+            modelRevision_ = std::move(revision);
+            dimensions_ = static_cast<int>(dimensions);
+            return true;
+        }
+
+        if (static_cast<int>(dimensions) != dimensions_) {
+            errorOut = "The semantic worker changed vector dimensions.";
+            return false;
+        }
+
+        std::uint32_t count = 0;
+        if (!takeUint32(response, offset, count) || count != texts.size()) {
+            errorOut = "The semantic worker returned the wrong vector count.";
+            return false;
+        }
+        const size_t vectorBytes = static_cast<size_t>(dimensions) * count;
+        if (offset + vectorBytes != response.size()) {
+            errorOut = "The semantic worker vector response is truncated.";
+            return false;
+        }
+        vectorsOut.reserve(count);
+        for (std::uint32_t row = 0; row < count; ++row) {
+            const auto* begin = reinterpret_cast<const std::int8_t*>(
+                response.data() + offset + static_cast<size_t>(row) * dimensions);
+            vectorsOut.emplace_back(begin, begin + dimensions);
+        }
+        return true;
+    }
+
+    void start() {
+        const fs::path packRoot = fs::absolute(packDirectory_);
+        const fs::path worker = packRoot / manifest_.workerPath;
+        const fs::path model = packRoot / manifest_.modelPath;
+        const fs::path tokenizer = packRoot / manifest_.tokenizerPath;
+        std::error_code ec;
+        if (!fs::is_regular_file(worker, ec) || ec ||
+            !fs::is_regular_file(model, ec) || ec ||
+            !fs::is_regular_file(tokenizer, ec) || ec) {
+            startupError_ = "The semantic pack runtime files are missing.";
+            return;
+        }
+
+        int requestPipe[2]{-1, -1};
+        int responsePipe[2]{-1, -1};
+        if (::pipe(requestPipe) != 0 || ::pipe(responsePipe) != 0) {
+            if (requestPipe[0] >= 0) ::close(requestPipe[0]);
+            if (requestPipe[1] >= 0) ::close(requestPipe[1]);
+            if (responsePipe[0] >= 0) ::close(responsePipe[0]);
+            if (responsePipe[1] >= 0) ::close(responsePipe[1]);
+            startupError_ = "Unable to create semantic worker pipes.";
+            return;
+        }
+
+        static std::once_flag ignoreSigpipe;
+        std::call_once(ignoreSigpipe, []() { ::signal(SIGPIPE, SIG_IGN); });
+        pid_ = ::fork();
+        if (pid_ == 0) {
+            ::dup2(requestPipe[0], STDIN_FILENO);
+            ::dup2(responsePipe[1], STDOUT_FILENO);
+            ::close(requestPipe[0]);
+            ::close(requestPipe[1]);
+            ::close(responsePipe[0]);
+            ::close(responsePipe[1]);
+            if (::chdir(packRoot.c_str()) != 0) _exit(126);
+            const std::string dimensionsText = std::to_string(manifest_.dimensions);
+            ::execl(worker.c_str(), worker.c_str(),
+                    "--model", model.c_str(),
+                    "--tokenizer", tokenizer.c_str(),
+                    "--model-id", manifest_.modelId.c_str(),
+                    "--revision", manifest_.modelRevision.c_str(),
+                    "--dimensions", dimensionsText.c_str(),
+                    static_cast<char*>(nullptr));
+            _exit(127);
+        }
+
+        ::close(requestPipe[0]);
+        ::close(responsePipe[1]);
+        if (pid_ < 0) {
+            ::close(requestPipe[1]);
+            ::close(responsePipe[0]);
+            startupError_ = "Unable to start the semantic worker process.";
+            return;
+        }
+        writeFd_ = requestPipe[1];
+        readFd_ = responsePipe[0];
+
+        std::vector<std::vector<std::int8_t>> ignored;
+        if (!exchange(WorkerOperation::Hello, {}, ignored, startupError_)) {
+            stopUnlocked();
+            return;
+        }
+        ready_ = true;
+    }
+
+    void stopUnlocked() {
+        if (writeFd_ >= 0) {
+            std::vector<unsigned char> request(kWorkerMagic.begin(), kWorkerMagic.end());
+            request.push_back(static_cast<unsigned char>(WorkerOperation::Shutdown));
+            appendUint32(request, 0);
+            writeFrame(request);
+            ::close(writeFd_);
+            writeFd_ = -1;
+        }
+        if (readFd_ >= 0) {
+            ::close(readFd_);
+            readFd_ = -1;
+        }
+        if (pid_ > 0) {
+            int status = 0;
+            pid_t result = ::waitpid(pid_, &status, WNOHANG);
+            if (result == 0) {
+                ::kill(pid_, SIGTERM);
+                do {
+                    result = ::waitpid(pid_, &status, 0);
+                } while (result < 0 && errno == EINTR);
+            }
+            pid_ = -1;
+        }
+        ready_ = false;
+    }
+
+    void stop() {
+        std::lock_guard<std::mutex> lock(mutex_);
+        stopUnlocked();
+    }
+
+    int writeFd_ = -1;
+    int readFd_ = -1;
+    pid_t pid_ = -1;
+#endif
+
+    std::string packDirectory_;
+    SemanticPackManifest manifest_;
+    mutable std::mutex mutex_;
+    bool ready_ = false;
+    std::string startupError_;
+    std::string modelId_;
+    std::string modelRevision_;
+    int dimensions_ = 0;
+};
+
+WorkerSemanticEncoder::WorkerSemanticEncoder(
+    std::string packDirectory,
+    SemanticPackManifest manifest)
+    : impl_(std::make_unique<Impl>(std::move(packDirectory), std::move(manifest))) {}
+
+WorkerSemanticEncoder::~WorkerSemanticEncoder() = default;
+
+bool WorkerSemanticEncoder::available() const { return impl_->available(); }
+std::string WorkerSemanticEncoder::modelId() const { return impl_->modelId(); }
+std::string WorkerSemanticEncoder::modelRevision() const {
+    return impl_->modelRevision();
+}
+int WorkerSemanticEncoder::dimensions() const { return impl_->dimensions(); }
+std::string WorkerSemanticEncoder::startupError() const {
+    return impl_->startupError();
+}
+
+bool WorkerSemanticEncoder::encodeQuery(
+    const std::string& text,
+    std::vector<std::int8_t>& vectorOut,
+    std::string& errorOut) {
+    std::vector<std::vector<std::int8_t>> vectors;
+    if (!impl_->encode(WorkerOperation::EncodeQuery, {text}, vectors, errorOut) ||
+        vectors.size() != 1) {
+        if (errorOut.empty()) errorOut = "The semantic worker returned no query vector.";
+        return false;
+    }
+    vectorOut = std::move(vectors.front());
+    return true;
+}
+
+bool WorkerSemanticEncoder::encodePassages(
+    const std::vector<std::string>& texts,
+    std::vector<std::vector<std::int8_t>>& vectorsOut,
+    std::string& errorOut) {
+    return impl_->encode(WorkerOperation::EncodePassages, texts, vectorsOut, errorOut);
 }
 
 RestartingSemanticEncoder::RestartingSemanticEncoder(
@@ -722,7 +1177,10 @@ bool SemanticPackManager::remove(std::string& errorOut) {
 }
 
 SemanticSearchService::SemanticSearchService(std::string rootDirectory)
-    : rootDirectory_(std::move(rootDirectory)), packManager_(rootDirectory_) {}
+    : rootDirectory_(std::move(rootDirectory)), packManager_(rootDirectory_) {
+    std::string ignored;
+    reloadInstalledPack(ignored);
+}
 
 SemanticPackState SemanticSearchService::state() const {
     std::lock_guard<std::mutex> lock(mutex_);
@@ -740,6 +1198,14 @@ std::string SemanticSearchService::statusMessage() const {
 bool SemanticSearchService::available() const {
     std::lock_guard<std::mutex> lock(mutex_);
     return enabled_ && encoder_ && encoder_->available();
+}
+
+bool SemanticSearchService::runtimeReady() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    // This is polled by the UI while passage batches are being encoded. Do not
+    // call encoder_->available() here because the restarting worker deliberately
+    // holds its mutex for the duration of a batch.
+    return encoder_ && runtimeHealthy_;
 }
 
 bool SemanticSearchService::enabled() const {
@@ -769,7 +1235,65 @@ void SemanticSearchService::setEncoder(std::shared_ptr<SemanticEncoder> encoder)
     std::lock_guard<std::mutex> lock(mutex_);
     encoder_ = std::move(encoder);
     indexes_.clear();
+    runtimeHealthy_ = encoder_ != nullptr;
     transientState_ = encoder_ ? SemanticPackState::Ready : SemanticPackState::NotInstalled;
+    transientError_.clear();
+}
+
+bool SemanticSearchService::reloadInstalledPack(std::string& errorOut) {
+    packManager_.refresh();
+    if (packManager_.state() != SemanticPackState::Ready) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        encoder_.reset();
+        indexes_.clear();
+        runtimeHealthy_ = false;
+        transientState_ = packManager_.state();
+        transientError_ = packManager_.state() == SemanticPackState::Error
+                              ? packManager_.statusMessage()
+                              : std::string();
+        errorOut = transientError_;
+        return false;
+    }
+
+    const SemanticPackManifest manifest = packManager_.manifest();
+    const std::string packDirectory = packManager_.activePackDirectory();
+    auto createWorker = [packDirectory, manifest]() -> std::shared_ptr<SemanticEncoder> {
+        return std::make_shared<WorkerSemanticEncoder>(packDirectory, manifest);
+    };
+    auto initial = std::dynamic_pointer_cast<WorkerSemanticEncoder>(createWorker());
+    if (!initial || !initial->available()) {
+        errorOut = initial ? initial->startupError()
+                           : "Unable to create the semantic worker.";
+        if (errorOut.empty()) errorOut = "The semantic worker failed to start.";
+        std::lock_guard<std::mutex> lock(mutex_);
+        encoder_.reset();
+        indexes_.clear();
+        runtimeHealthy_ = false;
+        transientState_ = SemanticPackState::Error;
+        transientError_ = errorOut;
+        return false;
+    }
+
+    auto restarting = std::make_shared<RestartingSemanticEncoder>(
+        initial, [createWorker]() { return createWorker(); });
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        encoder_ = std::move(restarting);
+        indexes_.clear();
+        runtimeHealthy_ = true;
+        transientState_ = SemanticPackState::Ready;
+        transientError_.clear();
+    }
+    errorOut.clear();
+    return true;
+}
+
+void SemanticSearchService::deactivatePack() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    encoder_.reset();
+    indexes_.clear();
+    runtimeHealthy_ = false;
+    transientState_ = SemanticPackState::NotInstalled;
     transientError_.clear();
 }
 
@@ -795,15 +1319,16 @@ bool SemanticSearchService::buildIndex(
         transientState_ = SemanticPackState::BuildingIndex;
         transientError_.clear();
     }
-    auto fail = [&](const std::string& error) {
+    auto fail = [&](const std::string& error, bool runtimeFailure = false) {
         errorOut = error;
         std::lock_guard<std::mutex> lock(mutex_);
+        if (runtimeFailure) runtimeHealthy_ = false;
         transientState_ = SemanticPackState::Error;
         transientError_ = error;
         return false;
     };
     if (!encoder || !encoder->available()) {
-        return fail("The semantic model pack is not installed.");
+        return fail("The semantic model pack is not installed.", true);
     }
     if (language.empty() || moduleName.empty() || passages.empty()) {
         return fail("A language, reference Bible, and passages are required.");
@@ -903,11 +1428,17 @@ bool SemanticSearchService::buildIndex(
             std::string encodeError;
             if (!encoder->encodePassages(texts, batch, encodeError) ||
                 batch.size() != texts.size()) {
-                return fail(encodeError.empty() ? "Encoding Bible passages failed." : encodeError);
+                return fail(encodeError.empty() ? "Encoding Bible passages failed."
+                                                : encodeError,
+                            true);
             }
             vectors.insert(vectors.end(),
                            std::make_move_iterator(batch.begin()),
                            std::make_move_iterator(batch.end()));
+            if (end < bookEnd && progress &&
+                !progress(end, passages.size())) {
+                return cancelBuild();
+            }
         }
         completed = bookEnd;
 
@@ -987,6 +1518,7 @@ std::vector<SemanticHit> SemanticSearchService::search(
     std::string error;
     if (!encoder->encodeQuery("query: " + query, queryVector, error)) {
         std::lock_guard<std::mutex> lock(mutex_);
+        runtimeHealthy_ = false;
         transientState_ = SemanticPackState::Error;
         transientError_ = error.empty() ? "Semantic query encoding failed." : error;
         return {};
@@ -1008,6 +1540,36 @@ bool SemanticSearchService::removeIndexes(std::string& errorOut) {
 
 std::uint64_t SemanticSearchService::indexBytes() const {
     return directoryBytes(fs::path(rootDirectory_) / "indexes");
+}
+
+bool SemanticSearchService::indexReady(const std::string& language,
+                                       const std::string& moduleName) const {
+    std::shared_ptr<SemanticEncoder> encoder;
+    std::string expectedSignature;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        encoder = encoder_;
+        auto signature = moduleSignatures_.find(moduleName);
+        if (signature != moduleSignatures_.end()) expectedSignature = signature->second;
+    }
+    if (!encoder || !encoder->available()) return false;
+    auto index = loadIndex(language, moduleName);
+    return index && index->metadata().modelId == encoder->modelId() &&
+           index->metadata().modelRevision == encoder->modelRevision() &&
+           index->metadata().dimensions == encoder->dimensions() &&
+           index->metadata().language == language &&
+           index->metadata().moduleName == moduleName &&
+           (expectedSignature.empty() ||
+            index->metadata().moduleSignature == expectedSignature) &&
+           index->metadata().normalizationVersion == kNormalizationVersion;
+}
+
+bool SemanticSearchService::indexCheckpointAvailable(
+    const std::string& language,
+    const std::string& moduleName) const {
+    std::error_code ec;
+    return fs::is_regular_file(indexPath(language, moduleName) + ".checkpoint", ec) &&
+           !ec;
 }
 
 } // namespace verdad

@@ -1875,6 +1875,7 @@ void SearchIndexer::ScopedSuspend::release() {
 
 SearchIndexer::~SearchIndexer() {
     stopRequested_.store(true);
+    semanticAbortRequested_.store(true);
     {
         std::lock_guard<std::mutex> lock(workerMutex_);
         stopWorker_ = true;
@@ -2108,6 +2109,145 @@ void SearchIndexer::queueModuleIndex(const std::vector<std::string>& moduleNames
     for (const auto& module : moduleNames) {
         queueModuleIndex(module, false);
     }
+}
+
+std::string SearchIndexer::semanticTaskKey(const std::string& language,
+                                           const std::string& moduleName) {
+    return language + "\x1f" + moduleName;
+}
+
+bool SearchIndexer::queueSemanticIndex(const std::string& language,
+                                       const std::string& moduleName) {
+    const std::string normalizedLanguage = lowerCopy(trimCopy(language));
+    const std::string normalizedModule = trimCopy(moduleName);
+    if (!semanticSearchService_ || normalizedLanguage.empty() ||
+        normalizedModule.empty() ||
+        semanticSearchService_->indexReady(normalizedLanguage, normalizedModule)) {
+        return false;
+    }
+
+    const std::string key = semanticTaskKey(normalizedLanguage, normalizedModule);
+    {
+        std::lock_guard<std::mutex> lock(statusMutex_);
+        semanticBuildErrors_.erase(key);
+        incompleteSemanticBuilds_.erase(key);
+    }
+    {
+        std::lock_guard<std::mutex> lock(workerMutex_);
+        if (activeSemanticKey_ == key ||
+            std::any_of(pendingSemanticIndexes_.begin(),
+                        pendingSemanticIndexes_.end(),
+                        [&](const SemanticIndexTask& pending) {
+                            return semanticTaskKey(pending.language,
+                                                   pending.moduleName) == key;
+                        })) {
+            return false;
+        }
+        pendingSemanticIndexes_.push_back(
+            SemanticIndexTask{normalizedLanguage, normalizedModule});
+    }
+    workerCv_.notify_one();
+    return true;
+}
+
+void SearchIndexer::cancelSemanticIndexBuild() {
+    semanticUserCancelRequested_.store(true);
+    semanticAbortRequested_.store(true);
+    {
+        std::lock_guard<std::mutex> lock(workerMutex_);
+        pendingSemanticIndexes_.clear();
+        if (!semanticTaskRunning_) semanticIdleCv_.notify_all();
+    }
+    workerCv_.notify_all();
+}
+
+void SearchIndexer::cancelSemanticIndexBuildAndWait() {
+    cancelSemanticIndexBuild();
+    std::unique_lock<std::mutex> lock(workerMutex_);
+    semanticIdleCv_.wait(lock, [this]() {
+        return !semanticTaskRunning_ && pendingSemanticIndexes_.empty();
+    });
+}
+
+bool SearchIndexer::hasSemanticIndexWork() const {
+    std::lock_guard<std::mutex> lock(workerMutex_);
+    return semanticTaskRunning_ || !pendingSemanticIndexes_.empty();
+}
+
+bool SearchIndexer::activeSemanticIndexingTask(std::string& language,
+                                               std::string& moduleName,
+                                               int& percent) const {
+    std::lock_guard<std::mutex> lock(statusMutex_);
+    if (activeSemanticLanguage_.empty() || activeSemanticModule_.empty()) {
+        return false;
+    }
+    language = activeSemanticLanguage_;
+    moduleName = activeSemanticModule_;
+    percent = std::clamp(activeSemanticProgress_, 0, 100);
+    return true;
+}
+
+SearchIndexer::SemanticIndexBuildStatus SearchIndexer::semanticIndexStatus(
+    const std::string& language,
+    const std::string& moduleName) const {
+    SemanticIndexBuildStatus result;
+    result.language = lowerCopy(trimCopy(language));
+    result.moduleName = trimCopy(moduleName);
+    if (result.language.empty() || result.moduleName.empty()) return result;
+    const std::string key = semanticTaskKey(result.language, result.moduleName);
+
+    {
+        std::lock_guard<std::mutex> lock(statusMutex_);
+        if (activeSemanticLanguage_ == result.language &&
+            activeSemanticModule_ == result.moduleName) {
+            result.state = SemanticIndexBuildState::Building;
+            result.percent = std::clamp(activeSemanticProgress_, 0, 100);
+            return result;
+        }
+    }
+    {
+        std::lock_guard<std::mutex> lock(workerMutex_);
+        if (std::any_of(pendingSemanticIndexes_.begin(),
+                        pendingSemanticIndexes_.end(),
+                        [&](const SemanticIndexTask& pending) {
+                            return pending.language == result.language &&
+                                   pending.moduleName == result.moduleName;
+                        })) {
+            result.state = SemanticIndexBuildState::Queued;
+            return result;
+        }
+    }
+    if (semanticSearchService_ &&
+        semanticSearchService_->indexReady(result.language, result.moduleName)) {
+        result.state = SemanticIndexBuildState::Ready;
+        result.percent = 100;
+        return result;
+    }
+    {
+        std::lock_guard<std::mutex> lock(statusMutex_);
+        auto error = semanticBuildErrors_.find(key);
+        if (error != semanticBuildErrors_.end()) {
+            result.state = SemanticIndexBuildState::Error;
+            result.error = error->second;
+            return result;
+        }
+        if (incompleteSemanticBuilds_.count(key) > 0) {
+            result.state = SemanticIndexBuildState::Incomplete;
+            return result;
+        }
+    }
+    if (semanticSearchService_ &&
+        semanticSearchService_->indexCheckpointAvailable(result.language,
+                                                          result.moduleName)) {
+        result.state = SemanticIndexBuildState::Incomplete;
+    }
+    return result;
+}
+
+void SearchIndexer::clearSemanticIndexBuildStatus() {
+    std::lock_guard<std::mutex> lock(statusMutex_);
+    semanticBuildErrors_.clear();
+    incompleteSemanticBuilds_.clear();
 }
 
 void SearchIndexer::synchronizeModules(const std::vector<ModuleInfo>& modules) {
@@ -2407,6 +2547,8 @@ SearchIndexer::ScopedSuspend SearchIndexer::suspendBackgroundIndexing() {
     {
         std::lock_guard<std::mutex> lock(workerMutex_);
         ++suspendDepth_;
+        semanticPauseRequested_.store(true);
+        semanticAbortRequested_.store(true);
     }
     workerCv_.notify_all();
     waitForWorkerIdle();
@@ -2420,6 +2562,7 @@ void SearchIndexer::resumeBackgroundIndexing() {
         if (suspendDepth_ > 0) {
             --suspendDepth_;
             shouldNotify = (suspendDepth_ == 0);
+            if (shouldNotify) semanticPauseRequested_.store(false);
         }
     }
 
@@ -3853,36 +3996,74 @@ std::vector<SearchResult> SearchIndexer::searchSmart(
 void SearchIndexer::workerLoop() {
     while (true) {
         IndexTask task;
-        auto finishTask = [this]() {
+        SemanticIndexTask semanticTask;
+        bool isSemanticTask = false;
+        auto finishTask = [this](bool semanticFinished) {
             {
                 std::lock_guard<std::mutex> lock(workerMutex_);
+                if (semanticFinished) {
+                    semanticTaskRunning_ = false;
+                    activeSemanticKey_.clear();
+                }
                 workerTaskRunning_ = false;
             }
             workerIdleCv_.notify_all();
+            if (semanticFinished) semanticIdleCv_.notify_all();
         };
         {
             std::unique_lock<std::mutex> lock(workerMutex_);
             workerCv_.wait(lock, [this]() {
                 return stopWorker_ ||
-                       (suspendDepth_ == 0 && !pendingModules_.empty());
+                       (suspendDepth_ == 0 &&
+                        (!pendingSemanticIndexes_.empty() ||
+                         !pendingModules_.empty()));
             });
             if (stopWorker_) break;
-            task = pendingModules_.front();
-            pendingModules_.pop_front();
-            auto forceIt = pendingForces_.find(task.moduleName);
-            if (forceIt != pendingForces_.end()) {
-                task.force = task.force || forceIt->second;
-                pendingForces_.erase(forceIt);
+            if (!pendingSemanticIndexes_.empty()) {
+                semanticTask = pendingSemanticIndexes_.front();
+                pendingSemanticIndexes_.pop_front();
+                isSemanticTask = true;
+                semanticTaskRunning_ = true;
+                activeSemanticKey_ = semanticTaskKey(
+                    semanticTask.language, semanticTask.moduleName);
+                semanticAbortRequested_.store(false);
+                semanticUserCancelRequested_.store(false);
+            } else {
+                task = pendingModules_.front();
+                pendingModules_.pop_front();
+                auto forceIt = pendingForces_.find(task.moduleName);
+                if (forceIt != pendingForces_.end()) {
+                    task.force = task.force || forceIt->second;
+                    pendingForces_.erase(forceIt);
+                }
             }
             workerTaskRunning_ = true;
         }
 
+        if (isSemanticTask) {
+            runSemanticIndexTask(semanticTask);
+
+            const bool semanticReady = semanticSearchService_ &&
+                semanticSearchService_->indexReady(
+                    semanticTask.language, semanticTask.moduleName);
+            bool requeue = false;
+            {
+                std::lock_guard<std::mutex> lock(workerMutex_);
+                requeue = semanticPauseRequested_.load() &&
+                          !semanticUserCancelRequested_.load() &&
+                          !stopWorker_ && !semanticReady;
+                if (requeue) pendingSemanticIndexes_.push_front(semanticTask);
+            }
+            finishTask(true);
+            continue;
+        }
+
         if (task.moduleName.empty()) {
-            finishTask();
+            finishTask(false);
             continue;
         }
         if (!task.force && isModuleIndexed(task.moduleName)) {
-            finishTask();
+            finishTask(false);
             continue;
         }
 
@@ -3899,7 +4080,59 @@ void SearchIndexer::workerLoop() {
             activeModule_.clear();
             activeProgress_ = 0;
         }
-        finishTask();
+        finishTask(false);
+    }
+}
+
+void SearchIndexer::runSemanticIndexTask(const SemanticIndexTask& task) {
+    const std::string key = semanticTaskKey(task.language, task.moduleName);
+    {
+        std::lock_guard<std::mutex> lock(statusMutex_);
+        activeSemanticLanguage_ = task.language;
+        activeSemanticModule_ = task.moduleName;
+        activeSemanticProgress_ = 0;
+        semanticBuildErrors_.erase(key);
+        incompleteSemanticBuilds_.erase(key);
+    }
+
+    std::string error;
+    const bool built = buildSemanticIndex(
+        task.language, task.moduleName,
+        [this, &task](size_t completed, size_t total) {
+            const int percent = total == 0
+                                    ? 0
+                                    : static_cast<int>((completed * 100) / total);
+            {
+                std::lock_guard<std::mutex> lock(statusMutex_);
+                if (activeSemanticLanguage_ == task.language &&
+                    activeSemanticModule_ == task.moduleName) {
+                    activeSemanticProgress_ = std::clamp(percent, 0, 100);
+                }
+            }
+            return !stopRequested_.load() &&
+                   !semanticAbortRequested_.load();
+        },
+        &semanticAbortRequested_, error);
+
+    const bool cancelled = semanticAbortRequested_.load() ||
+                           error.find("cancelled") != std::string::npos;
+    {
+        std::lock_guard<std::mutex> lock(statusMutex_);
+        activeSemanticLanguage_.clear();
+        activeSemanticModule_.clear();
+        activeSemanticProgress_ = 0;
+        if (built) {
+            semanticBuildErrors_.erase(key);
+            incompleteSemanticBuilds_.erase(key);
+        } else if (cancelled) {
+            semanticBuildErrors_.erase(key);
+            incompleteSemanticBuilds_.insert(key);
+        } else {
+            semanticBuildErrors_[key] = error.empty()
+                                            ? "Semantic index build failed."
+                                            : error;
+            incompleteSemanticBuilds_.erase(key);
+        }
     }
 }
 
@@ -4414,6 +4647,96 @@ void SearchIndexer::indexModuleNow(const std::string& moduleName) {
                       << topicError << ")\n";
         }
     }
+}
+
+bool SearchIndexer::buildSemanticIndex(
+    const std::string& language,
+    const std::string& moduleName,
+    SemanticProgressCallback progress,
+    std::atomic<bool>* cancel,
+    std::string& errorOut) const {
+    if (!semanticSearchService_) {
+        errorOut = "Semantic search is not initialized.";
+        return false;
+    }
+    if (language.empty() || moduleName.empty()) {
+        errorOut = "Choose a language and reference Bible first.";
+        return false;
+    }
+
+    ModuleCatalogEntry catalogEntry;
+    {
+        std::lock_guard<std::mutex> lock(catalogMutex_);
+        auto it = moduleCatalog_.find(moduleName);
+        if (it == moduleCatalog_.end()) {
+            errorOut = "The selected reference Bible is no longer installed.";
+            return false;
+        }
+        catalogEntry = it->second;
+    }
+    if (catalogEntry.resourceType != "bible") {
+        errorOut = "Semantic indexes can only be built for Bible modules.";
+        return false;
+    }
+
+    CatalogSnapshot catalog;
+    catalog.info = catalogEntry.info;
+    catalog.resourceType = catalogEntry.resourceType;
+    catalog.moduleToken = catalogEntry.moduleToken;
+    catalog.moduleSignature = catalogEntry.signature;
+
+    ModuleScanSource source;
+    if (!prepareModuleScanSource(moduleName, catalog, importedModuleMgr_,
+                                 errorOut, source)) {
+        return false;
+    }
+    if (!source.mod || source.resourceType != "bible") {
+        errorOut = "The selected module is not a readable Bible.";
+        return false;
+    }
+
+    source.mgr->setGlobalOption("Strong's Numbers", "Off");
+    source.mgr->setGlobalOption("Morphological Tags", "Off");
+    source.mgr->setGlobalOption("Footnotes", "Off");
+    source.mgr->setGlobalOption("Cross-references", "Off");
+    source.mgr->setGlobalOption("Headings", "Off");
+
+    std::vector<SemanticPassage> passages;
+    passages.reserve(source.keyedEntries.size());
+    const size_t scanTotal = source.keyedEntries.size();
+    const size_t combinedTotal = scanTotal * 2;
+    for (size_t i = 0; i < source.keyedEntries.size(); ++i) {
+        if ((cancel && cancel->load()) ||
+            (progress && !progress(i, combinedTotal))) {
+            errorOut = "Semantic index build cancelled.";
+            return false;
+        }
+        source.mod->setKey(source.keyedEntries[i].c_str());
+        if (source.mod->popError()) continue;
+        const char* plainRaw = source.mod->stripText();
+        std::string plain = trimCopy(plainRaw ? plainRaw : "");
+        std::string reference = trimCopy(source.mod->getKeyText()
+                                             ? source.mod->getKeyText()
+                                             : "");
+        if (!reference.empty() && !plain.empty()) {
+            passages.push_back({std::move(reference), std::move(plain)});
+        }
+    }
+    if (passages.empty()) {
+        errorOut = "The selected Bible did not provide any verse text.";
+        return false;
+    }
+
+    auto encodeProgress = [&](size_t completed, size_t total) {
+        if (!progress) return true;
+        const size_t scaled = total == 0
+                                  ? scanTotal
+                                  : (completed * scanTotal) / total;
+        return progress(scanTotal + scaled, combinedTotal);
+    };
+    return semanticSearchService_->buildIndex(
+        language, moduleName, source.moduleSignature, passages,
+        encodeProgress, cancel, errorOut);
 }
 
 } // namespace verdad

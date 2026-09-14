@@ -86,6 +86,25 @@ public:
     };
 
     using RegexProgressCallback = std::function<bool(const RegexSearchProgress&)>;
+    using SemanticProgressCallback =
+        std::function<bool(size_t completed, size_t total)>;
+
+    enum class SemanticIndexBuildState {
+        NotBuilt,
+        Queued,
+        Building,
+        Ready,
+        Incomplete,
+        Error
+    };
+
+    struct SemanticIndexBuildStatus {
+        SemanticIndexBuildState state = SemanticIndexBuildState::NotBuilt;
+        std::string language;
+        std::string moduleName;
+        int percent = 0;
+        std::string error;
+    };
 
     enum class SnippetKind {
         Word,
@@ -144,6 +163,32 @@ public:
     /// Get currently active indexing task.
     /// Returns true if a module is actively indexing.
     bool activeIndexingTask(std::string& moduleName, int& percent) const;
+
+    /// Queue a semantic Bible index on the persistent background worker.
+    /// Returns false when the request is invalid or the index is already ready.
+    bool queueSemanticIndex(const std::string& language,
+                            const std::string& moduleName);
+
+    /// Cancel the active semantic build and discard queued semantic builds.
+    /// A completed-book checkpoint is retained for a later resume.
+    void cancelSemanticIndexBuild();
+    void cancelSemanticIndexBuildAndWait();
+
+    /// True while a semantic build is active or waiting in the queue.
+    bool hasSemanticIndexWork() const;
+
+    /// Return the active semantic build and its current percentage.
+    bool activeSemanticIndexingTask(std::string& language,
+                                    std::string& moduleName,
+                                    int& percent) const;
+
+    /// Return an accurate ready/queued/building/incomplete/error state.
+    SemanticIndexBuildStatus semanticIndexStatus(
+        const std::string& language,
+        const std::string& moduleName) const;
+
+    /// Clear transient semantic build results after removing/replacing a pack.
+    void clearSemanticIndexBuildStatus();
 
     /// Return the last indexing error for a module, if any.
     std::string moduleIndexError(const std::string& moduleName) const;
@@ -213,10 +258,24 @@ public:
     /// Return indexed dictionary keys for fast dropdown filtering.
     std::vector<std::string> dictionaryKeys(const std::string& moduleName) const;
 
+    /// Build or resume the semantic vector index for one installed Bible.
+    /// Passage text is read directly from an isolated SWORD manager and is not
+    /// added to module_index.db.
+    bool buildSemanticIndex(const std::string& language,
+                            const std::string& moduleName,
+                            SemanticProgressCallback progress,
+                            std::atomic<bool>* cancel,
+                            std::string& errorOut) const;
+
 private:
     struct IndexTask {
         std::string moduleName;
         bool force = false;
+    };
+
+    struct SemanticIndexTask {
+        std::string language;
+        std::string moduleName;
     };
 
     struct ModuleCatalogEntry {
@@ -235,8 +294,11 @@ private:
 
     void workerLoop();
     void indexModuleNow(const std::string& moduleName);
+    void runSemanticIndexTask(const SemanticIndexTask& task);
     void resumeBackgroundIndexing();
     void waitForWorkerIdle();
+    static std::string semanticTaskKey(const std::string& language,
+                                       const std::string& moduleName);
     std::vector<std::string> requestModules(const SearchRequest& request) const;
     std::vector<SearchResult> searchDirectInternal(
         const SearchRequest& request,
@@ -278,13 +340,20 @@ private:
     mutable std::mutex workerMutex_;
     std::condition_variable workerCv_;
     std::condition_variable workerIdleCv_;
+    std::condition_variable semanticIdleCv_;
     std::deque<IndexTask> pendingModules_;
+    std::deque<SemanticIndexTask> pendingSemanticIndexes_;
     std::unordered_map<std::string, bool> pendingForces_;
     int suspendDepth_ = 0;
     bool workerTaskRunning_ = false;
+    bool semanticTaskRunning_ = false;
+    std::string activeSemanticKey_;
 
     std::atomic<bool> indexing_{false};
     std::atomic<bool> stopRequested_{false};
+    std::atomic<bool> semanticAbortRequested_{false};
+    std::atomic<bool> semanticUserCancelRequested_{false};
+    std::atomic<bool> semanticPauseRequested_{false};
     bool stopWorker_ = false;
 
     mutable std::mutex catalogMutex_;
@@ -293,6 +362,11 @@ private:
     mutable std::mutex statusMutex_;
     std::string activeModule_;
     int activeProgress_ = 0;
+    std::string activeSemanticLanguage_;
+    std::string activeSemanticModule_;
+    int activeSemanticProgress_ = 0;
+    std::unordered_map<std::string, std::string> semanticBuildErrors_;
+    std::unordered_set<std::string> incompleteSemanticBuilds_;
 };
 
 } // namespace verdad

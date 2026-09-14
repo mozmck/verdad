@@ -56,6 +56,66 @@ public:
 };
 
 void run(const std::filesystem::path& dir) {
+#ifdef VERDAD_FAKE_SEMANTIC_WORKER_PATH
+    const auto workerPack = dir / "worker-protocol-pack";
+    std::filesystem::create_directories(workerPack / "bin");
+    std::filesystem::create_directories(workerPack / "model");
+    std::filesystem::copy_file(
+        VERDAD_FAKE_SEMANTIC_WORKER_PATH,
+        workerPack / "bin" / "verdad-fake-semantic-worker");
+    {
+        std::ofstream(workerPack / "model" / "model.onnx") << "m";
+        std::ofstream(workerPack / "model" / "tokenizer.json") << "t";
+    }
+    verdad::SemanticPackManifest workerManifest;
+    workerManifest.formatVersion = 1;
+    workerManifest.modelId = "intfloat/multilingual-e5-small";
+    workerManifest.modelRevision = "worker-fixture-v1";
+    workerManifest.dimensions = 384;
+    workerManifest.workerPath = "bin/verdad-fake-semantic-worker";
+    workerManifest.modelPath = "model/model.onnx";
+    workerManifest.tokenizerPath = "model/tokenizer.json";
+    verdad::WorkerSemanticEncoder processEncoder(workerPack.string(), workerManifest);
+    require(processEncoder.available(),
+            "start framed semantic worker: " + processEncoder.startupError());
+    std::vector<std::int8_t> processQuery;
+    std::string processError;
+    require(processEncoder.encodeQuery("query: mercy", processQuery, processError) &&
+                processQuery.size() == 384,
+            "encode query through worker process: " + processError);
+    std::vector<std::vector<std::int8_t>> processPassages;
+    require(processEncoder.encodePassages(
+                {"passage: mercy and truth", "passage: rain"},
+                processPassages, processError) && processPassages.size() == 2 &&
+                processPassages.front().size() == 384,
+            "batch passages through worker process: " + processError);
+
+    const auto productionRoot = dir / "production-semantic";
+    std::filesystem::create_directories(productionRoot / "pack");
+    std::filesystem::copy(
+        VERDAD_FAKE_SEMANTIC_PACK_PATH,
+        productionRoot / "pack" / "active",
+        std::filesystem::copy_options::recursive);
+    verdad::SemanticSearchService productionSemantic(productionRoot.string());
+    productionSemantic.setEnabled(true);
+    require(productionSemantic.state() == verdad::SemanticPackState::Ready &&
+                productionSemantic.available(),
+            "verified installed pack automatically activates its worker: " +
+                productionSemantic.statusMessage());
+    std::string productionError;
+    require(productionSemantic.buildIndex(
+                "en", "PACKTEST", "pack-fixture-v1",
+                {{"Genesis 1:1", "faith hope promise"},
+                 {"Genesis 1:2", "rain water clouds"}},
+                {}, nullptr, productionError),
+            "installed worker builds an index: " + productionError);
+    const auto productionHits = productionSemantic.search(
+        "en", "PACKTEST", "faith hope", 1);
+    require(!productionHits.empty() &&
+                productionHits.front().reference == "Genesis 1:1",
+            "installed worker index participates in semantic retrieval");
+#endif
+
     verdad::SemanticSearchService semantic((dir / "semantic").string());
     require(semantic.state() == verdad::SemanticPackState::NotInstalled,
             "semantic search starts as an optional, absent pack");
@@ -112,19 +172,28 @@ void run(const std::filesystem::path& dir) {
 
     const auto packSource = dir / "semantic-pack-source";
     std::filesystem::create_directories(packSource / "bin");
+    std::filesystem::create_directories(packSource / "model");
     {
         std::ofstream worker(packSource / "bin" / "verdad-semantic-worker",
                              std::ios::binary);
         worker << "abc";
+        std::ofstream(packSource / "model" / "model.onnx", std::ios::binary) << "m";
+        std::ofstream(packSource / "model" / "tokenizer.json", std::ios::binary) << "t";
         std::ofstream manifest(packSource / "manifest.conf");
         manifest << "format_version=1\n"
                     "model_id=intfloat/multilingual-e5-small\n"
                     "model_revision=test-revision\n"
                     "dimensions=384\n"
                     "worker=bin/verdad-semantic-worker\n"
+                    "model=model/model.onnx\n"
+                    "tokenizer=model/tokenizer.json\n"
                     "expected_download_bytes=3\n"
                     "file=bin/verdad-semantic-worker|3|"
-                    "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad\n";
+                    "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad\n"
+                    "file=model/model.onnx|1|"
+                    "62c66a7a5dd70c3146618063c344e531e6d4b59e379808443ce962b3abd63c5a\n"
+                    "file=model/tokenizer.json|1|"
+                    "e3b98a4da31a127d4bde6e43033f66ba274cab0eb7eb1c70ec41402bf6273dd8\n";
     }
     verdad::SemanticPackManager packManager((dir / "pack-manager").string());
     std::string packError;
@@ -179,6 +248,9 @@ void run(const std::filesystem::path& dir) {
                 [](size_t completed, size_t) { return completed < 2; },
                 nullptr, semanticError),
             "semantic build can be cancelled at a book checkpoint");
+    require(resumedSemantic.indexCheckpointAvailable("en", "TEST") &&
+                !resumedSemantic.indexReady("en", "TEST"),
+            "a checkpoint is reported as incomplete rather than ready");
     size_t resumedAt = 0;
     bool firstProgress = true;
     semanticError.clear();
@@ -193,6 +265,9 @@ void run(const std::filesystem::path& dir) {
                 }, nullptr, semanticError) && resumedAt == 2,
             "semantic index generation resumes from the last completed book: " +
                 semanticError);
+    require(resumedSemantic.indexReady("en", "TEST") &&
+                !resumedSemantic.indexCheckpointAvailable("en", "TEST"),
+            "only the completed active vector file is reported as ready");
 
     verdad::TopicSearchProvider topics((dir / "topic_index.db").string());
     std::vector<verdad::TopicDocument> topicDocuments;
@@ -254,6 +329,37 @@ void run(const std::filesystem::path& dir) {
         std::this_thread::sleep_for(std::chrono::milliseconds(10));
     }
     require(indexer.isModuleIndexed(module), "index fixture: " + indexer.moduleIndexError(module));
+
+    verdad::SemanticSearchService backgroundSemantic(
+        (dir / "background-semantic").string());
+    backgroundSemantic.setEncoder(
+        std::make_shared<verdad::DeterministicSemanticEncoder>(32));
+    indexer.setSemanticSearchService(&backgroundSemantic);
+    const auto queueStarted = std::chrono::steady_clock::now();
+    require(indexer.queueSemanticIndex("en", module),
+            "queue semantic indexing on the persistent background worker");
+    require(std::chrono::steady_clock::now() - queueStarted <
+                std::chrono::milliseconds(250),
+            "queueing semantic indexing must not perform the build synchronously");
+    auto semanticStatus = indexer.semanticIndexStatus("en", module);
+    const auto semanticDeadline =
+        std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (semanticStatus.state !=
+               verdad::SearchIndexer::SemanticIndexBuildState::Error &&
+           std::chrono::steady_clock::now() < semanticDeadline) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        semanticStatus = indexer.semanticIndexStatus("en", module);
+    }
+    require(semanticStatus.state ==
+                verdad::SearchIndexer::SemanticIndexBuildState::Error &&
+                semanticStatus.error.find("Bible") != std::string::npos &&
+                !indexer.hasSemanticIndexWork(),
+            "background semantic failures expose a durable error state");
+    indexer.clearSemanticIndexBuildStatus();
+    require(indexer.semanticIndexStatus("en", module).state ==
+                verdad::SearchIndexer::SemanticIndexBuildState::NotBuilt,
+            "clearing a removed pack also clears transient semantic errors");
+    indexer.setSemanticSearchService(nullptr);
 
     expect(indexer.searchWord(request, "rail*"), prefixes, "indexed prefix");
     expect(indexer.searchWord(request, "RAIL*,"), prefixes, "case and punctuation");
