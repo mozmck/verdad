@@ -1,4 +1,5 @@
 #include "search/SemanticSearch.h"
+#include "app/PerfTrace.h"
 
 #include <algorithm>
 #include <array>
@@ -301,8 +302,12 @@ bool loadManifest(const fs::path& path,
     return true;
 }
 
+// With verifyContents=false only paths, file types, and sizes are checked.
+// That is cheap enough for startup; the full SHA-256 pass (~240 MB) runs when a
+// pack is installed or explicitly reloaded.
 bool verifyManifestFiles(const fs::path& root,
                          const std::vector<ManifestFile>& files,
+                         bool verifyContents,
                          std::string& errorOut) {
     for (const auto& file : files) {
         if (!safeRelativePath(file.path)) {
@@ -323,7 +328,7 @@ bool verifyManifestFiles(const fs::path& root,
         if (symlinked ||
             !fs::is_regular_file(candidate, ec) || ec ||
             fs::file_size(candidate, ec) != file.bytes || ec ||
-            sha256File(candidate) != file.sha256) {
+            (verifyContents && sha256File(candidate) != file.sha256)) {
             errorOut = "Semantic pack verification failed for " + file.path.string() + ".";
             return false;
         }
@@ -421,16 +426,30 @@ bool DeterministicSemanticEncoder::encodePassages(
 
 class WorkerSemanticEncoder::Impl {
 public:
-    Impl(std::string packDirectory, SemanticPackManifest manifest)
+    Impl(std::string packDirectory, SemanticPackManifest manifest, bool startNow)
         : packDirectory_(std::move(packDirectory)), manifest_(std::move(manifest)) {
-        start();
+        if (startNow) {
+            startAttempted_ = true;
+            start();
+        } else {
+            // The Hello handshake later verifies the worker against these.
+            modelId_ = manifest_.modelId;
+            modelRevision_ = manifest_.modelRevision;
+            dimensions_ = manifest_.dimensions;
+        }
     }
 
     ~Impl() { stop(); }
 
+    // A deferred worker counts as available until a launch attempt fails.
     bool available() const {
         std::lock_guard<std::mutex> lock(mutex_);
-        return ready_;
+        return ready_ || !startAttempted_;
+    }
+
+    void warmUp() {
+        std::lock_guard<std::mutex> lock(mutex_);
+        startIfNeededUnlocked();
     }
 
     std::string modelId() const {
@@ -459,6 +478,7 @@ public:
                 std::string& errorOut) {
         std::lock_guard<std::mutex> lock(mutex_);
         vectorsOut.clear();
+        startIfNeededUnlocked();
         if (!ready_) {
             errorOut = startupError_.empty()
                            ? "The semantic worker is not running."
@@ -474,6 +494,13 @@ public:
     }
 
 private:
+    void startIfNeededUnlocked() {
+        if (startAttempted_) return;
+        startAttempted_ = true;
+        perf::ScopeTimer timer("WorkerSemanticEncoder start");
+        start();
+    }
+
 #if defined(_WIN32)
     void start() {
         startupError_ =
@@ -750,6 +777,7 @@ private:
     SemanticPackManifest manifest_;
     mutable std::mutex mutex_;
     bool ready_ = false;
+    bool startAttempted_ = false;
     std::string startupError_;
     std::string modelId_;
     std::string modelRevision_;
@@ -758,8 +786,10 @@ private:
 
 WorkerSemanticEncoder::WorkerSemanticEncoder(
     std::string packDirectory,
-    SemanticPackManifest manifest)
-    : impl_(std::make_unique<Impl>(std::move(packDirectory), std::move(manifest))) {}
+    SemanticPackManifest manifest,
+    bool startNow)
+    : impl_(std::make_unique<Impl>(std::move(packDirectory), std::move(manifest),
+                                   startNow)) {}
 
 WorkerSemanticEncoder::~WorkerSemanticEncoder() = default;
 
@@ -772,6 +802,7 @@ int WorkerSemanticEncoder::dimensions() const { return impl_->dimensions(); }
 std::string WorkerSemanticEncoder::startupError() const {
     return impl_->startupError();
 }
+void WorkerSemanticEncoder::warmUp() { impl_->warmUp(); }
 
 bool WorkerSemanticEncoder::encodeQuery(
     const std::string& text,
@@ -803,6 +834,11 @@ RestartingSemanticEncoder::RestartingSemanticEncoder(
         modelRevision_ = backend_->modelRevision();
         dimensions_ = backend_->dimensions();
     }
+}
+
+void RestartingSemanticEncoder::warmUp() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (!disabled_ && backend_) backend_->warmUp();
 }
 
 bool RestartingSemanticEncoder::available() const {
@@ -1046,7 +1082,7 @@ std::vector<std::vector<std::int8_t>> SemanticVectorIndex::vectors() const {
 
 SemanticPackManager::SemanticPackManager(std::string rootDirectory)
     : rootDirectory_(std::move(rootDirectory)) {
-    refresh();
+    refresh(false);
 }
 
 SemanticPackState SemanticPackManager::state() const {
@@ -1072,14 +1108,14 @@ std::uint64_t SemanticPackManager::installedBytes() const {
     return directoryBytes(activePackDirectory());
 }
 
-void SemanticPackManager::refresh() {
+void SemanticPackManager::refresh(bool verifyContents) {
     SemanticPackManifest manifest;
     std::vector<ManifestFile> files;
     std::string error;
     const fs::path active(activePackDirectory());
     const bool present = fs::exists(active / "manifest.conf");
     const bool ok = present && loadManifest(active / "manifest.conf", manifest, files, error) &&
-                    verifyManifestFiles(active, files, error);
+                    verifyManifestFiles(active, files, verifyContents, error);
     std::lock_guard<std::mutex> lock(mutex_);
     if (!present) {
         state_ = SemanticPackState::NotInstalled;
@@ -1103,7 +1139,7 @@ bool SemanticPackManager::installFromDirectory(
     SemanticPackManifest manifest;
     std::vector<ManifestFile> files;
     if (!loadManifest(source / "manifest.conf", manifest, files, errorOut)) return false;
-    if (!verifyManifestFiles(source, files, errorOut)) return false;
+    if (!verifyManifestFiles(source, files, true, errorOut)) return false;
 
     fs::path packRoot = fs::path(rootDirectory_) / "pack";
     fs::path staging = packRoot / "staging";
@@ -1178,8 +1214,14 @@ bool SemanticPackManager::remove(std::string& errorOut) {
 
 SemanticSearchService::SemanticSearchService(std::string rootDirectory)
     : rootDirectory_(std::move(rootDirectory)), packManager_(rootDirectory_) {
+    // The pack manager has already done a quick check.  Defer hashing and the
+    // worker process (~1 s and several hundred MB) until semantic search is used.
     std::string ignored;
-    reloadInstalledPack(ignored);
+    activatePack(false, ignored);
+}
+
+SemanticSearchService::~SemanticSearchService() {
+    if (warmUpThread_.joinable()) warmUpThread_.join();
 }
 
 SemanticPackState SemanticSearchService::state() const {
@@ -1241,7 +1283,11 @@ void SemanticSearchService::setEncoder(std::shared_ptr<SemanticEncoder> encoder)
 }
 
 bool SemanticSearchService::reloadInstalledPack(std::string& errorOut) {
-    packManager_.refresh();
+    packManager_.refresh(true);
+    return activatePack(true, errorOut);
+}
+
+bool SemanticSearchService::activatePack(bool startWorker, std::string& errorOut) {
     if (packManager_.state() != SemanticPackState::Ready) {
         std::lock_guard<std::mutex> lock(mutex_);
         encoder_.reset();
@@ -1260,10 +1306,10 @@ bool SemanticSearchService::reloadInstalledPack(std::string& errorOut) {
     auto createWorker = [packDirectory, manifest]() -> std::shared_ptr<SemanticEncoder> {
         return std::make_shared<WorkerSemanticEncoder>(packDirectory, manifest);
     };
-    auto initial = std::dynamic_pointer_cast<WorkerSemanticEncoder>(createWorker());
-    if (!initial || !initial->available()) {
-        errorOut = initial ? initial->startupError()
-                           : "Unable to create the semantic worker.";
+    auto initial = std::make_shared<WorkerSemanticEncoder>(
+        packDirectory, manifest, startWorker);
+    if (!initial->available()) {
+        errorOut = initial->startupError();
         if (errorOut.empty()) errorOut = "The semantic worker failed to start.";
         std::lock_guard<std::mutex> lock(mutex_);
         encoder_.reset();
@@ -1286,6 +1332,12 @@ bool SemanticSearchService::reloadInstalledPack(std::string& errorOut) {
     }
     errorOut.clear();
     return true;
+}
+
+void SemanticSearchService::warmUpAsync() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (!enabled_ || !encoder_ || warmUpThread_.joinable()) return;
+    warmUpThread_ = std::thread([encoder = encoder_]() { encoder->warmUp(); });
 }
 
 void SemanticSearchService::deactivatePack() {

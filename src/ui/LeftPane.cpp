@@ -8,6 +8,7 @@
 #include "ui/BiblePane.h"
 #include "ui/StyledTabs.h"
 #include "sword/SwordManager.h"
+#include "search/SemanticSearch.h"
 
 #include <FL/Fl.H>
 #include <FL/fl_ask.H>
@@ -19,6 +20,28 @@
 namespace verdad {
 
 namespace {
+
+/// Search input that starts the deferred semantic worker as soon as the user
+/// begins a search, so the model loads while they type instead of at startup.
+class SearchInput : public Fl_Input {
+public:
+    SearchInput(VerdadApp* app, int X, int Y, int W, int H)
+        : Fl_Input(X, Y, W, H), app_(app) {}
+
+    int handle(int event) override {
+        // FL_FOCUS alone is not a user action: the window focuses this input on show.
+        if ((event == FL_PUSH || event == FL_KEYBOARD) && app_ &&
+            app_->searchSettings().assistanceMode == SearchAssistanceMode::Smart) {
+            if (SemanticSearchService* semantic = app_->semanticSearch()) {
+                semantic->warmUpAsync();
+            }
+        }
+        return Fl_Input::handle(event);
+    }
+
+private:
+    VerdadApp* app_;
+};
 
 void layoutTabPanels(Fl_Tabs* tabs,
                      ModulePanel* modulePanel,
@@ -118,7 +141,7 @@ LeftPane::LeftPane(VerdadApp* app, int X, int Y, int W, int H)
                                 W - 2 * padding, searchH);
     searchGroup_->begin();
 
-    searchInput_ = new Fl_Input(X + padding, Y + padding,
+    searchInput_ = new SearchInput(app_, X + padding, Y + padding,
                                  W - 2 * padding - buttonW - 2, searchH);
     searchInput_->box(FL_DOWN_BOX);
     searchInput_->color(FL_BACKGROUND2_COLOR);

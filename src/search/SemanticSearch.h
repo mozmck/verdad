@@ -7,6 +7,7 @@
 #include <memory>
 #include <mutex>
 #include <string>
+#include <thread>
 #include <unordered_map>
 #include <vector>
 
@@ -50,6 +51,8 @@ public:
     virtual std::string modelId() const = 0;
     virtual std::string modelRevision() const = 0;
     virtual int dimensions() const = 0;
+    /// Start any lazily launched backend so a later request does not wait.
+    virtual void warmUp() {}
     virtual bool encodeQuery(const std::string& text,
                              std::vector<std::int8_t>& vectorOut,
                              std::string& errorOut) = 0;
@@ -82,11 +85,13 @@ private:
 
 /// Persistent local worker client used by installed production packs.  The
 /// worker owns ONNX Runtime and the model tokenizer; Verdad only exchanges framed
-/// UTF-8 requests and normalized int8 vectors with it.
+/// UTF-8 requests and normalized int8 vectors with it.  With startNow=false the
+/// process is launched on first use (or warmUp()) instead of in the constructor.
 class WorkerSemanticEncoder final : public SemanticEncoder {
 public:
     WorkerSemanticEncoder(std::string packDirectory,
-                          SemanticPackManifest manifest);
+                          SemanticPackManifest manifest,
+                          bool startNow = true);
     ~WorkerSemanticEncoder() override;
 
     WorkerSemanticEncoder(const WorkerSemanticEncoder&) = delete;
@@ -96,6 +101,7 @@ public:
     std::string modelId() const override;
     std::string modelRevision() const override;
     int dimensions() const override;
+    void warmUp() override;
     bool encodeQuery(const std::string& text,
                      std::vector<std::int8_t>& vectorOut,
                      std::string& errorOut) override;
@@ -124,6 +130,7 @@ public:
     std::string modelId() const override;
     std::string modelRevision() const override;
     int dimensions() const override;
+    void warmUp() override;
     bool encodeQuery(const std::string& text,
                      std::vector<std::int8_t>& vectorOut,
                      std::string& errorOut) override;
@@ -191,7 +198,8 @@ public:
     bool installFromDirectory(const std::string& sourceDirectory,
                               std::string& errorOut);
     bool remove(std::string& errorOut);
-    void refresh();
+    /// verifyContents=false skips the SHA-256 pass and only checks paths/sizes.
+    void refresh(bool verifyContents = true);
 
 private:
     std::string rootDirectory_;
@@ -206,6 +214,10 @@ public:
     using ProgressCallback = std::function<bool(size_t completed, size_t total)>;
 
     explicit SemanticSearchService(std::string rootDirectory);
+    ~SemanticSearchService();
+
+    SemanticSearchService(const SemanticSearchService&) = delete;
+    SemanticSearchService& operator=(const SemanticSearchService&) = delete;
 
     SemanticPackManager& packManager() { return packManager_; }
     const SemanticPackManager& packManager() const { return packManager_; }
@@ -228,6 +240,10 @@ public:
     bool reloadInstalledPack(std::string& errorOut);
     void deactivatePack();
 
+    /// Launch the deferred worker on a background thread when semantic search
+    /// is enabled, so the first query does not pay the model load on the UI.
+    void warmUpAsync();
+
     bool buildIndex(const std::string& language,
                     const std::string& moduleName,
                     const std::string& moduleSignature,
@@ -247,6 +263,7 @@ public:
                                   const std::string& moduleName) const;
 
 private:
+    bool activatePack(bool startWorker, std::string& errorOut);
     std::string indexPath(const std::string& language,
                           const std::string& moduleName) const;
     std::shared_ptr<SemanticVectorIndex> loadIndex(
@@ -264,6 +281,7 @@ private:
     bool enabled_ = false;
     std::unordered_map<std::string, std::string> referenceModules_;
     std::unordered_map<std::string, std::string> moduleSignatures_;
+    std::thread warmUpThread_;
 };
 
 } // namespace verdad

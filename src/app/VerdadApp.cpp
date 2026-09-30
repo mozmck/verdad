@@ -1,5 +1,6 @@
 #include "app/VerdadApp.h"
 #include "app/PlatformPaths.h"
+#include "app/PerfTrace.h"
 #include "import/ImportedModuleManager.h"
 #include "reading/ReadingPlanManager.h"
 #include "sword/SwordManager.h"
@@ -748,11 +749,18 @@ VerdadApp::~VerdadApp() {
 bool VerdadApp::initialize(int argc, char* argv[]) {
     (void)argc;
     (void)argv;
+    perf::ScopeTimer timer("VerdadApp::initialize");
+    perf::StepTimer step;
+    auto logStep = [&step](const char* label) {
+        perf::logf("VerdadApp::initialize %s: %.3f ms", label, step.elapsedMs());
+        step.reset();
+    };
 
     // Ensure config directory exists
     ensureConfigDir();
     loadUserDataDirPreference();
     ensureUserDataDir();
+    logStep("config dirs");
 
     // Initialize SWORD
     if (!swordMgr_->initialize()) {
@@ -760,33 +768,43 @@ bool VerdadApp::initialize(int argc, char* argv[]) {
                  "Please ensure SWORD modules are installed.");
         // Continue anyway - app can still run without modules
     }
+    logStep("swordMgr_->initialize");
 
     // Load tags from the SQLite tag database.
     tagMgr_->load(joinPath(getUserDataDir(), "tags.db"));
+    logStep("tagMgr_->load");
     readingPlanMgr_->load(joinPath(getUserDataDir(), "reading_plans.db"));
+    logStep("readingPlanMgr_->load");
     importedModuleMgr_->load(joinPath(getConfigDir(), "imports.db"),
                              joinPath(getConfigDir(), "imports"));
+    logStep("importedModuleMgr_->load");
     swordMgr_->setImportedModuleManager(importedModuleMgr_.get());
     refreshModuleLanguageCache();
+    logStep("refreshModuleLanguageCache");
 
     // Initialize FTS5 index database (separate from tags/settings data).
     searchIndexer_ = std::make_unique<SearchIndexer>(
         joinPath(getConfigDir(), "module_index.db"),
         importedModuleMgr_.get());
+    logStep("SearchIndexer");
     semanticSearch_ = std::make_unique<SemanticSearchService>(
         joinPath(getConfigDir(), "semantic_search"));
     searchIndexer_->setSemanticSearchService(semanticSearch_.get());
+    logStep("SemanticSearchService");
 
     // Set up FLTK
     applyThemePalette(appearanceSettings_.themeMode);
     Fl_File_Icon::load_system_icons();
     Fl::set_fonts("-*");
+    logStep("FLTK setup");
 
     // Create main window
     mainWindow_ = std::make_unique<MainWindow>(this, 1200, 800, "Verdad Bible Study");
+    logStep("MainWindow");
 
     // Load user preferences
     bool loadedPreferences = loadPreferences();
+    logStep("loadPreferences");
 
     // Enumerate system fonts lazily when the settings dialog needs them.
     if (!loadedPreferences) {
@@ -810,6 +828,7 @@ int VerdadApp::run() {
         auto* app = static_cast<VerdadApp*>(data);
         if (!app) return;
 
+        perf::ScopeTimer timer("VerdadApp::run deferred refreshSearchIndexCatalog");
         app->refreshSearchIndexCatalog(true);
 
         MainWindow* window = app->mainWindow();
