@@ -207,6 +207,10 @@ private:
     std::vector<std::string> parallelModules_;
     std::vector<ParallelHeaderColumn> parallelHeaderColumns_;
 
+    // Hidden chooser opened from the module names in interlinear view.
+    Fl_Choice* interlinearModuleChoice_ = nullptr;
+    int interlinearChoiceIndex_ = -1;
+
     // Display mode: false = verse-per-line (default), true = paragraph style
     bool paragraphMode_ = false;
 
@@ -219,13 +223,19 @@ private:
     void syncVerseSelectionInPlace(int oldVerse, int newVerse);
     void ensureCurrentVerseSelectionStyle();
     void normalizeParallelModules();
+    void placeParallelModuleAt(int index, const std::string& module);
+    void seedParallelCompanions();
+    void syncMainModuleFromParallel();
     std::vector<std::string> effectiveInterlinearModules() const;
+    void showInterlinearModuleChooser(int index);
     void syncParallelHeader();
     void clearParallelHeader();
     void layoutParallelHeader();
     void populateParallelChoice(Fl_Choice* choice);
     void applyModuleChoiceValue(Fl_Choice* choice, const std::string& module) const;
     int parallelColumnIndexForWidget(Fl_Widget* w) const;
+    bool canAddParallelModule() const;
+    void syncParallelAddButton();
     void addParallelModule();
     void removeParallelModuleAt(int index);
     void setParallelModuleAt(int index, const std::string& module);
@@ -268,6 +278,7 @@ private:
     static void onParallelAdd(Fl_Widget* w, void* data);
     static void onParallelRemove(Fl_Widget* w, void* data);
     static void onParallelModuleChange(Fl_Widget* w, void* data);
+    static void onInterlinearModuleChoice(Fl_Widget* w, void* data);
     static void onDailyReadingComplete(Fl_Widget* w, void* data);
     static void onDailyReadingPlanButton(Fl_Widget* w, void* data);
 

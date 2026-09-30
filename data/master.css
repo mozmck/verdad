@@ -324,6 +324,15 @@ span.interlinear-module {
     color: #666;
 }
 
+a.interlinear-module-link {
+    color: #666;
+    text-decoration: none;
+}
+
+a.interlinear-module-link:hover {
+    text-decoration: underline;
+}
+
 span.interlinear-text {
     display: table-cell;
     vertical-align: top;

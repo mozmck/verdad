@@ -1134,8 +1134,10 @@ bool VerdadApp::applyPreferencesMap(const PreferenceMap& prefs,
         importedBible.defaultParallelModules =
             splitCsv(lookup("default_parallel_modules"));
     }
-    if (prefs.find("interlinear_modules") != prefs.end()) {
-        importedBible.interlinearModules =
+    if (importedBible.defaultParallelModules.empty() &&
+        prefs.find("interlinear_modules") != prefs.end()) {
+        // Older builds kept separate interlinear defaults.
+        importedBible.defaultParallelModules =
             splitCsv(lookup("interlinear_modules"));
     }
 
@@ -1310,8 +1312,6 @@ void VerdadApp::savePreferences() {
         file << "show_cross_reference_markers=" << (optionDisplaySettings_.showCrossReferenceMarkers ? 1 : 0) << "\n";
         file << "default_parallel_modules="
              << joinCsv(bibleSettings_.defaultParallelModules) << "\n";
-        file << "interlinear_modules="
-             << joinCsv(bibleSettings_.interlinearModules) << "\n";
         const int searchModeLevel = static_cast<int>(searchSettings_.assistanceMode);
         file << "search_assistance_mode="
              << searchAssistanceModeToken(searchSettings_.assistanceMode) << "\n";
@@ -1592,9 +1592,6 @@ void VerdadApp::setBibleSettings(const BibleSettings& settings) {
     bibleSettings_.defaultParallelModules = normalizeModules(
         settings.defaultParallelModules,
         BibleSettings::kMaxDefaultParallelCompanions);
-    bibleSettings_.interlinearModules = normalizeModules(
-        settings.interlinearModules,
-        BibleSettings::kMaxInterlinearCompanions);
 
     if (mainWindow_) {
         mainWindow_->applyBibleSettings();
@@ -1939,6 +1936,7 @@ std::string VerdadApp::textStyleOverrideCss() const {
             << "  border-bottom-color: " << cssHex(palette.border) << " !important;\n"
             << "}\n"
             << "span.interlinear-module,\n"
+            << "a.interlinear-module-link,\n"
             << "i.interlinear-missing {\n"
             << "  color: " << cssHex(palette.mutedForeground) << " !important;\n"
             << "}\n"

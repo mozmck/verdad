@@ -3689,7 +3689,7 @@ void MainWindow::onViewSettings(Fl_Widget* /*w*/, void* data) {
     constexpr int spinnerW = 90;
 
     int appearanceRowCount = 8;
-    int bibleRowCount = 7;
+    int bibleRowCount = 8;
     int dictionaryRowCount = 7 + static_cast<int>(languageCodes.size());
     int searchRowCount = 15;
     int editorRowCount = 2;
@@ -3804,99 +3804,49 @@ void MainWindow::onViewSettings(Fl_Widget* /*w*/, void* data) {
     rowY = groupY + groupPadY;
     auto* bibleHelp = new Fl_Box(
         labelX, rowY, groupW - (groupPadX * 2), 24,
-        "The current Bible stays first; choose companion modules below.");
+        "The toolbar Bible stays first; companions are added in this order.");
     bibleHelp->align(FL_ALIGN_LEFT | FL_ALIGN_INSIDE);
     rowY += rowStep;
 
-    auto* defaultParallelLabel = new Fl_Box(
-        labelX, rowY, labelW, 24, "Default parallel:");
-    defaultParallelLabel->align(FL_ALIGN_LEFT | FL_ALIGN_INSIDE);
-    auto* defaultParallelBrowser = new Fl_Check_Browser(
-        fieldX, rowY, fieldW, (rowStep * 3) - 8);
-    defaultParallelBrowser->tooltip(
-        "Select up to six defaults. Parallel view supports seven columns including the main Bible.");
-    for (size_t i = 0; i < bibleModules.size(); ++i) {
-        const bool selected =
-            std::find(currentBible.defaultParallelModules.begin(),
-                      currentBible.defaultParallelModules.end(),
-                      bibleModules[i].name) !=
-            currentBible.defaultParallelModules.end();
-        defaultParallelBrowser->add(
-            module_choice::formatLabel(bibleModules[i]).c_str(), selected ? 1 : 0);
+    std::vector<std::string> parallelChoiceModules;
+    parallelChoiceModules.reserve(bibleModules.size() + 1);
+    parallelChoiceModules.push_back("");
+    for (const auto& module : bibleModules) {
+        parallelChoiceModules.push_back(module.name);
     }
 
-    struct LimitedBrowserState {
-        Fl_Check_Browser* browser = nullptr;
-        int maximum = 0;
-    };
-    LimitedBrowserState parallelBrowserState{
-        defaultParallelBrowser,
-        static_cast<int>(VerdadApp::BibleSettings::kMaxDefaultParallelCompanions)};
-    defaultParallelBrowser->when(FL_WHEN_CHANGED);
-    defaultParallelBrowser->callback(
-        [](Fl_Widget*, void* data) {
-            auto* state = static_cast<LimitedBrowserState*>(data);
-            if (!state || !state->browser) return;
-
-            if (state->browser->nchecked() <= state->maximum) return;
-
-            const int changedLine = state->browser->value();
-            if (changedLine > 0) state->browser->checked(changedLine, 0);
-            fl_beep(FL_BEEP_ERROR);
-        },
-        &parallelBrowserState);
-    rowY += rowStep * 3;
-
-    std::vector<std::string> interlinearChoiceModules;
-    interlinearChoiceModules.reserve(bibleModules.size() + 1);
-    interlinearChoiceModules.push_back("");
-
-    auto populateInterlinearChoice = [&](Fl_Choice* choice) {
+    std::vector<Fl_Choice*> defaultParallelChoices;
+    const size_t maxDefaultParallel =
+        VerdadApp::BibleSettings::kMaxDefaultParallelCompanions;
+    for (size_t i = 0; i < maxDefaultParallel; ++i) {
+        auto* label = new Fl_Box(labelX, rowY, labelW, 24);
+        label->copy_label(("Parallel " + std::to_string(i + 2) + ":").c_str());
+        label->align(FL_ALIGN_LEFT | FL_ALIGN_INSIDE);
+        auto* choice = new WrappingChoice(fieldX, rowY, fieldW, 24);
         choice->add("(None)");
         for (const auto& module : bibleModules) {
-            std::string label = module_choice::formatLabel(module);
-            choice->add(module_choice::escapeMenuLabel(label).c_str());
-            if (interlinearChoiceModules.size() < bibleModules.size() + 1) {
-                interlinearChoiceModules.push_back(module.name);
-            }
+            choice->add(module_choice::escapeMenuLabel(
+                module_choice::formatLabel(module)).c_str());
         }
         choice->value(0);
-    };
-
-    auto applyInterlinearChoice = [&](Fl_Choice* choice,
-                                      const std::string& moduleName) {
-        auto it = std::find(interlinearChoiceModules.begin(),
-                            interlinearChoiceModules.end(), moduleName);
-        if (it != interlinearChoiceModules.end()) {
-            choice->value(static_cast<int>(it - interlinearChoiceModules.begin()));
+        if (i < currentBible.defaultParallelModules.size()) {
+            auto it = std::find(parallelChoiceModules.begin(),
+                                parallelChoiceModules.end(),
+                                currentBible.defaultParallelModules[i]);
+            if (it != parallelChoiceModules.end()) {
+                choice->value(static_cast<int>(it - parallelChoiceModules.begin()));
+            }
         }
-    };
-
-    auto* interlinearOneLabel = new Fl_Box(
-        labelX, rowY, labelW, 24, "Interlinear module 1:");
-    interlinearOneLabel->align(FL_ALIGN_LEFT | FL_ALIGN_INSIDE);
-    auto* interlinearOneChoice = new WrappingChoice(fieldX, rowY, fieldW, 24);
-    populateInterlinearChoice(interlinearOneChoice);
-    if (!currentBible.interlinearModules.empty()) {
-        applyInterlinearChoice(interlinearOneChoice,
-                               currentBible.interlinearModules[0]);
+        choice->tooltip(i < VerdadApp::BibleSettings::kMaxInterlinearCompanions
+                            ? "Default companion for parallel and interlinear views"
+                            : "Default companion for parallel view");
+        defaultParallelChoices.push_back(choice);
+        rowY += rowStep;
     }
-    rowY += rowStep;
-
-    auto* interlinearTwoLabel = new Fl_Box(
-        labelX, rowY, labelW, 24, "Interlinear module 2:");
-    interlinearTwoLabel->align(FL_ALIGN_LEFT | FL_ALIGN_INSIDE);
-    auto* interlinearTwoChoice = new WrappingChoice(fieldX, rowY, fieldW, 24);
-    populateInterlinearChoice(interlinearTwoChoice);
-    if (currentBible.interlinearModules.size() > 1) {
-        applyInterlinearChoice(interlinearTwoChoice,
-                               currentBible.interlinearModules[1]);
-    }
-    rowY += rowStep;
 
     auto* interlinearHelp = new Fl_Box(
         labelX, rowY, groupW - (groupPadX * 2), 24,
-        "Interlinear view stacks each selected module beneath the main verse.");
+        "Interlinear view uses the toolbar Bible and parallels 2 through 4.");
     interlinearHelp->align(FL_ALIGN_LEFT | FL_ALIGN_INSIDE);
 
     bibleTab->end();
@@ -4698,29 +4648,19 @@ void MainWindow::onViewSettings(Fl_Widget* /*w*/, void* data) {
         }
 
         updatedBible.defaultParallelModules.clear();
-        for (size_t i = 0; i < bibleModules.size(); ++i) {
-            if (defaultParallelBrowser->checked(static_cast<int>(i) + 1)) {
-                updatedBible.defaultParallelModules.push_back(bibleModules[i].name);
+        for (Fl_Choice* choice : defaultParallelChoices) {
+            const int index = choice ? choice->value() : -1;
+            if (index <= 0 ||
+                index >= static_cast<int>(parallelChoiceModules.size())) {
+                continue;
+            }
+            const std::string& module = parallelChoiceModules[index];
+            if (std::find(updatedBible.defaultParallelModules.begin(),
+                          updatedBible.defaultParallelModules.end(), module) ==
+                updatedBible.defaultParallelModules.end()) {
+                updatedBible.defaultParallelModules.push_back(module);
             }
         }
-
-        updatedBible.interlinearModules.clear();
-        auto appendInterlinearChoice = [&](Fl_Choice* choice) {
-            if (!choice) return;
-            const int index = choice->value();
-            if (index <= 0 ||
-                index >= static_cast<int>(interlinearChoiceModules.size())) {
-                return;
-            }
-            const std::string& module = interlinearChoiceModules[index];
-            if (std::find(updatedBible.interlinearModules.begin(),
-                          updatedBible.interlinearModules.end(), module) ==
-                updatedBible.interlinearModules.end()) {
-                updatedBible.interlinearModules.push_back(module);
-            }
-        };
-        appendInterlinearChoice(interlinearOneChoice);
-        appendInterlinearChoice(interlinearTwoChoice);
 
         const Fl_Menu_Item* greekDictItem = greekDictChoice->mvalue();
         if (hasGreekPreviewDictionaries && greekDictItem && greekDictItem->label()) {

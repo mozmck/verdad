@@ -19,10 +19,10 @@ AI assistance.
   text in the center; commentary, Daily, general books, Studypad, and dictionary
   content on the right.
 - Chapter and reference navigation, paragraph mode, red-letter display, up to
-  seven parallel Bible columns, and verse-aligned interlinear display with up
-  to two companion modules.
-- Persistent default companion-module selections for parallel and interlinear
-  views.
+  seven parallel Bible columns, and verse-aligned interlinear display of the
+  first four parallel Bibles, with clickable module names for swapping lines.
+- Persistent, ordered default companion modules shared by parallel and
+  interlinear views.
 - Controls for Strong's numbers, morphology, footnotes, and cross references.
 - Word-hover previews and context actions for search, Strong's lookup,
   dictionaries, copying verses or selections, and verse tagging.

@@ -114,10 +114,13 @@ public:
 
     struct BibleSettings {
         static constexpr std::size_t kMaxDefaultParallelCompanions = 6;
-        static constexpr std::size_t kMaxInterlinearCompanions = 2;
+        /// Interlinear view shows the first parallel modules: the main Bible
+        /// plus up to this many companions.
+        static constexpr std::size_t kMaxInterlinearCompanions = 3;
 
+        /// Ordered companion modules added after the main Bible when a tab
+        /// first enters parallel or interlinear view.
         std::vector<std::string> defaultParallelModules;
-        std::vector<std::string> interlinearModules;
     };
 
     struct ModuleManagerSettings {

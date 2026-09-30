@@ -4905,9 +4905,12 @@ std::string SwordManager::getInterlinearText(
             }
             html += "</span>";
 
-            html += "<span class=\"interlinear-module\">";
+            html += "<span class=\"interlinear-module\">"
+                    "<a class=\"interlinear-module-link\" href=\"interlinear-module:";
+            html += module.columnAttr;
+            html += "\" title=\"Choose a different Bible\">";
             html += module.nameAttr;
-            html += "</span> <span class=\"interlinear-text\">";
+            html += "</a></span> <span class=\"interlinear-text\">";
 
             std::string verseText = getOrRenderVerseHtmlLocked(
                 module.module, module.name, verseRef);
