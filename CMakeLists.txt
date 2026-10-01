@@ -376,6 +376,21 @@ if(BUILD_TESTING)
     endif()
     add_test(NAME morphology-provider COMMAND verdad-morphology-tests)
 
+    add_executable(verdad-tag-tests
+        tests/TagManagerTests.cpp
+        src/tags/TagManager.cpp
+    )
+    target_include_directories(verdad-tag-tests PRIVATE
+        ${CMAKE_SOURCE_DIR}/src
+    )
+    target_link_libraries(verdad-tag-tests PRIVATE
+        SQLite::SQLite3
+    )
+    if(WIN32)
+        target_compile_definitions(verdad-tag-tests PRIVATE NOMINMAX)
+    endif()
+    add_test(NAME tag-manager COMMAND verdad-tag-tests)
+
     find_package(Python3 COMPONENTS Interpreter)
     if(Python3_Interpreter_FOUND)
         add_test(

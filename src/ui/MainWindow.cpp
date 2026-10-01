@@ -832,6 +832,7 @@ std::string tagsDbContentStamp(const fs::path& path) {
         "SELECT resource_kind, module_name, source_key, selection_text, tag_name "
         "FROM tag_items ORDER BY resource_kind, module_name, source_key, selection_text, tag_name;",
         "SELECT verse_key, tag_name FROM verse_tags ORDER BY verse_key, tag_name;",
+        "SELECT tag_name, parent_name FROM tag_tree ORDER BY tag_name;",
     });
 }
 

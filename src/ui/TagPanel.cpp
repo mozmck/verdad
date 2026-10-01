@@ -7,25 +7,33 @@
 #include "ui/LeftPane.h"
 #include "ui/MainWindow.h"
 #include "ui/UiFontUtils.h"
-#include "ui/VerseReferenceSort.h"
 
 #include <FL/Fl.H>
 #include <FL/Fl_Box.H>
+#include <FL/Fl_Color_Chooser.H>
 #include <FL/Fl_Double_Window.H>
 #include <FL/Fl_Hold_Browser.H>
 #include <FL/Fl_Choice.H>
 #include <FL/Fl_Menu_Button.H>
 #include <FL/Fl_Return_Button.H>
 #include <FL/fl_ask.H>
+#include <FL/fl_draw.H>
 
 #include <algorithm>
 #include <cctype>
+#include <cstdio>
+#include <functional>
 #include <limits>
 #include <sstream>
+#include <tuple>
 #include <unordered_map>
 
 namespace verdad {
 namespace {
+
+constexpr const char* kTopLevelLabel = "(Top level)";
+constexpr const char* kDefaultTagColor = "#4a86c8";
+constexpr size_t kMaxRangePreviewVerses = 60;
 
 std::string trimCopy(const std::string& text) {
     size_t start = 0;
@@ -50,6 +58,10 @@ std::string toLowerCopy(const std::string& text) {
                        return static_cast<char>(std::tolower(c));
                    });
     return out;
+}
+
+bool containsNoCase(const std::string& haystack, const std::string& loweredNeedle) {
+    return toLowerCopy(haystack).find(loweredNeedle) != std::string::npos;
 }
 
 bool targetEquals(const TagTarget& a, const TagTarget& b) {
@@ -78,30 +90,27 @@ std::string targetDisplayLabel(const TagTarget& target) {
     return target.displayLabel();
 }
 
+void copyToClipboard(const std::string& text) {
+    Fl::copy(text.c_str(), static_cast<int>(text.size()), 0);
+    Fl::copy(text.c_str(), static_cast<int>(text.size()), 1);
+}
+
 struct TagFilterQuery {
     std::string raw;
     std::string lowered;
     bool hasVerseRef = false;
-    SwordManager::VerseRef verseRef;
+    VerseRange verseRange;
+
+    bool empty() const { return lowered.empty(); }
 };
 
 TagFilterQuery buildTagFilterQuery(const std::string& text) {
     TagFilterQuery query;
     query.raw = trimCopy(text);
     query.lowered = toLowerCopy(query.raw);
-
-    if (query.raw.empty()) return query;
-
-    try {
-        query.verseRef = SwordManager::parseVerseRef(query.raw);
-        query.hasVerseRef = !query.verseRef.book.empty() &&
-                            query.verseRef.chapter > 0 &&
-                            query.verseRef.verse > 0;
-    } catch (...) {
-        query.verseRef = SwordManager::VerseRef{};
-        query.hasVerseRef = false;
+    if (!query.raw.empty()) {
+        query.hasVerseRef = VerseRange::parse(query.raw, query.verseRange);
     }
-
     return query;
 }
 
@@ -109,72 +118,38 @@ bool targetMatchesFilter(const TagTarget& target,
                          const TagFilterQuery& query,
                          TagPanel::ResourceFilter resourceFilter) {
     if (!matchesResourceFilterKind(target, resourceFilter)) return false;
-    if (query.lowered.empty()) return true;
+    if (query.empty()) return true;
 
-    const std::string label = toLowerCopy(targetDisplayLabel(target));
-    if (label.find(query.lowered) != std::string::npos) return true;
-
-    if (toLowerCopy(target.moduleName).find(query.lowered) != std::string::npos) return true;
-    if (toLowerCopy(target.sourceKey).find(query.lowered) != std::string::npos) return true;
-    if (toLowerCopy(target.selectionText).find(query.lowered) != std::string::npos) return true;
-
-    if (!query.hasVerseRef || target.kind != TagTarget::Kind::Verse) return false;
-
-    try {
-        SwordManager::VerseRef verseRef = SwordManager::parseVerseRef(target.sourceKey);
-        return verseRef.book == query.verseRef.book &&
-               verseRef.chapter == query.verseRef.chapter &&
-               verseRef.verse == query.verseRef.verse;
-    } catch (...) {
-        return false;
-    }
-}
-
-bool tagMatchesFilter(TagManager& tagMgr,
-                      const std::string& tagName,
-                      const TagFilterQuery& query,
-                      TagPanel::ResourceFilter resourceFilter) {
-    if (query.lowered.empty()) return true;
-
-    if (toLowerCopy(tagName).find(query.lowered) != std::string::npos) {
-        return true;
-    }
-
-    const auto targets = tagMgr.getTargetsWithTag(tagName);
-    return std::any_of(targets.begin(), targets.end(),
-                       [&](const TagTarget& target) {
-                           return targetMatchesFilter(target, query, resourceFilter);
-                       });
-}
-
-struct TargetSortKey {
-    bool parsed = false;
-    int bookRank = std::numeric_limits<int>::max();
-    int chapter = std::numeric_limits<int>::max();
-    int verse = std::numeric_limits<int>::max();
-    std::string kindToken;
-    std::string moduleName;
-    std::string sourceKey;
-    std::string selectionText;
-    std::string label;
-};
-
-std::string normalizeBookKey(const std::string& in) {
-    std::string out;
-    out.reserve(in.size());
-    for (char c : in) {
-        unsigned char uc = static_cast<unsigned char>(c);
-        if (std::isalnum(uc)) {
-            out.push_back(static_cast<char>(std::tolower(uc)));
+    // A reference query matches any verse range (or commentary entry) that
+    // overlaps it, so "John 3:16" finds a tag on "John 3:14-18".
+    if (query.hasVerseRef && target.kind != TagTarget::Kind::GeneralBook) {
+        VerseRange range;
+        if (VerseRange::parse(target.sourceKey, range)) {
+            if (range.overlaps(query.verseRange)) return true;
+            if (target.kind == TagTarget::Kind::Verse) return false;
         }
     }
-    return out;
+
+    if (containsNoCase(targetDisplayLabel(target), query.lowered)) return true;
+    if (containsNoCase(target.moduleName, query.lowered)) return true;
+    if (containsNoCase(target.sourceKey, query.lowered)) return true;
+    if (containsNoCase(target.selectionText, query.lowered)) return true;
+    return false;
 }
 
-void sortTargetsCanonical(SwordManager& swordMgr,
+std::string normalizeBookKey(const std::string& in) {
+    return VerseRange::normalizeBookKey(in);
+}
+
+struct TargetEntry {
+    TagTarget target;
+    std::string sourceTag;
+};
+
+void sortEntriesCanonical(SwordManager& swordMgr,
                           const std::string& moduleName,
-                          std::vector<TagTarget>& targets) {
-    if (targets.size() < 2) return;
+                          std::vector<TargetEntry>& entries) {
+    if (entries.size() < 2) return;
 
     std::unordered_map<std::string, int> bookOrder;
     const auto books = swordMgr.getBookNames(moduleName);
@@ -185,66 +160,107 @@ void sortTargetsCanonical(SwordManager& swordMgr,
         }
     }
 
-    struct Entry {
-        TagTarget target;
-        TargetSortKey key;
+    struct SortKey {
+        bool parsed = false;
+        int bookRank = std::numeric_limits<int>::max();
+        int startChapter = 0;
+        int startVerse = 0;
+        int endChapter = 0;
+        int endVerse = 0;
+        int kindRank = 0;
+        std::string label;
     };
 
-    std::vector<Entry> entries;
-    entries.reserve(targets.size());
-    for (const auto& target : targets) {
-        Entry entry;
-        entry.target = target;
-        entry.key.kindToken = target.kind == TagTarget::Kind::Verse
-            ? "verse"
-            : (target.kind == TagTarget::Kind::Commentary ? "commentary" : "general_book");
-        entry.key.moduleName = target.moduleName;
-        entry.key.sourceKey = target.sourceKey;
-        entry.key.selectionText = target.selectionText;
-        entry.key.label = targetDisplayLabel(target);
-
-        if (target.kind == TagTarget::Kind::Verse) {
-            SwordManager::VerseRef parsed;
-            try {
-                parsed = SwordManager::parseVerseRef(target.sourceKey);
-            } catch (...) {
-                parsed = SwordManager::VerseRef{};
-            }
-            if (!parsed.book.empty() && parsed.chapter > 0 && parsed.verse > 0) {
-                entry.key.parsed = true;
-                entry.key.chapter = parsed.chapter;
-                entry.key.verse = parsed.verse;
-                std::string normBook = normalizeBookKey(parsed.book);
-                auto it = bookOrder.find(normBook);
-                if (it != bookOrder.end()) {
-                    entry.key.bookRank = it->second;
-                }
-            }
+    auto keyFor = [&](const TargetEntry& entry) {
+        SortKey key;
+        key.kindRank = static_cast<int>(entry.target.kind);
+        key.label = targetDisplayLabel(entry.target);
+        VerseRange range;
+        if (entry.target.verseRange(range)) {
+            key.parsed = true;
+            key.startChapter = range.startChapter;
+            key.startVerse = range.startVerse;
+            key.endChapter = range.endChapter;
+            key.endVerse = range.endVerse;
+            auto it = bookOrder.find(range.bookKey);
+            if (it != bookOrder.end()) key.bookRank = it->second;
         }
+        return key;
+    };
 
-        entries.push_back(std::move(entry));
+    std::vector<std::pair<SortKey, TargetEntry>> keyed;
+    keyed.reserve(entries.size());
+    for (auto& entry : entries) {
+        SortKey key = keyFor(entry);
+        keyed.emplace_back(std::move(key), std::move(entry));
     }
 
-    std::stable_sort(entries.begin(), entries.end(),
-                     [](const Entry& a, const Entry& b) {
-        if (a.key.parsed != b.key.parsed) return a.key.parsed > b.key.parsed;
-        if (a.key.kindToken != b.key.kindToken) return a.key.kindToken < b.key.kindToken;
-        if (a.key.parsed) {
-            if (a.key.bookRank != b.key.bookRank) return a.key.bookRank < b.key.bookRank;
-            if (a.key.chapter != b.key.chapter) return a.key.chapter < b.key.chapter;
-            if (a.key.verse != b.key.verse) return a.key.verse < b.key.verse;
+    std::stable_sort(keyed.begin(), keyed.end(),
+                     [](const auto& lhs, const auto& rhs) {
+        const SortKey& a = lhs.first;
+        const SortKey& b = rhs.first;
+        if (a.parsed != b.parsed) return a.parsed > b.parsed;
+        if (a.kindRank != b.kindRank) return a.kindRank < b.kindRank;
+        if (a.parsed) {
+            auto ta = std::make_tuple(a.bookRank, a.startChapter, a.startVerse,
+                                      a.endChapter, a.endVerse);
+            auto tb = std::make_tuple(b.bookRank, b.startChapter, b.startVerse,
+                                      b.endChapter, b.endVerse);
+            if (ta != tb) return ta < tb;
         }
-        if (a.key.moduleName != b.key.moduleName) return a.key.moduleName < b.key.moduleName;
-        if (a.key.sourceKey != b.key.sourceKey) return a.key.sourceKey < b.key.sourceKey;
-        if (a.key.selectionText != b.key.selectionText) return a.key.selectionText < b.key.selectionText;
-        return a.key.label < b.key.label;
+        return a.label < b.label;
     });
 
-    targets.clear();
-    targets.reserve(entries.size());
-    for (auto& entry : entries) {
-        targets.push_back(std::move(entry.target));
+    entries.clear();
+    entries.reserve(keyed.size());
+    for (auto& pair : keyed) {
+        entries.push_back(std::move(pair.second));
     }
+}
+
+/// Resolve text typed into the Add Tag dialog to a tag name. Exact names and
+/// full paths select existing tags; "Parent / Child" creates missing tags
+/// along the path. Returns "" when nothing usable was entered.
+std::string resolveTagInput(TagManager& tagMgr, const std::string& input) {
+    const std::string text = trimCopy(input);
+    if (text.empty()) return "";
+    if (tagMgr.hasTag(text)) return text;
+
+    for (const auto& tag : tagMgr.getAllTags()) {
+        if (tagMgr.tagPath(tag.name) == text || tagMgr.tagPath(tag.name, "/") == text) {
+            return tag.name;
+        }
+    }
+
+    std::vector<std::string> segments;
+    std::string segment;
+    std::istringstream stream(text);
+    while (std::getline(stream, segment, '/')) {
+        segment = trimCopy(segment);
+        if (!segment.empty()) segments.push_back(segment);
+    }
+    if (segments.size() <= 1) {
+        tagMgr.createTag(text);
+        return text;
+    }
+
+    std::string parent;
+    for (const auto& name : segments) {
+        if (!tagMgr.hasTag(name)) {
+            Tag parentTag;
+            std::string color = kDefaultTagColor;
+            if (!parent.empty() && tagMgr.getTag(parent, parentTag)) {
+                color = parentTag.color;
+            }
+            tagMgr.createTag(name, color, parent);
+        }
+        parent = name;
+    }
+    return parent;
+}
+
+std::string pathListLabel(TagManager& tagMgr, const std::string& name) {
+    return tagMgr.tagPath(name) + " (" + std::to_string(tagMgr.getTagCount(name)) + ")";
 }
 
 class AddTagDialog {
@@ -252,26 +268,43 @@ public:
     AddTagDialog(TagManager& tagMgr, const TagTarget& target)
         : tagMgr_(tagMgr)
         , target_(target)
-        , dialog_(440, 380, "Add Tag") {
+        , dialog_(460, target.isVerse() ? 446 : 390, "Add Tag") {
         allTags_ = tagMgr_.getAllTags();
 
         dialog_.set_modal();
         dialog_.begin();
 
-        prompt_ = new Fl_Box(16, 16, dialog_.w() - 32, 44);
+        int y = 16;
+        prompt_ = new Fl_Box(16, y, dialog_.w() - 32, 44);
         prompt_->align(FL_ALIGN_LEFT | FL_ALIGN_INSIDE | FL_ALIGN_WRAP);
-        std::string promptText = "Add tag to " + target_.displayLabel() +
-                                 ":\nSelect an existing tag or type a new one.";
+        std::string promptText =
+            target_.isVerse()
+                ? std::string("Select an existing tag or type a new one.\n"
+                              "Type \"Parent / Child\" to create a subtag.")
+                : "Add tag to " + target_.displayLabel() +
+                  ":\nSelect an existing tag or type a new one (\"Parent / Child\" for a subtag).";
         prompt_->copy_label(promptText.c_str());
+        y += 66;
 
-        input_ = new Fl_Input(16, 72, dialog_.w() - 32, 28, "Tag:");
+        if (target_.isVerse()) {
+            referenceInput_ = new Fl_Input(16, y, dialog_.w() - 32, 28,
+                                           "Verses (e.g. Genesis 1:1-5):");
+            referenceInput_->align(FL_ALIGN_TOP_LEFT);
+            referenceInput_->value(target_.sourceKey.c_str());
+            y += 56;
+        }
+
+        input_ = new Fl_Input(16, y, dialog_.w() - 32, 28, "Tag:");
         input_->align(FL_ALIGN_TOP_LEFT);
         input_->when(FL_WHEN_CHANGED);
         input_->callback(onInputChanged, this);
+        y += 48;
 
-        browser_ = new Fl_Hold_Browser(16, 120, dialog_.w() - 32, 200, "Existing tags:");
+        browser_ = new Fl_Hold_Browser(16, y, dialog_.w() - 32,
+                                       dialog_.h() - y - 56, "Existing tags:");
         browser_->align(FL_ALIGN_TOP_LEFT);
         browser_->type(FL_HOLD_BROWSER);
+        browser_->format_char(0);
         browser_->when(FL_WHEN_CHANGED);
         browser_->callback(onBrowserSelect, this);
 
@@ -286,7 +319,8 @@ public:
         ui_font::applyCurrentAppUiFont(&dialog_);
     }
 
-    bool open(std::string& tagName) {
+    /// Returns the typed tag text (possibly a path) and the possibly edited target.
+    bool open(std::string& tagText, TagTarget& target) {
         dialog_.show();
         input_->take_focus();
         while (dialog_.shown()) {
@@ -294,7 +328,8 @@ public:
         }
 
         if (!accepted_) return false;
-        tagName = resultTagName_;
+        tagText = resultTagText_;
+        target = target_;
         return true;
     }
 
@@ -312,8 +347,9 @@ private:
         std::string selected = self->selectedTagName();
         if (selected.empty()) return;
 
-        self->input_->value(selected.c_str());
-        self->input_->insert_position(static_cast<int>(selected.size()));
+        std::string text = self->tagMgr_.tagPath(selected);
+        self->input_->value(text.c_str());
+        self->input_->insert_position(static_cast<int>(text.size()));
     }
 
     static void onCancel(Fl_Widget* /*w*/, void* data) {
@@ -330,18 +366,30 @@ private:
     }
 
     void accept() {
-        std::string tagName = trimCopy(input_->value() ? input_->value() : "");
-        if (tagName.empty()) {
-            tagName = selectedTagName();
+        if (referenceInput_) {
+            std::string ref = trimCopy(referenceInput_->value() ? referenceInput_->value() : "");
+            VerseRange range;
+            if (!VerseRange::parse(ref, range)) {
+                fl_alert("\"%s\" is not a verse reference.\nUse a form like Genesis 1:1, "
+                         "Genesis 1:1-5, or Genesis 1:30-2:3.", ref.c_str());
+                referenceInput_->take_focus();
+                return;
+            }
+            target_ = TagTarget::verse(ref);
         }
 
-        if (tagName.empty()) {
+        std::string tagText = trimCopy(input_->value() ? input_->value() : "");
+        if (tagText.empty()) {
+            tagText = selectedTagName();
+        }
+
+        if (tagText.empty()) {
             fl_alert("Enter a tag name or select an existing tag.");
             input_->take_focus();
             return;
         }
 
-        resultTagName_ = tagName;
+        resultTagText_ = tagText;
         accepted_ = true;
         dialog_.hide();
     }
@@ -355,28 +403,38 @@ private:
     }
 
     void updateVisibleTags() {
-        const std::string filter = toLowerCopy(trimCopy(input_->value() ? input_->value() : ""));
-        const std::string currentSelection = selectedTagName();
         const std::string exactInput = trimCopy(input_->value() ? input_->value() : "");
+        const std::string filter = toLowerCopy(exactInput);
+        const std::string currentSelection = selectedTagName();
 
         browser_->clear();
         visibleTags_.clear();
 
-        int selectedLine = 0;
+        std::vector<std::pair<std::string, std::string>> rows;  // path, name
+        rows.reserve(allTags_.size());
         for (const auto& tag : allTags_) {
-            if (!filter.empty() && toLowerCopy(tag.name).find(filter) == std::string::npos) {
+            rows.emplace_back(tagMgr_.tagPath(tag.name), tag.name);
+        }
+        std::sort(rows.begin(), rows.end(), [](const auto& a, const auto& b) {
+            return toLowerCopy(a.first) < toLowerCopy(b.first);
+        });
+
+        int selectedLine = 0;
+        for (const auto& row : rows) {
+            const std::string& path = row.first;
+            const std::string& name = row.second;
+            if (!filter.empty() && !containsNoCase(path, filter)) {
                 continue;
             }
 
-            visibleTags_.push_back(tag.name);
-            std::string line = tag.name + " (" +
-                               std::to_string(tagMgr_.getTagCount(tag.name)) + ")";
-            browser_->add(line.c_str());
+            visibleTags_.push_back(name);
+            browser_->add(pathListLabel(tagMgr_, name).c_str());
 
-            if (selectedLine == 0 && !currentSelection.empty() && tag.name == currentSelection) {
+            if (selectedLine == 0 && !currentSelection.empty() && name == currentSelection) {
                 selectedLine = browser_->size();
             }
-            if (selectedLine == 0 && !exactInput.empty() && tag.name == exactInput) {
+            if (selectedLine == 0 && !exactInput.empty() &&
+                (name == exactInput || path == exactInput)) {
                 selectedLine = browser_->size();
             }
         }
@@ -389,14 +447,195 @@ private:
     std::vector<Tag> allTags_;
     std::vector<std::string> visibleTags_;
     bool accepted_ = false;
-    std::string resultTagName_;
+    std::string resultTagText_;
     Fl_Double_Window dialog_;
     Fl_Box* prompt_ = nullptr;
+    Fl_Input* referenceInput_ = nullptr;
     Fl_Input* input_ = nullptr;
     Fl_Hold_Browser* browser_ = nullptr;
     Fl_Button* cancelButton_ = nullptr;
     Fl_Return_Button* okButton_ = nullptr;
 };
+
+/// Dialog for choosing a parent tag, optionally together with a new tag name.
+/// Used by "New Tag" and "Move To".
+class TagParentDialog {
+public:
+    TagParentDialog(TagManager& tagMgr,
+                    const char* title,
+                    const std::string& promptText,
+                    bool askName,
+                    const std::string& initialParent,
+                    const std::set<std::string>& excluded)
+        : tagMgr_(tagMgr)
+        , excluded_(excluded)
+        , initialParent_(initialParent)
+        , dialog_(440, askName ? 430 : 380, title) {
+        dialog_.set_modal();
+        dialog_.begin();
+
+        int y = 16;
+        prompt_ = new Fl_Box(16, y, dialog_.w() - 32, 36);
+        prompt_->align(FL_ALIGN_LEFT | FL_ALIGN_INSIDE | FL_ALIGN_WRAP);
+        prompt_->copy_label(promptText.c_str());
+        y += 58;
+
+        if (askName) {
+            nameInput_ = new Fl_Input(16, y, dialog_.w() - 32, 28, "Name:");
+            nameInput_->align(FL_ALIGN_TOP_LEFT);
+            y += 50;
+        }
+
+        filterInput_ = new Fl_Input(16, y, dialog_.w() - 32, 28, "Parent (type to filter):");
+        filterInput_->align(FL_ALIGN_TOP_LEFT);
+        filterInput_->when(FL_WHEN_CHANGED);
+        filterInput_->callback(onFilterChanged, this);
+        y += 32;
+
+        browser_ = new Fl_Hold_Browser(16, y, dialog_.w() - 32, dialog_.h() - y - 52);
+        browser_->type(FL_HOLD_BROWSER);
+        browser_->format_char(0);
+
+        cancelButton_ = new Fl_Button(dialog_.w() - 180, dialog_.h() - 40, 80, 28, "Cancel");
+        cancelButton_->callback(onCancel, this);
+
+        okButton_ = new Fl_Return_Button(dialog_.w() - 92, dialog_.h() - 40, 76, 28, "OK");
+        okButton_->callback(onOk, this);
+
+        dialog_.end();
+        populate();
+        ui_font::applyCurrentAppUiFont(&dialog_);
+    }
+
+    bool open(std::string& name, std::string& parent) {
+        dialog_.show();
+        if (nameInput_) {
+            nameInput_->take_focus();
+        } else {
+            filterInput_->take_focus();
+        }
+        while (dialog_.shown()) {
+            Fl::wait();
+        }
+        if (!accepted_) return false;
+        name = resultName_;
+        parent = resultParent_;
+        return true;
+    }
+
+private:
+    static void onFilterChanged(Fl_Widget* /*w*/, void* data) {
+        auto* self = static_cast<TagParentDialog*>(data);
+        if (self) self->populate();
+    }
+
+    static void onCancel(Fl_Widget* /*w*/, void* data) {
+        auto* self = static_cast<TagParentDialog*>(data);
+        if (!self) return;
+        self->accepted_ = false;
+        self->dialog_.hide();
+    }
+
+    static void onOk(Fl_Widget* /*w*/, void* data) {
+        auto* self = static_cast<TagParentDialog*>(data);
+        if (!self) return;
+
+        if (self->nameInput_) {
+            self->resultName_ = trimCopy(self->nameInput_->value() ? self->nameInput_->value() : "");
+            if (self->resultName_.empty()) {
+                fl_alert("Blank tags are not valid.");
+                self->nameInput_->take_focus();
+                return;
+            }
+        }
+
+        int line = self->browser_->value();
+        if (line <= 0 || line > static_cast<int>(self->rows_.size())) {
+            fl_alert("Select a parent tag, or \"%s\".", kTopLevelLabel);
+            return;
+        }
+        self->resultParent_ = self->rows_[static_cast<size_t>(line - 1)];
+        self->accepted_ = true;
+        self->dialog_.hide();
+    }
+
+    void populate() {
+        const std::string filter =
+            toLowerCopy(trimCopy(filterInput_->value() ? filterInput_->value() : ""));
+        std::string selected = initialParent_;
+        int current = browser_->value();
+        if (current > 0 && current <= static_cast<int>(rows_.size())) {
+            selected = rows_[static_cast<size_t>(current - 1)];
+        }
+
+        browser_->clear();
+        rows_.clear();
+
+        int selectedLine = 0;
+        if (filter.empty()) {
+            rows_.push_back("");
+            browser_->add(kTopLevelLabel);
+            if (selected.empty()) selectedLine = 1;
+        }
+
+        std::vector<std::pair<std::string, std::string>> paths;
+        for (const auto& tag : tagMgr_.getAllTags()) {
+            if (excluded_.count(tag.name)) continue;
+            paths.emplace_back(tagMgr_.tagPath(tag.name), tag.name);
+        }
+        std::sort(paths.begin(), paths.end(), [](const auto& a, const auto& b) {
+            return toLowerCopy(a.first) < toLowerCopy(b.first);
+        });
+        for (const auto& path : paths) {
+            if (!filter.empty() && !containsNoCase(path.first, filter)) continue;
+            rows_.push_back(path.second);
+            browser_->add(path.first.c_str());
+            if (selectedLine == 0 && path.second == selected) {
+                selectedLine = browser_->size();
+            }
+        }
+        if (selectedLine == 0 && !filter.empty() && browser_->size() > 0) {
+            selectedLine = 1;
+        }
+        browser_->value(selectedLine);
+        if (selectedLine > 0) browser_->middleline(selectedLine);
+    }
+
+    TagManager& tagMgr_;
+    std::set<std::string> excluded_;
+    std::string initialParent_;
+    std::vector<std::string> rows_;  // parallel to browser lines; "" = top level
+    bool accepted_ = false;
+    std::string resultName_;
+    std::string resultParent_;
+    Fl_Double_Window dialog_;
+    Fl_Box* prompt_ = nullptr;
+    Fl_Input* nameInput_ = nullptr;
+    Fl_Input* filterInput_ = nullptr;
+    Fl_Hold_Browser* browser_ = nullptr;
+    Fl_Button* cancelButton_ = nullptr;
+    Fl_Return_Button* okButton_ = nullptr;
+};
+
+bool parseHexColor(const std::string& text, uchar& r, uchar& g, uchar& b) {
+    unsigned int rr = 0;
+    unsigned int gg = 0;
+    unsigned int bb = 0;
+    if (text.size() != 7 || text[0] != '#' ||
+        std::sscanf(text.c_str() + 1, "%02x%02x%02x", &rr, &gg, &bb) != 3) {
+        return false;
+    }
+    r = static_cast<uchar>(rr);
+    g = static_cast<uchar>(gg);
+    b = static_cast<uchar>(bb);
+    return true;
+}
+
+std::string formatHexColor(uchar r, uchar g, uchar b) {
+    char buffer[8];
+    std::snprintf(buffer, sizeof(buffer), "#%02x%02x%02x", r, g, b);
+    return buffer;
+}
 
 } // namespace
 
@@ -441,24 +680,50 @@ private:
     TagPanel* owner_ = nullptr;
 };
 
+class TagTree : public Fl_Tree {
+public:
+    TagTree(TagPanel* owner, int X, int Y, int W, int H)
+        : Fl_Tree(X, Y, W, H)
+        , owner_(owner) {}
+
+    int handle(int event) override {
+        if (event == FL_PUSH && Fl::event_button() == FL_RIGHT_MOUSE) {
+            Fl_Tree_Item* item = find_clicked();
+            if (item && owner_ && owner_->itemTagNames_.count(item)) {
+                if (!item->is_selected()) select_only(item, 1);
+                owner_->showTagContextMenu(Fl::event_x(), Fl::event_y(), true);
+            } else if (owner_) {
+                owner_->showTagContextMenu(Fl::event_x(), Fl::event_y(), false);
+            }
+            return 1;
+        }
+        return Fl_Tree::handle(event);
+    }
+
+private:
+    TagPanel* owner_ = nullptr;
+};
+
 TagPanel::TagPanel(VerdadApp* app, int X, int Y, int W, int H)
     : Fl_Group(X, Y, W, H)
     , app_(app)
     , filterInput_(nullptr)
     , clearFilterButton_(nullptr)
     , resourceFilterChoice_(nullptr)
-    , tagBrowser_(nullptr)
+    , tagTree_(nullptr)
     , itemBrowser_(nullptr)
     , newTagButton_(nullptr)
-    , deleteTagButton_(nullptr)
     , renameTagButton_(nullptr)
+    , moveTagButton_(nullptr)
+    , deleteTagButton_(nullptr)
+    , includeSubtagsCheck_(nullptr)
     , removeTagButton_(nullptr) {
     begin();
 
     filterInput_ = new TagFilterInput(this, X, Y, W, 28);
     filterInput_->when(FL_WHEN_CHANGED);
     filterInput_->callback(onFilterChange, this);
-    filterInput_->tooltip("Filter tags by name or by item text/reference");
+    filterInput_->tooltip("Filter tags by name, item text, or verse reference");
 
     clearFilterButton_ = new Fl_Button(X, Y, 10, 10, "X");
     clearFilterButton_->callback(onClearFilter, this);
@@ -473,25 +738,38 @@ TagPanel::TagPanel(VerdadApp* app, int X, int Y, int W, int H)
     resourceFilterChoice_->callback(onResourceFilterChange, this);
     resourceFilterChoice_->tooltip("Choose which resource types to browse and search");
 
-    tagBrowser_ = new Fl_Hold_Browser(X, Y, W, H);
-    tagBrowser_->type(FL_HOLD_BROWSER);
-    tagBrowser_->callback(onTagSelect, this);
+    tagTree_ = new TagTree(this, X, Y, W, H);
+    tagTree_->showroot(0);
+    tagTree_->selectmode(FL_TREE_SELECT_SINGLE);
+    tagTree_->callback(onTreeEvent, this);
+    tagTree_->when(FL_WHEN_CHANGED);
+    tagTree_->tooltip("Right-click for tag actions");
+
+    newTagButton_ = new Fl_Button(X, Y, 10, 10, "New");
+    newTagButton_->callback(onNewTag, this);
+    newTagButton_->tooltip("Create a tag (optionally under another tag)");
+
+    renameTagButton_ = new Fl_Button(X, Y, 10, 10, "Rename");
+    renameTagButton_->callback(onRenameTag, this);
+
+    moveTagButton_ = new Fl_Button(X, Y, 10, 10, "Move");
+    moveTagButton_->callback(onMoveTag, this);
+    moveTagButton_->tooltip("Move the selected tag under another tag");
+
+    deleteTagButton_ = new Fl_Button(X, Y, 10, 10, "Delete");
+    deleteTagButton_->callback(onDeleteTag, this);
 
     itemBrowser_ = new TagItemBrowser(this, X, Y, W, H);
     itemBrowser_->type(FL_HOLD_BROWSER);
     itemBrowser_->callback(onItemSelect, this);
 
-    newTagButton_ = new Fl_Button(X, Y, 10, 10, "New");
-    newTagButton_->callback(onNewTag, this);
-
-    renameTagButton_ = new Fl_Button(X, Y, 10, 10, "Rename");
-    renameTagButton_->callback(onRenameTag, this);
-
-    deleteTagButton_ = new Fl_Button(X, Y, 10, 10, "Delete");
-    deleteTagButton_->callback(onDeleteTag, this);
+    includeSubtagsCheck_ = new Fl_Check_Button(X, Y, 10, 10, "Include subtags");
+    includeSubtagsCheck_->callback(onIncludeSubtags, this);
+    includeSubtagsCheck_->tooltip("Also list items tagged with the selected tag's subtags");
 
     removeTagButton_ = new Fl_Button(X, Y, 10, 10, "Remove");
     removeTagButton_->callback(onRemoveTag, this);
+    removeTagButton_->tooltip("Remove the tag from the selected item");
 
     end();
 
@@ -530,17 +808,21 @@ void TagPanel::showAddTagDialog(const std::string& verseKey) {
 
 void TagPanel::showAddTagDialog(const TagTarget& target) {
     if (!app_) return;
-    AddTagDialog dialog(app_->tagManager(), target);
-    std::string tagName;
-    if (dialog.open(tagName)) {
-        app_->tagManager().tagTarget(target, tagName);
-        app_->tagManager().save();
-        selectedTagName_ = tagName;
-        selectedTarget_ = target;
-        hasSelectedTarget_ = true;
-        populateTags();
-        refreshPreviewForSelection();
-    }
+    TagManager& tagMgr = app_->tagManager();
+    AddTagDialog dialog(tagMgr, target);
+    std::string tagText;
+    TagTarget finalTarget = target;
+    if (!dialog.open(tagText, finalTarget)) return;
+
+    std::string tagName = resolveTagInput(tagMgr, tagText);
+    if (tagName.empty()) return;
+
+    tagMgr.tagTarget(finalTarget, tagName);
+    selectedTagName_ = tagName;
+    selectedTarget_ = finalTarget;
+    hasSelectedTarget_ = true;
+    expandAncestors(tagName);
+    tagsChanged(finalTarget.isVerse());
 }
 
 void TagPanel::showTagsForVerse(const std::string& verseKey) {
@@ -552,15 +834,25 @@ void TagPanel::showTagsForVerse(const std::string& verseKey) {
     }
     selectedTarget_ = TagTarget::verse(verseKey);
     hasSelectedTarget_ = true;
+
+    // Prefer a tag that directly covers this verse.
+    std::vector<Tag> tags = app_ ? app_->tagManager().getTagsForVerse(verseKey)
+                                 : std::vector<Tag>{};
+    if (!tags.empty() &&
+        std::none_of(tags.begin(), tags.end(),
+                     [&](const Tag& tag) { return tag.name == selectedTagName_; })) {
+        selectedTagName_ = tags.front().name;
+    }
+
     updateFilterControls();
     populateTags();
 }
 
 void TagPanel::layoutChildren() {
     if (!filterInput_ || !clearFilterButton_ || !resourceFilterChoice_ ||
-        !tagBrowser_ || !itemBrowser_ ||
-        !newTagButton_ || !renameTagButton_ || !deleteTagButton_ ||
-        !removeTagButton_) {
+        !tagTree_ || !itemBrowser_ ||
+        !newTagButton_ || !renameTagButton_ || !moveTagButton_ ||
+        !deleteTagButton_ || !includeSubtagsCheck_ || !removeTagButton_) {
         return;
     }
 
@@ -589,20 +881,25 @@ void TagPanel::layoutChildren() {
     int tagH = std::max(24, listAreaH / 2);
     int itemH = std::max(24, listAreaH - tagH);
 
-    tagBrowser_->resize(innerX, cy, innerW, tagH);
+    tagTree_->resize(innerX, cy, innerW, tagH);
     cy += tagH + padding;
 
-    const int buttonW = (innerW - 2 * padding) / 3;
+    const int buttonW = (innerW - 3 * padding) / 4;
     newTagButton_->resize(innerX, cy, buttonW, buttonH);
-    renameTagButton_->resize(innerX + buttonW + padding, cy, buttonW, buttonH);
-    deleteTagButton_->resize(innerX + 2 * (buttonW + padding), cy,
-                             innerW - 2 * (buttonW + padding), buttonH);
+    renameTagButton_->resize(innerX + (buttonW + padding), cy, buttonW, buttonH);
+    moveTagButton_->resize(innerX + 2 * (buttonW + padding), cy, buttonW, buttonH);
+    deleteTagButton_->resize(innerX + 3 * (buttonW + padding), cy,
+                             innerW - 3 * (buttonW + padding), buttonH);
     cy += buttonH + padding;
 
     itemBrowser_->resize(innerX, cy, innerW, itemH);
     cy += itemH + padding;
 
-    removeTagButton_->resize(innerX, std::min(cy, bottomY - buttonH), innerW, buttonH);
+    const int bottomRowY = std::min(cy, bottomY - buttonH);
+    const int checkW = std::min(innerW / 2, 160);
+    includeSubtagsCheck_->resize(innerX, bottomRowY, checkW, buttonH);
+    removeTagButton_->resize(innerX + checkW + padding, bottomRowY,
+                             std::max(20, innerW - checkW - padding), buttonH);
 }
 
 void TagPanel::updateFilterControls() {
@@ -648,19 +945,6 @@ void TagPanel::applyResourceFilterFromChoice() {
     }
 }
 
-bool TagPanel::targetMatchesResourceFilter(const TagTarget& target) const {
-    return matchesResourceFilterKind(target, selectedResourceFilter_);
-}
-
-bool TagPanel::tagMatchesResourceFilter(const std::string& tagName) const {
-    if (!app_) return false;
-    const auto targets = app_->tagManager().getTargetsWithTag(tagName);
-    return std::any_of(targets.begin(), targets.end(),
-                       [&](const TagTarget& target) {
-                           return targetMatchesResourceFilter(target);
-                       });
-}
-
 std::string TagPanel::activeBibleModule() const {
     if (app_ && app_->mainWindow() && app_->mainWindow()->biblePane()) {
         std::string module = trimCopy(app_->mainWindow()->biblePane()->currentModule());
@@ -686,7 +970,23 @@ void TagPanel::updateTargetPreview(const TagTarget& target) {
     if (target.kind == TagTarget::Kind::Verse) {
         std::string module = activeBibleModule();
         if (module.empty()) return;
-        std::string html = app_->swordManager().getVerseText(module, target.sourceKey);
+
+        std::string html;
+        if (target.isVerseRange()) {
+            const auto refs = app_->swordManager().expandVerseReferences(
+                module, target.sourceKey, kMaxRangePreviewVerses + 1);
+            const size_t shown = std::min(refs.size(), kMaxRangePreviewVerses);
+            for (size_t i = 0; i < shown; ++i) {
+                html += app_->swordManager().getVerseText(module, refs[i]);
+            }
+            if (refs.size() > shown) {
+                html += "<p><i>Preview limited to the first " +
+                        std::to_string(shown) + " verses.</i></p>";
+            }
+        }
+        if (html.empty()) {
+            html = app_->swordManager().getVerseText(module, target.sourceKey);
+        }
         app_->mainWindow()->leftPane()->setVersePreviewText(html, module, target.sourceKey);
         return;
     }
@@ -719,78 +1019,270 @@ void TagPanel::updateTargetPreview(const TagTarget& target) {
         html.str(), target.moduleName, target.sourceKey, kind);
 }
 
+void TagPanel::tagsChanged(bool refreshBible) {
+    if (!app_) return;
+    app_->tagManager().save();
+    populateTags();
+    refreshPreviewForSelection();
+
+    if (refreshBible && app_->mainWindow() && app_->mainWindow()->biblePane()) {
+        BiblePane* biblePane = app_->mainWindow()->biblePane();
+        const int scroll = biblePane->scrollY();
+        biblePane->refresh();
+        biblePane->setScrollY(scroll);
+    }
+}
+
+void TagPanel::expandAncestors(const std::string& tagName) {
+    if (!app_) return;
+    std::string current = app_->tagManager().parentOf(tagName);
+    size_t guard = 0;
+    while (!current.empty() && guard++ < 1000) {
+        expandedTags_.insert(current);
+        current = app_->tagManager().parentOf(current);
+    }
+}
+
+std::string TagPanel::tagNameForItem(const Fl_Tree_Item* item) const {
+    auto it = itemTagNames_.find(item);
+    return it != itemTagNames_.end() ? it->second : std::string();
+}
+
+std::string TagPanel::treeLabelForTag(const std::string& tagName) const {
+    const TagManager& tagMgr = app_->tagManager();
+    const int own = tagMgr.getTagCount(tagName);
+    std::string label = tagName + " (";
+    if (tagMgr.hasChildren(tagName)) {
+        const int total = tagMgr.getTagCount(tagName, true);
+        if (total != own) {
+            if (own > 0) label += std::to_string(own) + ", ";
+            label += std::to_string(total) + " total)";
+            return label;
+        }
+    }
+    label += std::to_string(own) + ")";
+    return label;
+}
+
 void TagPanel::populateTags() {
-    if (!tagBrowser_ || !itemBrowser_) return;
+    if (!tagTree_ || !itemBrowser_ || !app_) return;
 
     applyResourceFilterFromChoice();
-    tagBrowser_->clear();
-    tagBrowser_->value(0);
-    itemBrowser_->clear();
-    itemBrowser_->value(0);
-    visibleTags_.clear();
-    visibleTargets_.clear();
-
+    TagManager& tagMgr = app_->tagManager();
     const TagFilterQuery filter = buildTagFilterQuery(
         filterInput_ ? filterInput_->value() : "");
+    filterActive_ = !filter.empty() || selectedResourceFilter_ != ResourceFilter::All;
 
-    auto tags = app_->tagManager().getAllTags();
-    for (const auto& tag : tags) {
-        if (!tagMatchesResourceFilter(tag.name)) {
-            continue;
+    // Decide which nodes are visible. A node is shown when it matches the
+    // filter itself, when a descendant matches (shown dimmed so the match has
+    // context), or when an ancestor's name matched.
+    struct NodeInfo {
+        bool visible = false;
+        bool selfMatch = false;
+        bool subtreeResourceOk = false;
+    };
+    std::unordered_map<std::string, NodeInfo> nodes;
+    std::function<NodeInfo(const std::string&, bool)> evaluate =
+        [&](const std::string& name, bool ancestorNameMatched) {
+        NodeInfo node;
+        const bool nameMatch = !filter.empty() && containsNoCase(name, filter.lowered);
+
+        bool anyChildVisible = false;
+        bool childResourceOk = false;
+        for (const auto& child : tagMgr.childrenOf(name)) {
+            NodeInfo childInfo = evaluate(child, ancestorNameMatched || nameMatch);
+            anyChildVisible = anyChildVisible || childInfo.visible;
+            childResourceOk = childResourceOk || childInfo.subtreeResourceOk;
         }
-        if (!tagMatchesFilter(app_->tagManager(), tag.name, filter, selectedResourceFilter_)) {
-            continue;
+
+        const auto targets = tagMgr.getTargetsWithTag(name);
+        const bool ownResourceOk =
+            selectedResourceFilter_ == ResourceFilter::All ||
+            std::any_of(targets.begin(), targets.end(), [&](const TagTarget& target) {
+                return matchesResourceFilterKind(target, selectedResourceFilter_);
+            });
+        node.subtreeResourceOk = ownResourceOk || childResourceOk;
+
+        if (filter.empty()) {
+            node.selfMatch = ownResourceOk;
+        } else if (nameMatch) {
+            node.selfMatch = node.subtreeResourceOk;
+        } else {
+            node.selfMatch = std::any_of(targets.begin(), targets.end(),
+                                         [&](const TagTarget& target) {
+                return targetMatchesFilter(target, filter, selectedResourceFilter_);
+            });
         }
-        visibleTags_.push_back(tag.name);
-        int count = app_->tagManager().getTagCount(tag.name);
-        std::string line = tag.name + " (" + std::to_string(count) + ")";
-        tagBrowser_->add(line.c_str());
+        node.visible = node.selfMatch || anyChildVisible ||
+                       (ancestorNameMatched && node.subtreeResourceOk);
+        nodes[name] = node;
+        return node;
+    };
+    const std::vector<std::string> roots = tagMgr.childrenOf("");
+    for (const auto& root : roots) {
+        evaluate(root, false);
     }
 
-    int selectedLine = 0;
-    if (!selectedTagName_.empty()) {
-        auto it = std::find(visibleTags_.begin(), visibleTags_.end(), selectedTagName_);
-        if (it != visibleTags_.end()) {
-            selectedLine = static_cast<int>(std::distance(visibleTags_.begin(), it)) + 1;
+    populatingTree_ = true;
+    const int scrollPos = tagTree_->vposition();
+    if (tagTree_->root()) tagTree_->clear_children(tagTree_->root());
+    itemTagNames_.clear();
+
+    std::unordered_map<std::string, Fl_Tree_Item*> itemsByName;
+    std::vector<Fl_Tree_Item*> orderedItems;
+    const Fl_Color dimColor = fl_inactive(tagTree_->item_labelfgcolor());
+    std::function<void(Fl_Tree_Item*, const std::string&)> addNode =
+        [&](Fl_Tree_Item* parentItem, const std::string& name) {
+        const NodeInfo& node = nodes[name];
+        if (!node.visible) return;
+
+        const std::string label = treeLabelForTag(name);
+        Fl_Tree_Item* item = tagTree_->add(parentItem, label.c_str());
+        if (!item) return;
+        if (filterActive_ && !node.selfMatch) item->labelfgcolor(dimColor);
+        itemTagNames_[item] = name;
+        itemsByName[name] = item;
+        orderedItems.push_back(item);
+
+        for (const auto& child : tagMgr.childrenOf(name)) {
+            addNode(item, child);
         }
-    }
-    if (selectedLine == 0 && !visibleTags_.empty()) {
-        selectedLine = 1;
+        if (item->has_children()) {
+            if (filterActive_ || expandedTags_.count(name)) {
+                item->open();
+            } else {
+                item->close();
+            }
+        }
+    };
+    for (const auto& root : roots) {
+        addNode(tagTree_->root(), root);
     }
 
-    if (selectedLine > 0) {
-        tagBrowser_->value(selectedLine);
-        selectedTagName_ = visibleTags_[selectedLine - 1];
+    // Keep the current tag selected when it is still a match; otherwise pick
+    // the first matching tag.
+    Fl_Tree_Item* selectedItem = nullptr;
+    auto isSelectable = [&](const std::string& name) {
+        auto it = nodes.find(name);
+        return it != nodes.end() && it->second.visible &&
+               (!filterActive_ || it->second.selfMatch);
+    };
+    if (!selectedTagName_.empty() && itemsByName.count(selectedTagName_) &&
+        isSelectable(selectedTagName_)) {
+        selectedItem = itemsByName[selectedTagName_];
+    }
+    if (!selectedItem) {
+        for (Fl_Tree_Item* item : orderedItems) {
+            if (isSelectable(itemTagNames_[item])) {
+                selectedItem = item;
+                break;
+            }
+        }
+    }
+    if (!selectedItem && !orderedItems.empty() && !filterActive_) {
+        selectedItem = orderedItems.front();
+    }
+
+    if (selectedItem) {
+        for (Fl_Tree_Item* parent = selectedItem->parent();
+             parent && parent != tagTree_->root();
+             parent = parent->parent()) {
+            if (!parent->is_open()) {
+                parent->open();
+                if (!filterActive_) expandedTags_.insert(tagNameForItem(parent));
+            }
+        }
+    }
+
+    // Item positions are only computed while drawing; compute them now so
+    // vposition()/show_item() work against the rebuilt tree.
+    tagTree_->calc_dimensions();
+    tagTree_->calc_tree();
+    tagTree_->vposition(scrollPos);
+    if (selectedItem) {
+        tagTree_->select_only(selectedItem, 0);
+        tagTree_->set_item_focus(selectedItem);
+        tagTree_->show_item(selectedItem);
+        selectedTagName_ = itemTagNames_[selectedItem];
+    } else {
+        tagTree_->deselect_all(nullptr, 0);
+    }
+    populatingTree_ = false;
+    tagTree_->redraw();
+
+    if (selectedItem) {
         populateTargets(selectedTagName_);
     } else {
         selectedTagName_.clear();
+        itemBrowser_->clear();
+        visibleTargets_.clear();
+        visibleTargetTags_.clear();
         hasSelectedTarget_ = false;
     }
 }
 
 void TagPanel::populateTargets(const std::string& tagName) {
-    if (!itemBrowser_) return;
+    if (!itemBrowser_ || !app_) return;
 
     itemBrowser_->clear();
     itemBrowser_->value(0);
     visibleTargets_.clear();
+    visibleTargetTags_.clear();
+    if (tagName.empty()) {
+        hasSelectedTarget_ = false;
+        return;
+    }
 
-    auto targets = app_->tagManager().getTargetsWithTag(tagName);
-    sortTargetsCanonical(app_->swordManager(), activeBibleModule(), targets);
+    TagManager& tagMgr = app_->tagManager();
+    std::vector<std::string> sourceTags{tagName};
+    if (includeSubtags_) {
+        const auto descendants = tagMgr.descendantsOf(tagName);
+        sourceTags.insert(sourceTags.end(), descendants.begin(), descendants.end());
+    }
+
+    std::vector<TargetEntry> entries;
+    std::set<std::string> seen;
+    for (const auto& source : sourceTags) {
+        for (auto& target : tagMgr.getTargetsWithTag(source)) {
+            if (!seen.insert(target.identityKey()).second) continue;
+            entries.push_back(TargetEntry{std::move(target), source});
+        }
+    }
+    sortEntriesCanonical(app_->swordManager(), activeBibleModule(), entries);
 
     const TagFilterQuery filter = filterTargetsByText_
         ? buildTagFilterQuery(filterInput_ ? filterInput_->value() : "")
         : TagFilterQuery{};
+    const TagFilterQuery noTextFilter;
+
+    // When the filter text matched a tag's name (or an ancestor's), show all of
+    // that tag's items instead of filtering them by the same text.
+    auto pathMatchesFilter = [&](const std::string& name) {
+        if (filter.empty()) return false;
+        std::string current = name;
+        size_t guard = 0;
+        while (!current.empty() && guard++ < 1000) {
+            if (containsNoCase(current, filter.lowered)) return true;
+            current = tagMgr.parentOf(current);
+        }
+        return false;
+    };
 
     int selectedLine = 0;
-    for (const auto& target : targets) {
-        if (!targetMatchesFilter(target, filter, selectedResourceFilter_)) continue;
+    for (const auto& entry : entries) {
+        const TagFilterQuery& query =
+            pathMatchesFilter(entry.sourceTag) ? noTextFilter : filter;
+        if (!targetMatchesFilter(entry.target, query, selectedResourceFilter_)) continue;
 
-        visibleTargets_.push_back(target);
-        std::string line = targetDisplayLabel(target);
+        visibleTargets_.push_back(entry.target);
+        visibleTargetTags_.push_back(entry.sourceTag);
+        std::string line = targetDisplayLabel(entry.target);
+        if (entry.sourceTag != tagName) {
+            line += "   [" + entry.sourceTag + "]";
+        }
         itemBrowser_->add(line.c_str());
 
-        if (hasSelectedTarget_ && targetEquals(target, selectedTarget_)) {
+        if (hasSelectedTarget_ && targetEquals(entry.target, selectedTarget_)) {
             selectedLine = itemBrowser_->size();
         }
     }
@@ -801,45 +1293,12 @@ void TagPanel::populateTargets(const std::string& tagName) {
 
     if (selectedLine > 0) {
         itemBrowser_->value(selectedLine);
+        itemBrowser_->middleline(selectedLine);
         selectedTarget_ = visibleTargets_[selectedLine - 1];
         hasSelectedTarget_ = true;
         refreshPreviewForSelection();
     } else {
         hasSelectedTarget_ = false;
-    }
-}
-
-void TagPanel::activateTargetLine(int line, int mouseButton, bool isDoubleClick) {
-    if (!app_ || !app_->mainWindow()) return;
-    if (line <= 0 || line > static_cast<int>(visibleTargets_.size())) return;
-
-    const TagTarget& target = visibleTargets_[static_cast<size_t>(line - 1)];
-    selectedTarget_ = target;
-    hasSelectedTarget_ = true;
-
-    if (mouseButton == FL_MIDDLE_MOUSE && target.kind == TagTarget::Kind::Verse) {
-        std::string module = activeBibleModule();
-        app_->mainWindow()->openInNewStudyTab(module, target.sourceKey);
-        return;
-    }
-
-    if (mouseButton == FL_LEFT_MOUSE && isDoubleClick) {
-        if (target.kind == TagTarget::Kind::Verse) {
-            std::string module = activeBibleModule();
-            if (!module.empty()) {
-                app_->mainWindow()->navigateTo(module, target.sourceKey);
-            } else {
-                app_->mainWindow()->navigateTo(target.sourceKey);
-            }
-        } else if (target.kind == TagTarget::Kind::Commentary) {
-            app_->mainWindow()->showCommentary(target.moduleName,
-                                               target.sourceKey,
-                                               target.selectionText);
-        } else {
-            app_->mainWindow()->showGeneralBookEntry(target.moduleName,
-                                                     target.sourceKey,
-                                                     target.selectionText);
-        }
     }
 }
 
@@ -853,27 +1312,270 @@ void TagPanel::showItemContextMenu(int screenX, int screenY) {
     Fl_Menu_Button menu(screenX, screenY, 0, 0);
     ui_font::applyCurrentAppMenuFont(&menu);
 
-    std::string copyLabel = "Copy Item Label";
-    menu.add(copyLabel.c_str(), 0, [](Fl_Widget*, void* data) {
+    menu.add("Copy Item Label", 0, [](Fl_Widget*, void* data) {
         auto* self = static_cast<TagPanel*>(data);
         if (!self || !self->hasSelectedTarget_) return;
-        std::string text = targetDisplayLabel(self->selectedTarget_);
-        Fl::copy(text.c_str(), static_cast<int>(text.size()), 0);
-        Fl::copy(text.c_str(), static_cast<int>(text.size()), 1);
+        copyToClipboard(targetDisplayLabel(self->selectedTarget_));
     }, this);
 
     if (target.kind == TagTarget::Kind::Verse) {
-        std::string verseLabel = "Copy Verse Reference";
-        menu.add(verseLabel.c_str(), 0, [](Fl_Widget*, void* data) {
+        menu.add("Copy Verse Reference", 0, [](Fl_Widget*, void* data) {
             auto* self = static_cast<TagPanel*>(data);
             if (!self || !self->hasSelectedTarget_) return;
-            std::string text = self->selectedTarget_.sourceKey;
-            Fl::copy(text.c_str(), static_cast<int>(text.size()), 0);
-            Fl::copy(text.c_str(), static_cast<int>(text.size()), 1);
+            copyToClipboard(self->selectedTarget_.sourceKey);
+        }, this);
+
+        menu.add("Edit Verse Range...", 0, [](Fl_Widget*, void* data) {
+            auto* self = static_cast<TagPanel*>(data);
+            if (self) self->editSelectedVerseRange();
+        }, this);
+    }
+
+    menu.add("Remove from Tag", 0, [](Fl_Widget*, void* data) {
+        onRemoveTag(nullptr, data);
+    }, this);
+
+    menu.popup();
+}
+
+void TagPanel::showTagContextMenu(int screenX, int screenY, bool onItem) {
+    if (!app_) return;
+
+    Fl_Menu_Button menu(screenX, screenY, 0, 0);
+    ui_font::applyCurrentAppMenuFont(&menu);
+
+    const bool hasTag = onItem && !selectedTagName_.empty();
+    if (hasTag) {
+        menu.add("New Subtag...", 0, [](Fl_Widget*, void* data) {
+            auto* self = static_cast<TagPanel*>(data);
+            if (self) self->createTagUnder(self->selectedTagName_);
+        }, this);
+    }
+    menu.add("New Top-Level Tag...", 0, [](Fl_Widget*, void* data) {
+        auto* self = static_cast<TagPanel*>(data);
+        if (self) self->createTagUnder("");
+    }, this, hasTag ? FL_MENU_DIVIDER : 0);
+
+    if (hasTag) {
+        menu.add("Rename...", 0, [](Fl_Widget*, void* data) {
+            auto* self = static_cast<TagPanel*>(data);
+            if (self) self->renameSelectedTag();
+        }, this);
+        menu.add("Move To...", 0, [](Fl_Widget*, void* data) {
+            auto* self = static_cast<TagPanel*>(data);
+            if (self) self->moveSelectedTag();
+        }, this);
+        menu.add("Set Color...", 0, [](Fl_Widget*, void* data) {
+            auto* self = static_cast<TagPanel*>(data);
+            if (self) self->setSelectedTagColor();
+        }, this);
+        menu.add("Copy Tag Path", 0, [](Fl_Widget*, void* data) {
+            auto* self = static_cast<TagPanel*>(data);
+            if (!self || !self->app_ || self->selectedTagName_.empty()) return;
+            copyToClipboard(self->app_->tagManager().tagPath(self->selectedTagName_));
+        }, this, FL_MENU_DIVIDER);
+    }
+
+    menu.add("Expand All", 0, [](Fl_Widget*, void* data) {
+        auto* self = static_cast<TagPanel*>(data);
+        if (self) self->setAllExpanded(true);
+    }, this);
+    menu.add("Collapse All", 0, [](Fl_Widget*, void* data) {
+        auto* self = static_cast<TagPanel*>(data);
+        if (self) self->setAllExpanded(false);
+    }, this, hasTag ? FL_MENU_DIVIDER : 0);
+
+    if (hasTag) {
+        menu.add("Delete...", 0, [](Fl_Widget*, void* data) {
+            auto* self = static_cast<TagPanel*>(data);
+            if (self) self->deleteSelectedTag();
         }, this);
     }
 
     menu.popup();
+}
+
+void TagPanel::setAllExpanded(bool expanded) {
+    if (!app_) return;
+    if (expanded) {
+        for (const auto& tag : app_->tagManager().getAllTags()) {
+            if (app_->tagManager().hasChildren(tag.name)) expandedTags_.insert(tag.name);
+        }
+    } else {
+        expandedTags_.clear();
+    }
+    populateTags();
+}
+
+void TagPanel::createTagUnder(const std::string& parentName) {
+    if (!app_) return;
+    TagManager& tagMgr = app_->tagManager();
+
+    std::string prompt = parentName.empty()
+        ? std::string("Create a new tag. Choose a parent to make it a subtag.")
+        : "Create a new subtag of \"" + tagMgr.tagPath(parentName) + "\".";
+    TagParentDialog dialog(tagMgr, "New Tag", prompt, true, parentName, {});
+    std::string name;
+    std::string parent;
+    if (!dialog.open(name, parent)) return;
+
+    if (tagMgr.hasTag(name)) {
+        fl_alert("Tag '%s' already exists.", name.c_str());
+        return;
+    }
+
+    Tag parentTag;
+    std::string color = kDefaultTagColor;
+    if (!parent.empty() && tagMgr.getTag(parent, parentTag)) {
+        color = parentTag.color;
+    }
+    if (!tagMgr.createTag(name, color, parent)) {
+        fl_alert("Could not create tag '%s'.", name.c_str());
+        return;
+    }
+
+    // A new tag has no items yet, so any active filter would hide it.
+    if (filterInput_) filterInput_->value("");
+    if (resourceFilterChoice_) resourceFilterChoice_->value(0);
+    filterTargetsByText_ = true;
+    updateFilterControls();
+
+    selectedTagName_ = name;
+    hasSelectedTarget_ = false;
+    expandAncestors(name);
+    tagsChanged(false);
+}
+
+void TagPanel::renameSelectedTag() {
+    if (!app_ || selectedTagName_.empty()) return;
+
+    const std::string oldName = selectedTagName_;
+    const char* rawNewName = fl_input("Rename tag '%s' to:", oldName.c_str(),
+                                      oldName.c_str());
+    if (!rawNewName) return;
+
+    std::string newName = trimCopy(rawNewName);
+    if (newName.empty()) {
+        fl_alert("Blank tags are not valid.");
+        return;
+    }
+    if (newName == oldName) return;
+
+    if (app_->tagManager().renameTag(oldName, newName)) {
+        if (expandedTags_.erase(oldName)) expandedTags_.insert(newName);
+        selectedTagName_ = newName;
+        tagsChanged(true);
+    } else {
+        fl_alert("Cannot rename: tag '%s' already exists.", newName.c_str());
+    }
+}
+
+void TagPanel::moveSelectedTag() {
+    if (!app_ || selectedTagName_.empty()) return;
+    TagManager& tagMgr = app_->tagManager();
+
+    const std::string name = selectedTagName_;
+    std::set<std::string> excluded{name};
+    for (const auto& descendant : tagMgr.descendantsOf(name)) {
+        excluded.insert(descendant);
+    }
+
+    TagParentDialog dialog(tagMgr, "Move Tag",
+                           "Move \"" + tagMgr.tagPath(name) + "\" under:",
+                           false, tagMgr.parentOf(name), excluded);
+    std::string unusedName;
+    std::string parent;
+    if (!dialog.open(unusedName, parent)) return;
+
+    if (!tagMgr.setParent(name, parent)) {
+        fl_alert("Cannot move '%s' there.", name.c_str());
+        return;
+    }
+    expandAncestors(name);
+    tagsChanged(true);
+}
+
+void TagPanel::deleteSelectedTag() {
+    if (!app_ || selectedTagName_.empty()) return;
+    TagManager& tagMgr = app_->tagManager();
+
+    const std::string tagName = selectedTagName_;
+    const std::string parent = tagMgr.parentOf(tagName);
+    bool deleteDescendants = false;
+
+    const auto descendants = tagMgr.descendantsOf(tagName);
+    if (!descendants.empty()) {
+        std::string message =
+            "Delete tag '" + tagName + "' and remove it from all items?\n\n"
+            "It has " + std::to_string(descendants.size()) +
+            (descendants.size() == 1 ? " subtag." : " subtags.") +
+            " Keep them (moved up one level) or delete them too?";
+        int choice = fl_choice("%s", "Cancel", "Keep Subtags", "Delete All",
+                               message.c_str());
+        if (choice == 0) return;
+        deleteDescendants = choice == 2;
+    } else {
+        int confirm = fl_choice("Delete tag '%s' and remove it from all items?",
+                                "Cancel", "Delete", nullptr, tagName.c_str());
+        if (confirm != 1) return;
+    }
+
+    tagMgr.deleteTag(tagName, deleteDescendants);
+    expandedTags_.erase(tagName);
+    selectedTagName_ = parent;
+    visibleTargets_.clear();
+    visibleTargetTags_.clear();
+    hasSelectedTarget_ = false;
+    tagsChanged(true);
+}
+
+void TagPanel::setSelectedTagColor() {
+    if (!app_ || selectedTagName_.empty()) return;
+    TagManager& tagMgr = app_->tagManager();
+
+    Tag tag;
+    if (!tagMgr.getTag(selectedTagName_, tag)) return;
+
+    uchar r = 0x4a;
+    uchar g = 0x86;
+    uchar b = 0xc8;
+    parseHexColor(tag.color, r, g, b);
+    std::string title = "Color for " + tag.name;
+    if (!fl_color_chooser(title.c_str(), r, g, b, 2)) return;
+
+    tagMgr.setTagColor(tag.name, formatHexColor(r, g, b));
+    tagsChanged(true);
+}
+
+void TagPanel::editSelectedVerseRange() {
+    if (!app_ || !itemBrowser_) return;
+    int line = itemBrowser_->value();
+    if (line <= 0 || line > static_cast<int>(visibleTargets_.size())) return;
+
+    const TagTarget oldTarget = visibleTargets_[static_cast<size_t>(line - 1)];
+    const std::string sourceTag = visibleTargetTags_[static_cast<size_t>(line - 1)];
+    if (!oldTarget.isVerse()) return;
+
+    const char* raw = fl_input("Verses tagged '%s' (e.g. Genesis 1:1-5):",
+                               oldTarget.sourceKey.c_str(), sourceTag.c_str());
+    if (!raw) return;
+
+    std::string ref = trimCopy(raw);
+    VerseRange range;
+    if (!VerseRange::parse(ref, range)) {
+        fl_alert("\"%s\" is not a verse reference.", ref.c_str());
+        return;
+    }
+
+    TagTarget newTarget = TagTarget::verse(ref);
+    if (targetEquals(newTarget, oldTarget)) return;
+
+    TagManager& tagMgr = app_->tagManager();
+    tagMgr.untagTarget(oldTarget, sourceTag);
+    tagMgr.tagTarget(newTarget, sourceTag);
+    selectedTarget_ = newTarget;
+    hasSelectedTarget_ = true;
+    tagsChanged(true);
 }
 
 void TagPanel::onFilterChange(Fl_Widget* /*w*/, void* data) {
@@ -896,21 +1598,31 @@ void TagPanel::onResourceFilterChange(Fl_Widget* /*w*/, void* data) {
     self->populateTags();
 }
 
-void TagPanel::onTagSelect(Fl_Widget* /*w*/, void* data) {
+void TagPanel::onTreeEvent(Fl_Widget* /*w*/, void* data) {
     auto* self = static_cast<TagPanel*>(data);
-    if (!self || !self->tagBrowser_) return;
+    if (!self || !self->tagTree_ || self->populatingTree_) return;
 
-    int idx = self->tagBrowser_->value();
-    if (idx <= 0 || idx > static_cast<int>(self->visibleTags_.size())) {
-        self->selectedTagName_.clear();
-        self->itemBrowser_->clear();
-        self->visibleTargets_.clear();
-        self->hasSelectedTarget_ = false;
-        return;
+    Fl_Tree_Item* item = self->tagTree_->callback_item();
+    const std::string name = self->tagNameForItem(item);
+    if (name.empty()) return;
+
+    switch (self->tagTree_->callback_reason()) {
+    case FL_TREE_REASON_OPENED:
+        if (!self->filterActive_) self->expandedTags_.insert(name);
+        break;
+    case FL_TREE_REASON_CLOSED:
+        if (!self->filterActive_) self->expandedTags_.erase(name);
+        break;
+    case FL_TREE_REASON_SELECTED:
+    case FL_TREE_REASON_RESELECTED:
+        if (name != self->selectedTagName_ || self->visibleTargets_.empty()) {
+            self->selectedTagName_ = name;
+            self->populateTargets(name);
+        }
+        break;
+    default:
+        break;
     }
-
-    self->selectedTagName_ = self->visibleTags_[idx - 1];
-    self->populateTargets(self->selectedTagName_);
 }
 
 void TagPanel::onItemSelect(Fl_Widget* /*w*/, void* data) {
@@ -927,88 +1639,46 @@ void TagPanel::onItemSelect(Fl_Widget* /*w*/, void* data) {
 
 void TagPanel::onNewTag(Fl_Widget* /*w*/, void* data) {
     auto* self = static_cast<TagPanel*>(data);
-    if (!self || !self->app_) return;
-
-    const char* rawName = fl_input("New tag name:");
-    if (!rawName) return;
-
-    std::string name = trimCopy(rawName);
-    if (name.empty()) {
-        fl_alert("Blank tags are not valid.");
-        return;
-    }
-
-    if (self->app_->tagManager().createTag(name)) {
-        self->app_->tagManager().save();
-        self->selectedTagName_ = name;
-        self->populateTags();
-        self->refreshPreviewForSelection();
-    } else {
-        fl_alert("Tag '%s' already exists.", name.c_str());
-    }
+    if (!self) return;
+    self->createTagUnder("");
 }
 
 void TagPanel::onDeleteTag(Fl_Widget* /*w*/, void* data) {
     auto* self = static_cast<TagPanel*>(data);
-    if (!self || !self->app_ || !self->tagBrowser_) return;
-
-    int idx = self->tagBrowser_->value();
-    if (idx <= 0 || idx - 1 >= static_cast<int>(self->visibleTags_.size())) return;
-
-    std::string tagName = self->visibleTags_[idx - 1];
-    int confirm = fl_choice("Delete tag '%s' and remove it from all items?",
-                            "Cancel", "Delete", nullptr, tagName.c_str());
-    if (confirm == 1) {
-        self->app_->tagManager().deleteTag(tagName);
-        self->app_->tagManager().save();
-        if (self->selectedTagName_ == tagName) {
-            self->selectedTagName_.clear();
-            self->visibleTargets_.clear();
-            self->hasSelectedTarget_ = false;
-        }
-        self->populateTags();
-        self->refreshPreviewForSelection();
-    }
+    if (self) self->deleteSelectedTag();
 }
 
 void TagPanel::onRenameTag(Fl_Widget* /*w*/, void* data) {
     auto* self = static_cast<TagPanel*>(data);
-    if (!self || !self->app_ || !self->tagBrowser_) return;
+    if (self) self->renameSelectedTag();
+}
 
-    int idx = self->tagBrowser_->value();
-    if (idx <= 0 || idx - 1 >= static_cast<int>(self->visibleTags_.size())) return;
+void TagPanel::onMoveTag(Fl_Widget* /*w*/, void* data) {
+    auto* self = static_cast<TagPanel*>(data);
+    if (self) self->moveSelectedTag();
+}
 
-    std::string oldName = self->visibleTags_[idx - 1];
-    const char* rawNewName = fl_input("Rename tag '%s' to:", oldName.c_str(),
-                                      oldName.c_str());
-    if (!rawNewName) return;
-
-    std::string newName = trimCopy(rawNewName);
-    if (newName.empty()) {
-        fl_alert("Blank tags are not valid.");
-        return;
-    }
-    if (newName == oldName) return;
-
-    if (self->app_->tagManager().renameTag(oldName, newName)) {
-        self->app_->tagManager().save();
-        self->selectedTagName_ = newName;
-        self->populateTags();
-        self->refreshPreviewForSelection();
-    } else {
-        fl_alert("Cannot rename: tag '%s' already exists.", newName.c_str());
-    }
+void TagPanel::onIncludeSubtags(Fl_Widget* /*w*/, void* data) {
+    auto* self = static_cast<TagPanel*>(data);
+    if (!self || !self->includeSubtagsCheck_) return;
+    self->includeSubtags_ = self->includeSubtagsCheck_->value() != 0;
+    self->populateTargets(self->selectedTagName_);
 }
 
 void TagPanel::onRemoveTag(Fl_Widget* /*w*/, void* data) {
     auto* self = static_cast<TagPanel*>(data);
-    if (!self || !self->app_ || !self->hasSelectedTarget_) return;
+    if (!self || !self->app_ || !self->hasSelectedTarget_ || !self->itemBrowser_) return;
 
-    if (self->selectedTagName_.empty()) return;
-    self->app_->tagManager().untagTarget(self->selectedTarget_, self->selectedTagName_);
-    self->app_->tagManager().save();
-    self->populateTags();
-    self->refreshPreviewForSelection();
+    int idx = self->itemBrowser_->value();
+    if (idx <= 0 || idx > static_cast<int>(self->visibleTargets_.size())) return;
+
+    const TagTarget target = self->visibleTargets_[static_cast<size_t>(idx - 1)];
+    const std::string sourceTag = self->visibleTargetTags_[static_cast<size_t>(idx - 1)];
+    if (sourceTag.empty()) return;
+
+    self->app_->tagManager().untagTarget(target, sourceTag);
+    self->hasSelectedTarget_ = false;
+    self->tagsChanged(target.isVerse());
 }
 
 } // namespace verdad

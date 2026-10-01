@@ -6,8 +6,10 @@
 #include <cctype>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <iostream>
 #include <sstream>
+#include <tuple>
 
 namespace verdad {
 namespace {
@@ -28,6 +30,82 @@ std::string trimCopy(const std::string& text) {
     }
 
     return text.substr(start, end - start);
+}
+
+std::string toLowerCopy(const std::string& text) {
+    std::string out = text;
+    std::transform(out.begin(), out.end(), out.begin(),
+                   [](unsigned char c) {
+                       return static_cast<char>(std::tolower(c));
+                   });
+    return out;
+}
+
+bool lessNoCase(const std::string& a, const std::string& b) {
+    const std::string la = toLowerCopy(a);
+    const std::string lb = toLowerCopy(b);
+    if (la != lb) return la < lb;
+    return a < b;
+}
+
+void sortTagsByName(std::vector<Tag>& tags) {
+    std::sort(tags.begin(), tags.end(),
+              [](const Tag& a, const Tag& b) { return lessNoCase(a.name, b.name); });
+}
+
+bool parsePositiveInt(const std::string& text, int& out) {
+    if (text.empty() || text.size() > 6) return false;
+    for (char c : text) {
+        if (!std::isdigit(static_cast<unsigned char>(c))) return false;
+    }
+    out = std::stoi(text);
+    return out > 0;
+}
+
+/// Parse "C:V" or "C". verse is 0 when only a chapter is given.
+bool parseChapterVerse(const std::string& text, int& chapter, int& verse) {
+    verse = 0;
+    size_t colon = text.find(':');
+    if (colon == std::string::npos) {
+        return parsePositiveInt(text, chapter);
+    }
+    return parsePositiveInt(text.substr(0, colon), chapter) &&
+           parsePositiveInt(text.substr(colon + 1), verse);
+}
+
+/// Collapse en/em dashes and whitespace around separators so
+/// "Genesis 1:1 – 5" parses like "Genesis 1:1-5".
+std::string normalizeReferenceText(const std::string& ref) {
+    std::string text = trimCopy(ref);
+    const std::string dashes[] = {"\xE2\x80\x93", "\xE2\x80\x94"};
+    for (const auto& dash : dashes) {
+        size_t pos = 0;
+        while ((pos = text.find(dash, pos)) != std::string::npos) {
+            text.replace(pos, dash.size(), "-");
+            ++pos;
+        }
+    }
+
+    std::string out;
+    out.reserve(text.size());
+    for (size_t i = 0; i < text.size(); ++i) {
+        char c = text[i];
+        if (std::isspace(static_cast<unsigned char>(c))) {
+            size_t next = i;
+            while (next < text.size() &&
+                   std::isspace(static_cast<unsigned char>(text[next]))) {
+                ++next;
+            }
+            bool nearSeparator =
+                (!out.empty() && (out.back() == '-' || out.back() == ':')) ||
+                (next < text.size() && (text[next] == '-' || text[next] == ':'));
+            if (!nearSeparator) out.push_back(' ');
+            i = next - 1;
+            continue;
+        }
+        out.push_back(c);
+    }
+    return out;
 }
 
 bool execSql(sqlite3* db, const char* sql) {
@@ -131,6 +209,11 @@ bool ensureSchema(sqlite3* db) {
             PRIMARY KEY (verse_key, tag_name)
         );
 
+        CREATE TABLE IF NOT EXISTS tag_tree (
+            tag_name TEXT PRIMARY KEY,
+            parent_name TEXT NOT NULL
+        );
+
         CREATE INDEX IF NOT EXISTS idx_tag_items_tag_name
             ON tag_items(tag_name, resource_kind, module_name, source_key, selection_text);
 
@@ -139,7 +222,7 @@ bool ensureSchema(sqlite3* db) {
     )SQL";
 
     return execSql(db, kSchemaSql) &&
-           (userVersion(db) >= 2 || setUserVersion(db, 2));
+           (userVersion(db) >= 3 || setUserVersion(db, 3));
 }
 
 void applyPragmas(sqlite3* db) {
@@ -177,11 +260,144 @@ std::string displayLabelForTarget(const TagTarget& target) {
 
 } // namespace
 
+bool VerseRange::isSingleVerse() const {
+    return startChapter == endChapter && startVerse == endVerse;
+}
+
+bool VerseRange::contains(const std::string& otherBookKey, int chapter, int verse) const {
+    if (otherBookKey != bookKey) return false;
+    auto point = std::make_tuple(chapter, verse);
+    return point >= std::make_tuple(startChapter, startVerse) &&
+           point <= std::make_tuple(endChapter, endVerse);
+}
+
+bool VerseRange::overlaps(const VerseRange& other) const {
+    if (other.bookKey != bookKey) return false;
+    return !(std::make_tuple(endChapter, endVerse) <
+                 std::make_tuple(other.startChapter, other.startVerse) ||
+             std::make_tuple(other.endChapter, other.endVerse) <
+                 std::make_tuple(startChapter, startVerse));
+}
+
+bool VerseRange::startsAt(int chapter, int verse) const {
+    return startChapter == chapter && startVerse == verse;
+}
+
+std::string VerseRange::toString() const {
+    std::ostringstream out;
+    out << book << ' ' << startChapter;
+    const bool wholeChapters = startVerse == 1 && endVerse == kChapterEnd;
+    if (wholeChapters) {
+        if (endChapter != startChapter) out << '-' << endChapter;
+        return out.str();
+    }
+
+    out << ':' << startVerse;
+    if (endChapter != startChapter) {
+        out << '-' << endChapter << ':' << endVerse;
+    } else if (endVerse != startVerse) {
+        out << '-' << endVerse;
+    }
+    return out.str();
+}
+
+bool VerseRange::parse(const std::string& ref, VerseRange& out) {
+    const std::string text = normalizeReferenceText(ref);
+    size_t lastSpace = text.rfind(' ');
+    if (lastSpace == std::string::npos || lastSpace == 0) return false;
+
+    VerseRange range;
+    range.book = trimCopy(text.substr(0, lastSpace));
+    range.bookKey = normalizeBookKey(range.book);
+    if (range.bookKey.empty() ||
+        !std::any_of(range.book.begin(), range.book.end(),
+                     [](unsigned char c) { return std::isalpha(c); })) {
+        return false;
+    }
+
+    const std::string spec = text.substr(lastSpace + 1);
+    const size_t dash = spec.find('-');
+    const std::string startText = spec.substr(0, dash);
+    const std::string endText =
+        dash == std::string::npos ? "" : spec.substr(dash + 1);
+    if (dash != std::string::npos && endText.find('-') != std::string::npos) {
+        return false;
+    }
+
+    int startChapter = 0;
+    int startVerse = 0;
+    if (!parseChapterVerse(startText, startChapter, startVerse)) return false;
+    const bool startHasVerse = startVerse > 0;
+
+    int endChapter = startChapter;
+    int endVerse = startHasVerse ? startVerse : kChapterEnd;
+    if (dash != std::string::npos) {
+        int a = 0;
+        int b = 0;
+        if (!parseChapterVerse(endText, a, b)) return false;
+        if (b > 0) {
+            endChapter = a;
+            endVerse = b;
+        } else if (startHasVerse) {
+            endVerse = a;
+        } else {
+            endChapter = a;
+            endVerse = kChapterEnd;
+        }
+    }
+    if (!startHasVerse) startVerse = 1;
+
+    if (std::make_tuple(endChapter, endVerse) < std::make_tuple(startChapter, startVerse)) {
+        if (startHasVerse && endVerse != kChapterEnd) {
+            std::swap(startChapter, endChapter);
+            std::swap(startVerse, endVerse);
+        } else {
+            return false;
+        }
+    }
+
+    range.startChapter = startChapter;
+    range.startVerse = startVerse;
+    range.endChapter = endChapter;
+    range.endVerse = endVerse;
+    out = std::move(range);
+    return true;
+}
+
+std::string VerseRange::normalizeBookKey(const std::string& book) {
+    std::string out;
+    out.reserve(book.size());
+    for (char c : book) {
+        unsigned char uc = static_cast<unsigned char>(c);
+        if (std::isalnum(uc) || uc >= 0x80) {
+            out.push_back(static_cast<char>(std::tolower(uc)));
+        }
+    }
+    return out;
+}
+
 TagTarget TagTarget::verse(const std::string& verseKey) {
     TagTarget target;
     target.kind = Kind::Verse;
     target.sourceKey = trimCopy(verseKey);
+
+    // Canonicalize ranges ("Gen 1:5-3" -> "Gen 1:3-5", "Gen 1:1-1" -> "Gen 1:1")
+    // while leaving plain single-verse keys exactly as given.
+    VerseRange range;
+    if (target.sourceKey.find_first_of("-\xE2") != std::string::npos &&
+        VerseRange::parse(target.sourceKey, range)) {
+        target.sourceKey = range.toString();
+    }
     return target;
+}
+
+bool TagTarget::verseRange(VerseRange& out) const {
+    return kind == Kind::Verse && VerseRange::parse(sourceKey, out);
+}
+
+bool TagTarget::isVerseRange() const {
+    VerseRange range;
+    return verseRange(range) && !range.isSingleVerse();
 }
 
 TagTarget TagTarget::commentary(const std::string& moduleName,
@@ -210,6 +426,15 @@ std::string TagTarget::displayLabel() const {
     return displayLabelForTarget(*this);
 }
 
+std::string TagTarget::identityKey() const {
+    std::ostringstream out;
+    out << kindToken(kind) << '|'
+        << encodeSizedField(trimCopy(moduleName)) << '|'
+        << encodeSizedField(trimCopy(sourceKey)) << '|'
+        << encodeSizedField(trimCopy(selectionText));
+    return out.str();
+}
+
 TagManager::TagManager() = default;
 
 TagManager::~TagManager() {
@@ -228,6 +453,8 @@ bool TagManager::load(const std::string& filepath) {
     targetTags_.clear();
     tagTargets_.clear();
     targets_.clear();
+    parents_.clear();
+    invalidateCaches();
     dirty_ = false;
 
     if (!openDatabase(filepath)) {
@@ -269,22 +496,27 @@ bool TagManager::checkpoint() {
     return execSql(db_, "PRAGMA wal_checkpoint(TRUNCATE);");
 }
 
-bool TagManager::createTag(const std::string& name, const std::string& color) {
-    if (tags_.find(name) != tags_.end()) return false;
+bool TagManager::createTag(const std::string& name,
+                           const std::string& color,
+                           const std::string& parentName) {
+    if (name.empty() || tags_.find(name) != tags_.end()) return false;
 
     Tag tag;
     tag.name = name;
-    tag.color = color;
+    tag.color = color.empty() ? kDefaultTagColor : color;
     tags_[name] = tag;
+    if (!parentName.empty() && parentName != name &&
+        tags_.find(parentName) != tags_.end()) {
+        parents_[name] = parentName;
+    }
+    invalidateCaches();
     dirty_ = true;
     return true;
 }
 
-bool TagManager::deleteTag(const std::string& name) {
-    auto it = tags_.find(name);
-    if (it == tags_.end()) return false;
-
-    tags_.erase(it);
+void TagManager::removeTagInternal(const std::string& name) {
+    tags_.erase(name);
+    parents_.erase(name);
 
     auto ttIt = tagTargets_.find(name);
     if (ttIt != tagTargets_.end()) {
@@ -300,7 +532,28 @@ bool TagManager::deleteTag(const std::string& name) {
         }
         tagTargets_.erase(ttIt);
     }
+}
 
+bool TagManager::deleteTag(const std::string& name, bool deleteDescendants) {
+    if (tags_.find(name) == tags_.end()) return false;
+
+    if (deleteDescendants) {
+        for (const auto& descendant : descendantsOf(name)) {
+            removeTagInternal(descendant);
+        }
+    } else {
+        const std::string newParent = parentOf(name);
+        for (const auto& child : childrenOf(name)) {
+            if (newParent.empty()) {
+                parents_.erase(child);
+            } else {
+                parents_[child] = newParent;
+            }
+        }
+    }
+
+    removeTagInternal(name);
+    invalidateCaches();
     dirty_ = true;
     return true;
 }
@@ -308,7 +561,7 @@ bool TagManager::deleteTag(const std::string& name) {
 bool TagManager::renameTag(const std::string& oldName, const std::string& newName) {
     auto it = tags_.find(oldName);
     if (it == tags_.end()) return false;
-    if (tags_.find(newName) != tags_.end()) return false;
+    if (newName.empty() || tags_.find(newName) != tags_.end()) return false;
 
     Tag tag = it->second;
     tag.name = newName;
@@ -331,6 +584,17 @@ bool TagManager::renameTag(const std::string& oldName, const std::string& newNam
         }
     }
 
+    auto parentIt = parents_.find(oldName);
+    if (parentIt != parents_.end()) {
+        std::string parent = parentIt->second;
+        parents_.erase(parentIt);
+        parents_[newName] = parent;
+    }
+    for (auto& pair : parents_) {
+        if (pair.second == oldName) pair.second = newName;
+    }
+
+    invalidateCaches();
     dirty_ = true;
     return true;
 }
@@ -341,6 +605,133 @@ void TagManager::setTagColor(const std::string& name, const std::string& color) 
         it->second.color = color;
         dirty_ = true;
     }
+}
+
+bool TagManager::hasTag(const std::string& name) const {
+    return tags_.find(name) != tags_.end();
+}
+
+bool TagManager::getTag(const std::string& name, Tag& out) const {
+    auto it = tags_.find(name);
+    if (it == tags_.end()) return false;
+    out = it->second;
+    return true;
+}
+
+std::string TagManager::parentOf(const std::string& name) const {
+    auto it = parents_.find(name);
+    return it != parents_.end() ? it->second : std::string();
+}
+
+void TagManager::rebuildChildrenCache() const {
+    childrenCache_.clear();
+    for (const auto& pair : tags_) {
+        childrenCache_[parentOf(pair.first)].push_back(pair.first);
+    }
+    for (auto& pair : childrenCache_) {
+        std::sort(pair.second.begin(), pair.second.end(), lessNoCase);
+    }
+    childrenCacheDirty_ = false;
+}
+
+std::vector<std::string> TagManager::childrenOf(const std::string& parentName) const {
+    if (childrenCacheDirty_) rebuildChildrenCache();
+    auto it = childrenCache_.find(parentName);
+    return it != childrenCache_.end() ? it->second : std::vector<std::string>{};
+}
+
+bool TagManager::hasChildren(const std::string& name) const {
+    if (childrenCacheDirty_) rebuildChildrenCache();
+    auto it = childrenCache_.find(name);
+    return it != childrenCache_.end() && !it->second.empty();
+}
+
+std::vector<std::string> TagManager::descendantsOf(const std::string& name) const {
+    std::vector<std::string> result;
+    std::function<void(const std::string&)> visit = [&](const std::string& parent) {
+        for (const auto& child : childrenOf(parent)) {
+            result.push_back(child);
+            visit(child);
+        }
+    };
+    if (!name.empty()) visit(name);
+    return result;
+}
+
+bool TagManager::isDescendantOf(const std::string& name, const std::string& ancestor) const {
+    if (ancestor.empty()) return false;
+    std::string current = parentOf(name);
+    size_t guard = 0;
+    while (!current.empty() && guard++ <= tags_.size()) {
+        if (current == ancestor) return true;
+        current = parentOf(current);
+    }
+    return false;
+}
+
+bool TagManager::setParent(const std::string& name, const std::string& parentName) {
+    if (tags_.find(name) == tags_.end()) return false;
+    if (parentName == parentOf(name)) return true;
+    if (!parentName.empty()) {
+        if (parentName == name) return false;
+        if (tags_.find(parentName) == tags_.end()) return false;
+        if (isDescendantOf(parentName, name)) return false;
+        parents_[name] = parentName;
+    } else {
+        parents_.erase(name);
+    }
+    invalidateCaches();
+    dirty_ = true;
+    return true;
+}
+
+std::string TagManager::tagPath(const std::string& name, const std::string& separator) const {
+    std::vector<std::string> parts{name};
+    std::string current = parentOf(name);
+    size_t guard = 0;
+    while (!current.empty() && guard++ <= tags_.size()) {
+        parts.push_back(current);
+        current = parentOf(current);
+    }
+    std::string path;
+    for (auto it = parts.rbegin(); it != parts.rend(); ++it) {
+        if (!path.empty()) path += separator;
+        path += *it;
+    }
+    return path;
+}
+
+void TagManager::validateHierarchy() {
+    for (auto it = parents_.begin(); it != parents_.end();) {
+        if (tags_.find(it->first) == tags_.end() ||
+            tags_.find(it->second) == tags_.end() ||
+            it->first == it->second) {
+            it = parents_.erase(it);
+        } else {
+            ++it;
+        }
+    }
+
+    // Break any cycles by detaching the tag where the cycle is detected.
+    for (const auto& pair : tags_) {
+        std::set<std::string> seen{pair.first};
+        std::string current = parentOf(pair.first);
+        std::string child = pair.first;
+        while (!current.empty()) {
+            if (!seen.insert(current).second) {
+                parents_.erase(child);
+                break;
+            }
+            child = current;
+            current = parentOf(current);
+        }
+    }
+    invalidateCaches();
+}
+
+void TagManager::invalidateCaches() {
+    childrenCacheDirty_ = true;
+    rangeIndexDirty_ = true;
 }
 
 void TagManager::tagVerse(const std::string& verseKey, const std::string& tagName) {
@@ -356,6 +747,7 @@ void TagManager::tagTarget(const TagTarget& target, const std::string& tagName) 
     targets_[key] = target;
     if (targetTags_[key].insert(tagName).second) {
         tagTargets_[tagName].insert(key);
+        rangeIndexDirty_ = true;
         dirty_ = true;
     }
 }
@@ -384,6 +776,7 @@ void TagManager::untagTarget(const TagTarget& target, const std::string& tagName
         targetTags_.erase(it);
         targets_.erase(key);
     }
+    rangeIndexDirty_ = true;
 }
 
 std::vector<Tag> TagManager::getAllTags() const {
@@ -391,13 +784,72 @@ std::vector<Tag> TagManager::getAllTags() const {
     for (const auto& pair : tags_) {
         result.push_back(pair.second);
     }
-    std::sort(result.begin(), result.end(),
-              [](const Tag& a, const Tag& b) { return a.name < b.name; });
+    sortTagsByName(result);
     return result;
 }
 
 std::vector<Tag> TagManager::getTagsForVerse(const std::string& verseKey) const {
-    return getTagsForTarget(TagTarget::verse(verseKey));
+    VerseTagCoverage coverage = getVerseTagCoverage(verseKey);
+    if (coverage.empty()) return getTagsForTarget(TagTarget::verse(verseKey));
+
+    std::vector<Tag> result = std::move(coverage.starting);
+    result.insert(result.end(), coverage.continuing.begin(), coverage.continuing.end());
+    sortTagsByName(result);
+    return result;
+}
+
+void TagManager::rebuildRangeIndex() const {
+    rangeIndex_.clear();
+    for (const auto& pair : targets_) {
+        VerseRange range;
+        if (!pair.second.verseRange(range)) continue;
+        rangeIndex_[range.bookKey].push_back(RangeIndexEntry{range, pair.first});
+    }
+    rangeIndexDirty_ = false;
+}
+
+VerseTagCoverage TagManager::getVerseTagCoverage(const std::string& verseKey) const {
+    VerseTagCoverage coverage;
+    VerseRange verse;
+    if (!VerseRange::parse(verseKey, verse)) return coverage;
+
+    if (rangeIndexDirty_) rebuildRangeIndex();
+    auto bookIt = rangeIndex_.find(verse.bookKey);
+    if (bookIt == rangeIndex_.end()) return coverage;
+
+    std::set<std::string> startingNames;
+    std::set<std::string> continuingNames;
+    std::set<std::string> startingRanges;
+    for (const auto& entry : bookIt->second) {
+        if (!entry.range.contains(verse.bookKey, verse.startChapter, verse.startVerse)) {
+            continue;
+        }
+        auto tagsIt = targetTags_.find(entry.targetKey);
+        if (tagsIt == targetTags_.end()) continue;
+
+        const bool starts = entry.range.startsAt(verse.startChapter, verse.startVerse);
+        if (starts && !entry.range.isSingleVerse()) {
+            auto targetIt = targets_.find(entry.targetKey);
+            if (targetIt != targets_.end()) startingRanges.insert(targetIt->second.sourceKey);
+        }
+        for (const auto& tagName : tagsIt->second) {
+            (starts ? startingNames : continuingNames).insert(tagName);
+        }
+    }
+
+    for (const auto& name : startingNames) {
+        auto it = tags_.find(name);
+        if (it != tags_.end()) coverage.starting.push_back(it->second);
+    }
+    for (const auto& name : continuingNames) {
+        if (startingNames.count(name)) continue;
+        auto it = tags_.find(name);
+        if (it != tags_.end()) coverage.continuing.push_back(it->second);
+    }
+    sortTagsByName(coverage.starting);
+    sortTagsByName(coverage.continuing);
+    coverage.startingRanges.assign(startingRanges.begin(), startingRanges.end());
+    return coverage;
 }
 
 std::vector<Tag> TagManager::getTagsForTarget(const TagTarget& target) const {
@@ -411,8 +863,7 @@ std::vector<Tag> TagManager::getTagsForTarget(const TagTarget& target) const {
             }
         }
     }
-    std::sort(result.begin(), result.end(),
-              [](const Tag& a, const Tag& b) { return a.name < b.name; });
+    sortTagsByName(result);
     return result;
 }
 
@@ -433,15 +884,26 @@ std::vector<std::string> TagManager::getVersesWithTag(const std::string& tagName
     return result;
 }
 
-std::vector<TagTarget> TagManager::getTargetsWithTag(const std::string& tagName) const {
+std::vector<TagTarget> TagManager::getTargetsWithTag(const std::string& tagName,
+                                                     bool includeDescendants) const {
     std::vector<TagTarget> result;
-    auto it = tagTargets_.find(tagName);
-    if (it == tagTargets_.end()) return result;
+    std::set<std::string> seen;
+    auto collect = [&](const std::string& name) {
+        auto it = tagTargets_.find(name);
+        if (it == tagTargets_.end()) return;
+        for (const auto& key : it->second) {
+            if (!seen.insert(key).second) continue;
+            auto targetIt = targets_.find(key);
+            if (targetIt != targets_.end()) {
+                result.push_back(targetIt->second);
+            }
+        }
+    };
 
-    for (const auto& key : it->second) {
-        auto targetIt = targets_.find(key);
-        if (targetIt != targets_.end()) {
-            result.push_back(targetIt->second);
+    collect(tagName);
+    if (includeDescendants) {
+        for (const auto& descendant : descendantsOf(tagName)) {
+            collect(descendant);
         }
     }
     return result;
@@ -460,10 +922,23 @@ bool TagManager::targetHasTag(const TagTarget& target, const std::string& tagNam
     return false;
 }
 
-int TagManager::getTagCount(const std::string& tagName) const {
-    auto it = tagTargets_.find(tagName);
-    if (it == tagTargets_.end()) return 0;
-    return static_cast<int>(it->second.size());
+int TagManager::getTagCount(const std::string& tagName, bool includeDescendants) const {
+    if (!includeDescendants) {
+        auto it = tagTargets_.find(tagName);
+        if (it == tagTargets_.end()) return 0;
+        return static_cast<int>(it->second.size());
+    }
+
+    std::set<std::string> keys;
+    auto collect = [&](const std::string& name) {
+        auto it = tagTargets_.find(name);
+        if (it != tagTargets_.end()) keys.insert(it->second.begin(), it->second.end());
+    };
+    collect(tagName);
+    for (const auto& descendant : descendantsOf(tagName)) {
+        collect(descendant);
+    }
+    return static_cast<int>(keys.size());
 }
 
 bool TagManager::openDatabase(const std::string& filepath) {
@@ -509,6 +984,8 @@ bool TagManager::loadFromDatabase() {
     targetTags_.clear();
     tagTargets_.clear();
     targets_.clear();
+    parents_.clear();
+    invalidateCaches();
 
     sqlite3_stmt* tagStmt = nullptr;
     sqlite3_stmt* itemStmt = nullptr;
@@ -589,14 +1066,35 @@ bool TagManager::loadFromDatabase() {
         }
     }
 
+    sqlite3_stmt* treeStmt = nullptr;
+    if (ok &&
+        sqlite3_prepare_v2(
+            db_, "SELECT tag_name, parent_name FROM tag_tree ORDER BY tag_name;",
+            -1, &treeStmt, nullptr) == SQLITE_OK) {
+        while (ok && (rc = sqlite3_step(treeStmt)) == SQLITE_ROW) {
+            const char* tagName = reinterpret_cast<const char*>(sqlite3_column_text(treeStmt, 0));
+            const char* parentName = reinterpret_cast<const char*>(sqlite3_column_text(treeStmt, 1));
+            if (!tagName || !*tagName || !parentName || !*parentName) continue;
+            parents_[tagName] = parentName;
+        }
+        if (rc != SQLITE_DONE) {
+            ok = false;
+        }
+    }
+
     if (tagStmt) sqlite3_finalize(tagStmt);
     if (itemStmt) sqlite3_finalize(itemStmt);
     if (verseStmt) sqlite3_finalize(verseStmt);
+    if (treeStmt) sqlite3_finalize(treeStmt);
 
     if (!ok) {
         std::cerr << "Failed to load tag data from database.\n";
         return false;
     }
+
+    // Drop hierarchy rows that reference missing tags (for example after an
+    // older build rewrote the tag tables) and break any cycles.
+    validateHierarchy();
 
     dirty_ = false;
     return true;
@@ -699,6 +1197,32 @@ bool TagManager::persistToDatabase() {
     if (insertItem) sqlite3_finalize(insertItem);
     if (insertVerseTag) sqlite3_finalize(insertVerseTag);
 
+    // The hierarchy lives in its own table so older builds, which rewrite
+    // only tags/tag_items/verse_tags, leave it intact.
+    sqlite3_stmt* insertTree = nullptr;
+    if (ok) ok = execSql(db_, "CREATE TABLE IF NOT EXISTS tag_tree("
+                              "tag_name TEXT PRIMARY KEY, parent_name TEXT NOT NULL);");
+    if (ok) ok = execSql(db_, "DELETE FROM tag_tree;");
+    if (ok &&
+        sqlite3_prepare_v2(
+            db_, "INSERT INTO tag_tree(tag_name, parent_name) VALUES(?, ?);",
+            -1, &insertTree, nullptr) != SQLITE_OK) {
+        ok = false;
+    }
+    for (const auto& pair : parents_) {
+        if (!ok) break;
+        if (tags_.find(pair.first) == tags_.end() ||
+            tags_.find(pair.second) == tags_.end()) {
+            continue;
+        }
+        sqlite3_reset(insertTree);
+        sqlite3_clear_bindings(insertTree);
+        ok = bindText(insertTree, 1, pair.first) &&
+             bindText(insertTree, 2, pair.second) &&
+             sqlite3_step(insertTree) == SQLITE_DONE;
+    }
+    if (insertTree) sqlite3_finalize(insertTree);
+
     if (ok) ok = execSql(db_, "DROP TABLE IF EXISTS verse_tags;");
     if (ok) ok = execSql(db_, "DROP TABLE IF EXISTS tag_items;");
     if (ok) ok = execSql(db_, "DROP TABLE IF EXISTS tags;");
@@ -758,6 +1282,8 @@ bool TagManager::importLegacyFile(const std::string& legacyPath) {
     targetTags_.clear();
     tagTargets_.clear();
     targets_.clear();
+    parents_.clear();
+    invalidateCaches();
 
     std::string line;
     std::string section;
@@ -820,12 +1346,7 @@ bool TagManager::importLegacyFile(const std::string& legacyPath) {
 }
 
 std::string TagManager::targetKey(const TagTarget& target) {
-    std::ostringstream out;
-    out << kindToken(target.kind) << '|'
-        << encodeSizedField(trimCopy(target.moduleName)) << '|'
-        << encodeSizedField(trimCopy(target.sourceKey)) << '|'
-        << encodeSizedField(trimCopy(target.selectionText));
-    return out.str();
+    return target.identityKey();
 }
 
 bool TagManager::parseTargetKey(const std::string& key, TagTarget& targetOut) {

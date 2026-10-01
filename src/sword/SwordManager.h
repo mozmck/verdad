@@ -289,6 +289,12 @@ public:
         const std::string& defaultKey = "",
         const std::string& verseModuleForRefs = "") const;
 
+    /// Expand a reference such as "Genesis 1:1-5" into individual verse keys
+    /// using the module's versification. Stops after maxRefs verses.
+    std::vector<std::string> expandVerseReferences(const std::string& moduleName,
+                                                   const std::string& reference,
+                                                   size_t maxRefs = 200) const;
+
     /// Build preview HTML for a supported SWORD link target.
     std::string buildLinkPreviewHtml(const std::string& sourceModule,
                                      const std::string& sourceKey,

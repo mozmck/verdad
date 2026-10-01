@@ -441,7 +441,8 @@ void LeftPane::setVersePreviewText(const std::string& html,
     if (!previewWidget_) return;
 
     std::string label = trimCopy(verseKey);
-    if (app_) {
+    // SWORD's short form drops the end of a range, so keep ranges as given.
+    if (app_ && label.find('-') == std::string::npos) {
         std::string shortRef =
             trimCopy(app_->swordManager().getShortReference(verseModule, verseKey));
         if (!shortRef.empty()) label = shortRef;

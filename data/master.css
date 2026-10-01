@@ -744,6 +744,13 @@ a.verse-tag-marker {
     font-weight: bold;
 }
 
+/* Marker on verses inside a tagged range that started on an earlier verse. */
+a.verse-tag-marker.verse-tag-continued {
+    font-weight: normal;
+    background-color: #f2f5f8;
+    border-style: dashed;
+}
+
 span.verdad-inline-marker {
     display: none;
     margin-left: 1px;

@@ -6322,6 +6322,34 @@ bool SwordManager::isValidVerseRef(const std::string& ref,
     return true;
 }
 
+std::vector<std::string> SwordManager::expandVerseReferences(
+    const std::string& moduleName,
+    const std::string& reference,
+    size_t maxRefs) const {
+    std::vector<std::string> refs;
+    std::string ref = trimCopy(reference);
+    if (ref.empty() || maxRefs == 0) return refs;
+
+    std::lock_guard<std::mutex> lock(mutex_);
+
+    sword::VerseKey vk;
+    vk.setAutoNormalize(true);
+    sword::SWModule* mod = moduleName.empty() ? nullptr : getModule(moduleName);
+    if (mod) {
+        const char* v11n = mod->getConfigEntry("Versification");
+        if (v11n && *v11n) {
+            vk.setVersificationSystem(v11n);
+        }
+    }
+
+    sword::ListKey list = vk.parseVerseList(ref.c_str(), nullptr, true);
+    for (list = sword::TOP; !list.popError() && refs.size() < maxRefs; list++) {
+        const char* text = list.getText();
+        if (text && *text) refs.emplace_back(text);
+    }
+    return refs;
+}
+
 std::string SwordManager::getShortReference(const std::string& moduleName,
                                             const std::string& reference) const {
     std::string ref = trimCopy(reference);

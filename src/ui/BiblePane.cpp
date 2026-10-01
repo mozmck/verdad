@@ -260,27 +260,50 @@ std::string htmlEscape(const std::string& text) {
 std::string buildVerseTagMarkersHtml(VerdadApp* app, const std::string& verseRef) {
     if (!app) return "";
 
-    const auto tags = app->tagManager().getTagsForVerse(verseRef);
-    if (tags.empty()) return "";
+    const TagManager& tagMgr = app->tagManager();
+    VerseTagCoverage coverage = tagMgr.getVerseTagCoverage(verseRef);
+    if (coverage.empty()) {
+        // Fall back to exact matching for keys the range parser cannot read.
+        coverage.starting = tagMgr.getTagsForVerse(verseRef);
+        if (coverage.starting.empty()) return "";
+    }
 
     const std::string escapedVerseRef = htmlEscape(verseRef);
-    std::ostringstream tooltip;
-    //tooltip << "Tags: ";
-    for (size_t i = 0; i < tags.size(); ++i) {
-        if (i) tooltip << "\n";
-        tooltip << tags[i].name;
-    }
+    auto appendMarker = [&](std::ostringstream& html,
+                            const std::vector<Tag>& tags,
+                            const std::string& extraClass,
+                            const std::string& heading,
+                            const std::vector<std::string>& ranges) {
+        std::ostringstream tooltip;
+        if (!heading.empty()) tooltip << heading;
+        for (size_t i = 0; i < tags.size(); ++i) {
+            if (i || !heading.empty()) tooltip << "\n";
+            tooltip << tagMgr.tagPath(tags[i].name);
+        }
+        for (const auto& range : ranges) {
+            tooltip << "\nRange: " << range;
+        }
+
+        html << "<a class=\"verse-tag-marker" << extraClass << "\""
+             << " href=\"tags:" << escapedVerseRef << "\""
+             << " title=\"" << htmlEscape(tooltip.str()) << "\"";
+        if (!tags.front().color.empty()) {
+            const std::string escapedColor = htmlEscape(tags.front().color);
+            html << " style=\"border-color:" << escapedColor
+                 << ";color:" << escapedColor << ";\"";
+        }
+        html << ">Tag</a>";
+    };
 
     std::ostringstream html;
     html << "<span class=\"verse-tags\">";
-    html << "<a class=\"verse-tag-marker\" href=\"tags:" << escapedVerseRef << "\""
-         << " title=\"" << htmlEscape(tooltip.str()) << "\"";
-    if (!tags.front().color.empty()) {
-        const std::string escapedColor = htmlEscape(tags.front().color);
-        html << " style=\"border-color:" << escapedColor
-             << ";color:" << escapedColor << ";\"";
+    if (!coverage.starting.empty()) {
+        appendMarker(html, coverage.starting, "", "", coverage.startingRanges);
     }
-    html << ">Tag</a>";
+    if (!coverage.continuing.empty()) {
+        appendMarker(html, coverage.continuing, " verse-tag-continued",
+                     "Continued from an earlier verse:", {});
+    }
     html << "</span>";
     return html.str();
 }

@@ -376,6 +376,8 @@ void VerseContext::show(const std::string& word, const std::string& href,
             addCopyMenuItem(menu, "Copy Verse: Ref last",
                             CopyActionKind::Verse, false, startVerse, endVerse);
         }
+        menu.add(startVerse != endVerse ? "Tag Verses..." : "Add Tag...",
+                 0, onAddTag, this);
     } else {
         addCopyMenuItem(menu, "Copy Verse: Ref first",
                         CopyActionKind::Verse, true, currentVerse_, currentVerse_);
@@ -610,8 +612,17 @@ void VerseContext::onAddTag(Fl_Widget* /*w*/, void* data) {
         return;
     }
 
-    self->app_->mainWindow()->leftPane()->tagPanel()->showAddTagDialog(
-        self->currentVerseKey());
+    std::string key = self->currentVerseKey();
+    if (self->currentSelection_.hasSelection &&
+        self->currentSelection_.startVerse > 0) {
+        const int startVerse = self->currentSelection_.startVerse;
+        const int endVerse = std::max(startVerse, self->currentSelection_.endVerse);
+        key = self->verseKeyForNumber(startVerse);
+        if (!key.empty() && endVerse != startVerse) {
+            key += "-" + std::to_string(endVerse);
+        }
+    }
+    self->app_->mainWindow()->leftPane()->tagPanel()->showAddTagDialog(key);
 }
 
 void VerseContext::onCopyAction(Fl_Widget* /*w*/, void* data) {
