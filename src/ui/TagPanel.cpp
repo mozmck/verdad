@@ -6,11 +6,12 @@
 #include "tags/TagManager.h"
 #include "ui/LeftPane.h"
 #include "ui/MainWindow.h"
+#include "ui/TagColors.h"
 #include "ui/UiFontUtils.h"
 
 #include <FL/Fl.H>
 #include <FL/Fl_Box.H>
-#include <FL/Fl_Color_Chooser.H>
+#include <FL/Fl_RGB_Image.H>
 #include <FL/Fl_Double_Window.H>
 #include <FL/Fl_Hold_Browser.H>
 #include <FL/Fl_Choice.H>
@@ -32,7 +33,6 @@ namespace verdad {
 namespace {
 
 constexpr const char* kTopLevelLabel = "(Top level)";
-constexpr const char* kDefaultTagColor = "#4a86c8";
 constexpr size_t kMaxRangePreviewVerses = 60;
 
 std::string trimCopy(const std::string& text) {
@@ -247,12 +247,7 @@ std::string resolveTagInput(TagManager& tagMgr, const std::string& input) {
     std::string parent;
     for (const auto& name : segments) {
         if (!tagMgr.hasTag(name)) {
-            Tag parentTag;
-            std::string color = kDefaultTagColor;
-            if (!parent.empty() && tagMgr.getTag(parent, parentTag)) {
-                color = parentTag.color;
-            }
-            tagMgr.createTag(name, color, parent);
+            tagMgr.createTag(name, "", parent);
         }
         parent = name;
     }
@@ -617,26 +612,6 @@ private:
     Fl_Return_Button* okButton_ = nullptr;
 };
 
-bool parseHexColor(const std::string& text, uchar& r, uchar& g, uchar& b) {
-    unsigned int rr = 0;
-    unsigned int gg = 0;
-    unsigned int bb = 0;
-    if (text.size() != 7 || text[0] != '#' ||
-        std::sscanf(text.c_str() + 1, "%02x%02x%02x", &rr, &gg, &bb) != 3) {
-        return false;
-    }
-    r = static_cast<uchar>(rr);
-    g = static_cast<uchar>(gg);
-    b = static_cast<uchar>(bb);
-    return true;
-}
-
-std::string formatHexColor(uchar r, uchar g, uchar b) {
-    char buffer[8];
-    std::snprintf(buffer, sizeof(buffer), "#%02x%02x%02x", r, g, b);
-    return buffer;
-}
-
 } // namespace
 
 class TagFilterInput : public Fl_Input {
@@ -756,6 +731,10 @@ TagPanel::TagPanel(VerdadApp* app, int X, int Y, int W, int H)
     moveTagButton_->callback(onMoveTag, this);
     moveTagButton_->tooltip("Move the selected tag under another tag");
 
+    colorTagButton_ = new Fl_Button(X, Y, 10, 10, "Color");
+    colorTagButton_->callback(onColorTag, this);
+    colorTagButton_->tooltip("Choose the selected tag's marker and highlight color");
+
     deleteTagButton_ = new Fl_Button(X, Y, 10, 10, "Delete");
     deleteTagButton_->callback(onDeleteTag, this);
 
@@ -852,7 +831,7 @@ void TagPanel::layoutChildren() {
     if (!filterInput_ || !clearFilterButton_ || !resourceFilterChoice_ ||
         !tagTree_ || !itemBrowser_ ||
         !newTagButton_ || !renameTagButton_ || !moveTagButton_ ||
-        !deleteTagButton_ || !includeSubtagsCheck_ || !removeTagButton_) {
+        !colorTagButton_ || !deleteTagButton_ || !includeSubtagsCheck_ || !removeTagButton_) {
         return;
     }
 
@@ -884,12 +863,13 @@ void TagPanel::layoutChildren() {
     tagTree_->resize(innerX, cy, innerW, tagH);
     cy += tagH + padding;
 
-    const int buttonW = (innerW - 3 * padding) / 4;
+    const int buttonW = (innerW - 4 * padding) / 5;
     newTagButton_->resize(innerX, cy, buttonW, buttonH);
     renameTagButton_->resize(innerX + (buttonW + padding), cy, buttonW, buttonH);
     moveTagButton_->resize(innerX + 2 * (buttonW + padding), cy, buttonW, buttonH);
-    deleteTagButton_->resize(innerX + 3 * (buttonW + padding), cy,
-                             innerW - 3 * (buttonW + padding), buttonH);
+    colorTagButton_->resize(innerX + 3 * (buttonW + padding), cy, buttonW, buttonH);
+    deleteTagButton_->resize(innerX + 4 * (buttonW + padding), cy,
+                             innerW - 4 * (buttonW + padding), buttonH);
     cy += buttonH + padding;
 
     itemBrowser_->resize(innerX, cy, innerW, itemH);
@@ -1025,12 +1005,55 @@ void TagPanel::tagsChanged(bool refreshBible) {
     populateTags();
     refreshPreviewForSelection();
 
-    if (refreshBible && app_->mainWindow() && app_->mainWindow()->biblePane()) {
-        BiblePane* biblePane = app_->mainWindow()->biblePane();
-        const int scroll = biblePane->scrollY();
-        biblePane->refresh();
-        biblePane->setScrollY(scroll);
+    if (refreshBible && app_->mainWindow()) {
+        app_->mainWindow()->refreshTagDecorations(false);
     }
+}
+
+std::string TagPanel::defaultTagColor() const {
+    std::string color = app_ ? tag_colors::normalizeHex(
+                                   app_->optionDisplaySettings().defaultTagColor)
+                             : std::string();
+    return color.empty() ? tag_colors::kInitialDefaultMarkerColor : color;
+}
+
+Fl_Image* TagPanel::swatchIcon(const std::string& tagColor) {
+    // Tags with their own color get a filled square; tags on the default
+    // color get an outline in the default color.
+    std::string hex = tag_colors::normalizeHex(tagColor);
+    const bool filled = !hex.empty();
+    if (!filled) hex = defaultTagColor();
+    const std::string key = (filled ? "f" : "o") + hex;
+
+    auto it = swatchIcons_.find(key);
+    if (it != swatchIcons_.end()) return it->second.get();
+
+    tag_colors::Rgb color;
+    tag_colors::parseHex(hex, color);
+    const tag_colors::Rgb border = filled
+        ? tag_colors::blend(color, tag_colors::Rgb{0, 0, 0}, 0.35)
+        : color;
+
+    constexpr int kSize = 12;
+    auto* data = new uchar[kSize * kSize * 4];
+    for (int y = 0; y < kSize; ++y) {
+        for (int x = 0; x < kSize; ++x) {
+            uchar* px = data + (y * kSize + x) * 4;
+            const bool edge = x == 0 || y == 0 || x == kSize - 1 || y == kSize - 1;
+            const bool innerEdge = !filled &&
+                (x == 1 || y == 1 || x == kSize - 2 || y == kSize - 2);
+            const tag_colors::Rgb& c = (edge || innerEdge) ? border : color;
+            px[0] = static_cast<uchar>(c.r);
+            px[1] = static_cast<uchar>(c.g);
+            px[2] = static_cast<uchar>(c.b);
+            px[3] = (edge || innerEdge || filled) ? 255 : 0;
+        }
+    }
+    auto image = std::make_unique<Fl_RGB_Image>(data, kSize, kSize, 4);
+    image->alloc_array = 1;
+    Fl_Image* result = image.get();
+    swatchIcons_.emplace(key, std::move(image));
+    return result;
 }
 
 void TagPanel::expandAncestors(const std::string& tagName) {
@@ -1140,6 +1163,8 @@ void TagPanel::populateTags() {
         Fl_Tree_Item* item = tagTree_->add(parentItem, label.c_str());
         if (!item) return;
         if (filterActive_ && !node.selfMatch) item->labelfgcolor(dimColor);
+        Tag tag;
+        if (tagMgr.getTag(name, tag)) item->usericon(swatchIcon(tag.color));
         itemTagNames_[item] = name;
         itemsByName[name] = item;
         orderedItems.push_back(item);
@@ -1424,12 +1449,7 @@ void TagPanel::createTagUnder(const std::string& parentName) {
         return;
     }
 
-    Tag parentTag;
-    std::string color = kDefaultTagColor;
-    if (!parent.empty() && tagMgr.getTag(parent, parentTag)) {
-        color = parentTag.color;
-    }
-    if (!tagMgr.createTag(name, color, parent)) {
+    if (!tagMgr.createTag(name, "", parent)) {
         fl_alert("Could not create tag '%s'.", name.c_str());
         return;
     }
@@ -1536,14 +1556,16 @@ void TagPanel::setSelectedTagColor() {
     Tag tag;
     if (!tagMgr.getTag(selectedTagName_, tag)) return;
 
-    uchar r = 0x4a;
-    uchar g = 0x86;
-    uchar b = 0xc8;
-    parseHexColor(tag.color, r, g, b);
-    std::string title = "Color for " + tag.name;
-    if (!fl_color_chooser(title.c_str(), r, g, b, 2)) return;
+    tag_colors::PickerOptions options;
+    options.title = "Color for " + tag.name;
+    options.emptyChoiceLabel = "Default";
+    options.emptyChoicePreview = defaultTagColor();
 
-    tagMgr.setTagColor(tag.name, formatHexColor(r, g, b));
+    std::string color = tag_colors::normalizeHex(tag.color);
+    if (!tag_colors::chooseColor(color, options)) return;
+    if (color == tag_colors::normalizeHex(tag.color)) return;
+
+    tagMgr.setTagColor(tag.name, color);
     tagsChanged(true);
 }
 
@@ -1656,6 +1678,11 @@ void TagPanel::onRenameTag(Fl_Widget* /*w*/, void* data) {
 void TagPanel::onMoveTag(Fl_Widget* /*w*/, void* data) {
     auto* self = static_cast<TagPanel*>(data);
     if (self) self->moveSelectedTag();
+}
+
+void TagPanel::onColorTag(Fl_Widget* /*w*/, void* data) {
+    auto* self = static_cast<TagPanel*>(data);
+    if (self) self->setSelectedTagColor();
 }
 
 void TagPanel::onIncludeSubtags(Fl_Widget* /*w*/, void* data) {

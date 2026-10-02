@@ -171,6 +171,7 @@ set(SOURCES
     src/ui/RightPane.cpp
     src/ui/SearchPanel.cpp
     src/ui/ModulePanel.cpp
+    src/ui/TagColors.cpp
     src/ui/TagPanel.cpp
     src/ui/VerseContext.cpp
 )
@@ -215,6 +216,7 @@ set(HEADERS
     src/ui/RightPane.h
     src/ui/SearchPanel.h
     src/ui/ModulePanel.h
+    src/ui/TagColors.h
     src/ui/TagPanel.h
     src/ui/ChoicePopupUtils.h
     src/ui/UiFontUtils.h

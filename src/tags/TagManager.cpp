@@ -14,7 +14,17 @@
 namespace verdad {
 namespace {
 
-constexpr const char* kDefaultTagColor = "#4a86c8";
+// Tags created before tag colors were configurable all got this color.
+// Those tags are migrated to the empty "default" color.
+constexpr const char* kLegacyDefaultTagColor = "#4a86c8";
+
+std::string storedTagColor(const char* color) {
+    if (!color) return "";
+    std::string value = color;
+    std::transform(value.begin(), value.end(), value.begin(),
+                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    return value == kLegacyDefaultTagColor ? std::string() : std::string(color);
+}
 
 std::string trimCopy(const std::string& text) {
     size_t start = 0;
@@ -221,8 +231,18 @@ bool ensureSchema(sqlite3* db) {
             ON verse_tags(tag_name, verse_key);
     )SQL";
 
-    return execSql(db, kSchemaSql) &&
-           (userVersion(db) >= 3 || setUserVersion(db, 3));
+    if (!execSql(db, kSchemaSql)) return false;
+
+    const int version = userVersion(db);
+    if (version < 4) {
+        // Version 4: an empty color means "use the default tag color".
+        const std::string migrate =
+            std::string("UPDATE tags SET color = '' WHERE lower(color) = '") +
+            kLegacyDefaultTagColor + "';";
+        if (!execSql(db, migrate.c_str())) return false;
+        return setUserVersion(db, 4);
+    }
+    return true;
 }
 
 void applyPragmas(sqlite3* db) {
@@ -503,7 +523,7 @@ bool TagManager::createTag(const std::string& name,
 
     Tag tag;
     tag.name = name;
-    tag.color = color.empty() ? kDefaultTagColor : color;
+    tag.color = color;
     tags_[name] = tag;
     if (!parentName.empty() && parentName != name &&
         tags_.find(parentName) != tags_.end()) {
@@ -1005,7 +1025,7 @@ bool TagManager::loadFromDatabase() {
 
         Tag tag;
         tag.name = name;
-        tag.color = color ? color : kDefaultTagColor;
+        tag.color = storedTagColor(color);
         tags_[tag.name] = tag;
     }
     if (ok && rc != SQLITE_DONE) {
@@ -1306,10 +1326,7 @@ bool TagManager::importLegacyFile(const std::string& legacyPath) {
 
             Tag tag;
             tag.name = line.substr(0, sep);
-            tag.color = line.substr(sep + 1);
-            if (tag.color.empty()) {
-                tag.color = kDefaultTagColor;
-            }
+            tag.color = storedTagColor(line.substr(sep + 1).c_str());
             if (!tag.name.empty()) {
                 tags_[tag.name] = tag;
             }
@@ -1333,7 +1350,7 @@ bool TagManager::importLegacyFile(const std::string& legacyPath) {
             while (std::getline(iss, tagName, ',')) {
                 if (tagName.empty()) continue;
                 if (tags_.find(tagName) == tags_.end()) {
-                    tags_[tagName] = Tag{tagName, kDefaultTagColor};
+                    tags_[tagName] = Tag{tagName, ""};
                 }
                 targetTags_[key].insert(tagName);
                 tagTargets_[tagName].insert(key);

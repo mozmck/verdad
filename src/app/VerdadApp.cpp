@@ -8,6 +8,7 @@
 #include "search/SemanticSearch.h"
 #include "tags/TagManager.h"
 #include "ui/MainWindow.h"
+#include "ui/TagColors.h"
 #include "ui/BiblePane.h"
 #include "ui/LeftPane.h"
 
@@ -1147,6 +1148,17 @@ bool VerdadApp::applyPreferencesMap(const PreferenceMap& prefs,
     importedOptions.showCrossReferenceMarkers =
         parseBoolOr(lookup("show_cross_reference_markers"),
                     importedOptions.showCrossReferenceMarkers);
+    importedOptions.highlightTaggedVerses =
+        parseBoolOr(lookup("highlight_tagged_verses"),
+                    importedOptions.highlightTaggedVerses);
+    if (prefs.find("default_tag_color") != prefs.end()) {
+        std::string color = tag_colors::normalizeHex(lookup("default_tag_color"));
+        if (!color.empty()) importedOptions.defaultTagColor = color;
+    }
+    if (prefs.find("default_tag_highlight_color") != prefs.end()) {
+        importedOptions.defaultTagHighlightColor =
+            tag_colors::normalizeHex(lookup("default_tag_highlight_color"));
+    }
 
     BibleSettings importedBible = bibleSettings_;
     if (prefs.find("default_parallel_modules") != prefs.end()) {
@@ -1329,6 +1341,9 @@ void VerdadApp::savePreferences() {
         file << "show_morph_markers=" << (optionDisplaySettings_.showMorphMarkers ? 1 : 0) << "\n";
         file << "show_footnote_markers=" << (optionDisplaySettings_.showFootnoteMarkers ? 1 : 0) << "\n";
         file << "show_cross_reference_markers=" << (optionDisplaySettings_.showCrossReferenceMarkers ? 1 : 0) << "\n";
+        file << "highlight_tagged_verses=" << (optionDisplaySettings_.highlightTaggedVerses ? 1 : 0) << "\n";
+        file << "default_tag_color=" << optionDisplaySettings_.defaultTagColor << "\n";
+        file << "default_tag_highlight_color=" << optionDisplaySettings_.defaultTagHighlightColor << "\n";
         file << "default_parallel_modules="
              << joinCsv(bibleSettings_.defaultParallelModules) << "\n";
         const int searchModeLevel = static_cast<int>(searchSettings_.assistanceMode);
@@ -1964,15 +1979,13 @@ std::string VerdadApp::textStyleOverrideCss() const {
             << "  border-top-color: " << cssHex(palette.border) << " !important;\n"
             << "}\n"
             << "div.commentary-verse.commentary-selected > div.commentary-gutter > a.versenum-link > span.commentary-versenum,\n"
-            << "a.verse-tag,\n"
-            << "a.verse-tag-marker {\n"
+            << "a.verse-tag {\n"
             << "  background-color: " << cssHex(palette.tagBackground) << " !important;\n"
             << "  border-color: " << cssHex(palette.tagBorder) << " !important;\n"
             << "  color: " << cssHex(palette.link) << " !important;\n"
             << "}\n"
             << "div.commentary-verse.commentary-selected > div.commentary-gutter > a.versenum-link:hover > span.commentary-versenum,\n"
-            << "a.verse-tag:hover,\n"
-            << "a.verse-tag-marker:hover {\n"
+            << "a.verse-tag:hover {\n"
             << "  background-color: " << cssHex(palette.tagHoverBackground) << " !important;\n"
             << "}\n"
             << "div.general-book-toc,\n"

@@ -161,6 +161,11 @@ public:
     /// Refresh all panes
     void refresh();
 
+    /// Re-render tag markers and highlights after tags or tag display
+    /// settings change. Cached Bible documents in other tabs are dropped so
+    /// they re-render when shown.
+    void refreshTagDecorations(bool refreshTagPanel = true);
+
     /// Apply UI font and text rendering style settings.
     void applyAppearanceSettings(Fl_Font appFont,
                                  int appFontSize,
@@ -253,6 +258,7 @@ private:
     Fl_Font lastAppliedAppFont_ = FL_HELVETICA;
     int lastAppliedAppFontSize_ = 12;
     std::string lastAppliedTextCss_;
+    bool lastAppliedDarkTheme_ = false;
 
     // Delayed hover state for MAG updates
     PendingWordInfo pendingWordInfo_;

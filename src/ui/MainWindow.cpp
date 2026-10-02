@@ -3,6 +3,8 @@
 #include "app/VerdadApp.h"
 #include "import/ImportedModuleManager.h"
 #include "ui/LeftPane.h"
+#include "ui/TagColors.h"
+#include "ui/TagPanel.h"
 #include "ui/BiblePane.h"
 #include "ui/FilterableChoiceWidget.h"
 #include "ui/HtmlWidget.h"
@@ -825,6 +827,41 @@ std::string sqliteContentStamp(const fs::path& path,
     out << "sqlite-content:" << rowCount << ':' << std::hex << hash;
     return out.str();
 }
+
+/// A color setting row: swatch, name, and a button that opens the tag color picker.
+struct ColorSettingControl {
+    std::string color;
+    tag_colors::PickerOptions options;
+    Fl_Box* swatch = nullptr;
+    Fl_Box* name = nullptr;
+
+    void sync() {
+        tag_colors::Rgb rgb;
+        if (tag_colors::parseHex(color, rgb)) {
+            swatch->box(FL_BORDER_BOX);
+            swatch->color(tag_colors::toFlColor(rgb));
+            name->copy_label(color.c_str());
+        } else {
+            swatch->box(FL_BORDER_FRAME);
+            swatch->color(FL_DARK3);
+            name->copy_label(options.emptyChoiceLabel.empty()
+                                 ? "None"
+                                 : options.emptyChoiceLabel.c_str());
+        }
+        swatch->redraw();
+        name->redraw();
+    }
+
+    static void onChoose(Fl_Widget* /*w*/, void* data) {
+        auto* self = static_cast<ColorSettingControl*>(data);
+        if (!self) return;
+        std::string chosen = self->color;
+        if (tag_colors::chooseColor(chosen, self->options)) {
+            self->color = chosen;
+            self->sync();
+        }
+    }
+};
 
 std::string tagsDbContentStamp(const fs::path& path) {
     return sqliteContentStamp(path, {
@@ -2592,12 +2629,35 @@ void MainWindow::applyBibleSettings() {
     }
 }
 
+void MainWindow::refreshTagDecorations(bool refreshTagPanel) {
+    for (size_t i = 0; i < studyTabs_.size(); ++i) {
+        if (static_cast<int>(i) == activeStudyTab_) continue;
+        studyTabs_[i].bibleBuffer = HtmlDocBuffer{};
+        studyTabs_[i].hasBibleBuffer = false;
+    }
+
+    if (biblePane_) {
+        const int scroll = biblePane_->scrollY();
+        biblePane_->refresh();
+        biblePane_->setScrollY(scroll);
+    }
+    if (refreshTagPanel && leftPane_ && leftPane_->tagPanel()) {
+        leftPane_->tagPanel()->refresh();
+    }
+}
+
 void MainWindow::applyAppearanceSettings(Fl_Font appFont,
                                          int appFontSize,
                                          const std::string& textCssOverride) {
     const int clampedSize = std::clamp(appFontSize, 8, 36);
     const bool cssChanged =
         appearanceApplied_ && (textCssOverride != lastAppliedTextCss_);
+    const bool darkTheme = app_ && app_->isDarkTheme();
+    // Tag marker and highlight colors are blended against the theme's
+    // background when the chapter HTML is built, so a theme change needs a
+    // re-render rather than just new CSS.
+    const bool themeChanged =
+        appearanceApplied_ && darkTheme != lastAppliedDarkTheme_;
     const bool uiFontChanged =
         appearanceApplied_ &&
         (appFont != lastAppliedAppFont_ ||
@@ -2655,7 +2715,11 @@ void MainWindow::applyAppearanceSettings(Fl_Font appFont,
     lastAppliedAppFont_ = appFont;
     lastAppliedAppFontSize_ = clampedSize;
     lastAppliedTextCss_ = textCssOverride;
+    lastAppliedDarkTheme_ = darkTheme;
     appearanceApplied_ = true;
+    if (themeChanged) {
+        refreshTagDecorations();
+    }
 
     if (searchHelpWindow_) {
         searchHelpWindow_->redraw();
@@ -3106,6 +3170,7 @@ void MainWindow::applyUserDataSyncChanges() {
         if (!app_->tagManager().load((userDataDir / "tags.db").string())) {
             showTransientStatus("Failed to reload synced tags.", 8.0);
         }
+        refreshTagDecorations();
     }
     if (readingPlansChanged) {
         if (!app_->readingPlanManager().load((userDataDir / "reading_plans.db").string())) {
@@ -3690,7 +3755,7 @@ void MainWindow::onViewSettings(Fl_Widget* /*w*/, void* data) {
     constexpr int spinnerW = 90;
 
     int appearanceRowCount = 8;
-    int bibleRowCount = 8;
+    int bibleRowCount = 11;
     int dictionaryRowCount = 7 + static_cast<int>(languageCodes.size());
     int searchRowCount = 15;
     int editorRowCount = 2;
@@ -3849,6 +3914,38 @@ void MainWindow::onViewSettings(Fl_Widget* /*w*/, void* data) {
         labelX, rowY, groupW - (groupPadX * 2), 24,
         "Interlinear view uses the toolbar Bible and parallels 2 through 4.");
     interlinearHelp->align(FL_ALIGN_LEFT | FL_ALIGN_INSIDE);
+    rowY += rowStep;
+
+    const auto& currentOptions = self->app_->optionDisplaySettings();
+    ColorSettingControl defaultTagColorControl;
+    defaultTagColorControl.color = currentOptions.defaultTagColor;
+    defaultTagColorControl.options.title = "Default Tag Color";
+    ColorSettingControl defaultHighlightControl;
+    defaultHighlightControl.color = currentOptions.defaultTagHighlightColor;
+    defaultHighlightControl.options.title = "Default Highlight Color";
+    defaultHighlightControl.options.emptyChoiceLabel = "None";
+
+    auto addColorRow = [&](const char* labelText, ColorSettingControl& control,
+                           const char* tooltip) {
+        auto* label = new Fl_Box(labelX, rowY, labelW, 24, labelText);
+        label->align(FL_ALIGN_LEFT | FL_ALIGN_INSIDE);
+        control.swatch = new Fl_Box(fieldX, rowY + 2, 36, 20);
+        auto* button = new Fl_Button(fieldX + 44, rowY, 90, 24, "Choose...");
+        button->callback(ColorSettingControl::onChoose, &control);
+        button->tooltip(tooltip);
+        control.name = new Fl_Box(fieldX + 142, rowY, 160, 24);
+        control.name->align(FL_ALIGN_LEFT | FL_ALIGN_INSIDE);
+        control.sync();
+        rowY += rowStep;
+    };
+    addColorRow("Default tag color:", defaultTagColorControl,
+                "Marker color for tags whose color is set to Default");
+    addColorRow("Default highlight:", defaultHighlightControl,
+                "Highlight color for tags whose color is set to Default");
+    auto* tagColorHelp = new Fl_Box(
+        labelX, rowY, groupW - (groupPadX * 2), 24,
+        "Tag defaults apply to every tag whose color is set to Default.");
+    tagColorHelp->align(FL_ALIGN_LEFT | FL_ALIGN_INSIDE);
 
     bibleTab->end();
 
@@ -4750,6 +4847,20 @@ void MainWindow::onViewSettings(Fl_Widget* /*w*/, void* data) {
         self->app_->setPreviewDictionarySettings(updatedPreview);
         self->app_->setOfflineTranslationSettings(updatedOfflineTranslation);
         self->app_->setBibleSettings(updatedBible);
+
+        auto updatedOptions = self->app_->optionDisplaySettings();
+        const std::string newTagColor =
+            tag_colors::normalizeHex(defaultTagColorControl.color);
+        const std::string newHighlightColor =
+            tag_colors::normalizeHex(defaultHighlightControl.color);
+        if (!newTagColor.empty() &&
+            (newTagColor != updatedOptions.defaultTagColor ||
+             newHighlightColor != updatedOptions.defaultTagHighlightColor)) {
+            updatedOptions.defaultTagColor = newTagColor;
+            updatedOptions.defaultTagHighlightColor = newHighlightColor;
+            self->app_->setOptionDisplaySettings(updatedOptions);
+            self->refreshTagDecorations();
+        }
         self->app_->setSearchSettings(updatedSearch);
         self->app_->setAppearanceSettings(updated);
         self->app_->savePreferences();

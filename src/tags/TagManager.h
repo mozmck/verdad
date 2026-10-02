@@ -14,7 +14,7 @@ namespace verdad {
 /// a parent tag and child tags in addition to its own tagged items.
 struct Tag {
     std::string name;
-    std::string color;   // hex color like "#4a86c8"
+    std::string color;   // hex color like "#4a86c8"; empty = use the app default
 };
 
 /// A parsed Bible reference span such as "Genesis 1:1", "Genesis 1:1-5",
@@ -113,7 +113,7 @@ public:
     /// Create a new tag. Returns true if created (false if already exists).
     /// An empty parent creates a top-level tag.
     bool createTag(const std::string& name,
-                   const std::string& color = "#4a86c8",
+                   const std::string& color = "",
                    const std::string& parentName = "");
 
     /// Delete a tag and remove it from all items. When deleteDescendants is

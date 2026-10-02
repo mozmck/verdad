@@ -172,6 +172,27 @@ int main() {
         expect(!mgr.hasTag("Ghost"), "stale hierarchy row ignored");
     }
 
+    // Tags saved with the old built-in color move to the "default" color.
+    std::filesystem::remove(dbPath);
+    {
+        sqlite3* db = nullptr;
+        expect(sqlite3_open(dbPath.string().c_str(), &db) == SQLITE_OK, "open legacy db");
+        expect(execSql(db, "CREATE TABLE tags(name TEXT PRIMARY KEY, color TEXT NOT NULL);"
+                           "INSERT INTO tags VALUES('Old', '#4A86C8');"
+                           "INSERT INTO tags VALUES('Red', '#e53935');"
+                           "PRAGMA user_version = 3;"),
+               "create legacy tags");
+        sqlite3_close(db);
+
+        TagManager mgr;
+        expect(mgr.load(dbPath.string()), "load legacy db");
+        verdad::Tag tag;
+        expect(mgr.getTag("Old", tag) && tag.color.empty(), "legacy default color migrated");
+        expect(mgr.getTag("Red", tag) && tag.color == "#e53935", "custom color kept");
+        expect(mgr.createTag("New") && mgr.getTag("New", tag) && tag.color.empty(),
+               "new tags use the default color");
+    }
+
     std::filesystem::remove(dbPath);
 
     if (failures) {

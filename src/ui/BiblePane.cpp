@@ -8,6 +8,7 @@
 #include "ui/RightPane.h"
 #include "ui/WrappingChoice.h"
 #include "ui/WrappingInputChoice.h"
+#include "ui/TagColors.h"
 #include "ui/TagPanel.h"
 #include "ui/VerseContext.h"
 #include "reading/DateUtils.h"
@@ -52,6 +53,7 @@ constexpr int kStrongsButtonW = 34;
 constexpr int kMorphButtonW = 52;
 constexpr int kFootnotesButtonW = 50;
 constexpr int kCrossRefsButtonW = 46;
+constexpr int kHighlightButtonW = 50;
 
 enum DisplayOptionMenuIndex {
     kDisplayOptionParagraph = 0,
@@ -60,6 +62,7 @@ enum DisplayOptionMenuIndex {
     kDisplayOptionMorph,
     kDisplayOptionFootnotes,
     kDisplayOptionCrossRefs,
+    kDisplayOptionHighlightTags,
 };
 
 enum class BibleToolbarIcon {
@@ -257,7 +260,44 @@ std::string htmlEscape(const std::string& text) {
     return out;
 }
 
-std::string buildVerseTagMarkersHtml(VerdadApp* app, const std::string& verseRef) {
+struct TagColorContext {
+    std::string defaultMarkerColor;
+    std::string defaultHighlightColor;
+    tag_colors::Rgb contentBackground;
+    bool darkTheme = false;
+    bool highlight = false;
+};
+
+TagColorContext tagColorContext(VerdadApp* app) {
+    TagColorContext ctx;
+    const auto& options = app->optionDisplaySettings();
+    ctx.defaultMarkerColor = tag_colors::normalizeHex(options.defaultTagColor);
+    if (ctx.defaultMarkerColor.empty()) {
+        ctx.defaultMarkerColor = tag_colors::kInitialDefaultMarkerColor;
+    }
+    ctx.defaultHighlightColor = tag_colors::normalizeHex(options.defaultTagHighlightColor);
+    ctx.contentBackground = tag_colors::fromFlColor(app->themePalette().contentBackground);
+    ctx.darkTheme = app->isDarkTheme();
+    ctx.highlight = options.highlightTaggedVerses;
+    return ctx;
+}
+
+/// Pick the color to show for a set of tags: the first tag with its own
+/// color wins, otherwise the default (which may be empty).
+std::string pickTagColor(const std::vector<Tag>& tags, const std::string& fallback) {
+    for (const auto& tag : tags) {
+        std::string color = tag_colors::normalizeHex(tag.color);
+        if (!color.empty()) return color;
+    }
+    return tags.empty() ? std::string() : fallback;
+}
+
+/// Build the "Tag" markers for a verse. When highlighting is on, also returns
+/// the verse's highlight style through highlightStyleOut.
+std::string buildVerseTagMarkersHtml(VerdadApp* app,
+                                     const TagColorContext& colors,
+                                     const std::string& verseRef,
+                                     std::string* highlightStyleOut) {
     if (!app) return "";
 
     const TagManager& tagMgr = app->tagManager();
@@ -268,10 +308,18 @@ std::string buildVerseTagMarkersHtml(VerdadApp* app, const std::string& verseRef
         if (coverage.starting.empty()) return "";
     }
 
+    if (highlightStyleOut && colors.highlight) {
+        std::vector<Tag> all = coverage.starting;
+        all.insert(all.end(), coverage.continuing.begin(), coverage.continuing.end());
+        const std::string color = pickTagColor(all, colors.defaultHighlightColor);
+        *highlightStyleOut = tag_colors::highlightStyle(
+            color, colors.contentBackground, colors.darkTheme);
+    }
+
     const std::string escapedVerseRef = htmlEscape(verseRef);
     auto appendMarker = [&](std::ostringstream& html,
                             const std::vector<Tag>& tags,
-                            const std::string& extraClass,
+                            bool continued,
                             const std::string& heading,
                             const std::vector<std::string>& ranges) {
         std::ostringstream tooltip;
@@ -284,13 +332,15 @@ std::string buildVerseTagMarkersHtml(VerdadApp* app, const std::string& verseRef
             tooltip << "\nRange: " << range;
         }
 
-        html << "<a class=\"verse-tag-marker" << extraClass << "\""
+        html << "<a class=\"verse-tag-marker"
+             << (continued ? " verse-tag-continued" : "") << "\""
              << " href=\"tags:" << escapedVerseRef << "\""
              << " title=\"" << htmlEscape(tooltip.str()) << "\"";
-        if (!tags.front().color.empty()) {
-            const std::string escapedColor = htmlEscape(tags.front().color);
-            html << " style=\"border-color:" << escapedColor
-                 << ";color:" << escapedColor << ";\"";
+        const std::string style = tag_colors::markerStyle(
+            pickTagColor(tags, colors.defaultMarkerColor),
+            colors.contentBackground, colors.darkTheme, continued);
+        if (!style.empty()) {
+            html << " style=\"" << htmlEscape(style) << "\"";
         }
         html << ">Tag</a>";
     };
@@ -298,14 +348,38 @@ std::string buildVerseTagMarkersHtml(VerdadApp* app, const std::string& verseRef
     std::ostringstream html;
     html << "<span class=\"verse-tags\">";
     if (!coverage.starting.empty()) {
-        appendMarker(html, coverage.starting, "", "", coverage.startingRanges);
+        appendMarker(html, coverage.starting, false, "", coverage.startingRanges);
     }
     if (!coverage.continuing.empty()) {
-        appendMarker(html, coverage.continuing, " verse-tag-continued",
+        appendMarker(html, coverage.continuing, true,
                      "Continued from an earlier verse:", {});
     }
     html << "</span>";
     return html.str();
+}
+
+int verseNumberFromRef(const std::string& verseRef) {
+    const size_t colon = verseRef.rfind(':');
+    if (colon == std::string::npos) return 0;
+    try {
+        return std::stoi(verseRef.substr(colon + 1));
+    } catch (...) {
+        return 0;
+    }
+}
+
+/// Add inline highlight styles to the verse elements (id="vN") in rendered
+/// chapter HTML.
+void applyVerseHighlights(std::string& html,
+                          const std::vector<std::pair<int, std::string>>& highlights) {
+    for (const auto& entry : highlights) {
+        if (entry.first <= 0 || entry.second.empty()) continue;
+        const std::string idAttr = "id=\"v" + std::to_string(entry.first) + "\"";
+        const size_t pos = html.find(idAttr);
+        if (pos == std::string::npos) continue;
+        html.insert(pos + idAttr.size(),
+                    " style=\"" + htmlEscape(entry.second) + "\"");
+    }
 }
 
 std::string verseElementId(int verse) {
@@ -721,6 +795,7 @@ void BiblePane::resize(int X, int Y, int W, int H) {
         !parallelAddButton_ ||
         !strongsToggleButton_ || !morphToggleButton_ ||
         !footnotesToggleButton_ || !crossRefsToggleButton_ ||
+        !highlightToggleButton_ ||
         !displayOptionsMenuButton_ || !crossRefsRightSeparator_ ||
         !navSpacer_ || !parallelHeader_ || !dailyReadingBar_ ||
         !dailyReadingBarWidget_ || !dailyReadingCompleteButton_ ||
@@ -758,6 +833,7 @@ void BiblePane::layoutNavBarControls() {
         !redWordsToggleButton_ ||
         !parallelAddButton_ || !strongsToggleButton_ || !morphToggleButton_ ||
         !footnotesToggleButton_ || !crossRefsToggleButton_ ||
+        !highlightToggleButton_ ||
         !displayOptionsMenuButton_ || !crossRefsRightSeparator_ ||
         !navSpacer_) {
         return;
@@ -819,7 +895,8 @@ void BiblePane::layoutNavBarControls() {
         kStrongsButtonW + spacing +
         kMorphButtonW + spacing +
         kFootnotesButtonW + spacing +
-        kCrossRefsButtonW +
+        kCrossRefsButtonW + spacing +
+        kHighlightButtonW +
         spacing + separatorW + spacing +
         visibleComparisonControlsW;
     const bool collapseDisplayOptions = cx + expandedDisplayOptionsW > x() + w() - 2;
@@ -833,6 +910,7 @@ void BiblePane::layoutNavBarControls() {
         morphToggleButton_->hide();
         footnotesToggleButton_->hide();
         crossRefsToggleButton_->hide();
+        highlightToggleButton_->hide();
         cx += kDisplayOptionsMenuButtonW + spacing;
     } else {
         displayOptionsMenuButton_->hide();
@@ -860,6 +938,10 @@ void BiblePane::layoutNavBarControls() {
         crossRefsToggleButton_->show();
         crossRefsToggleButton_->resize(cx, cy, kCrossRefsButtonW, nh);
         cx += kCrossRefsButtonW + spacing;
+
+        highlightToggleButton_->show();
+        highlightToggleButton_->resize(cx, cy, kHighlightButtonW, nh);
+        cx += kHighlightButtonW + spacing;
     }
 
     crossRefsRightSeparator_->resize(cx, cy + 4, separatorW, std::max(10, nh - 8));
@@ -1142,6 +1224,9 @@ void BiblePane::syncOptionButtons() {
     if (crossRefsToggleButton_) {
         crossRefsToggleButton_->value(options.showCrossReferenceMarkers ? 1 : 0);
     }
+    if (highlightToggleButton_) {
+        highlightToggleButton_->value(options.highlightTaggedVerses ? 1 : 0);
+    }
     setToggleMenuItemValue(displayOptionsMenuButton_, kDisplayOptionParagraph, paragraphMode_);
     setToggleMenuItemValue(displayOptionsMenuButton_, kDisplayOptionRedWords,
                            options.showWordsOfChristRed);
@@ -1153,6 +1238,8 @@ void BiblePane::syncOptionButtons() {
                            options.showFootnoteMarkers);
     setToggleMenuItemValue(displayOptionsMenuButton_, kDisplayOptionCrossRefs,
                            options.showCrossReferenceMarkers);
+    setToggleMenuItemValue(displayOptionsMenuButton_, kDisplayOptionHighlightTags,
+                           options.highlightTaggedVerses);
 }
 
 void BiblePane::setNavigationHistory(const std::vector<std::string>& labels,
@@ -1202,6 +1289,7 @@ void BiblePane::redrawChrome() {
     if (morphToggleButton_) morphToggleButton_->redraw();
     if (footnotesToggleButton_) footnotesToggleButton_->redraw();
     if (crossRefsToggleButton_) crossRefsToggleButton_->redraw();
+    if (highlightToggleButton_) highlightToggleButton_->redraw();
     if (displayOptionsMenuButton_) displayOptionsMenuButton_->redraw();
     if (parallelHeader_) {
         parallelHeader_->damage(FL_DAMAGE_ALL);
@@ -1590,6 +1678,7 @@ void BiblePane::buildNavBar() {
     displayOptionsMenuButton_->add("Morphology markers", 0, onMorphToggle, this, FL_MENU_TOGGLE);
     displayOptionsMenuButton_->add("Footnotes", 0, onFootnotesToggle, this, FL_MENU_TOGGLE);
     displayOptionsMenuButton_->add("Cross references", 0, onCrossRefsToggle, this, FL_MENU_TOGGLE);
+    displayOptionsMenuButton_->add("Highlight tagged verses", 0, onHighlightTagsToggle, this, FL_MENU_TOGGLE);
     displayOptionsMenuButton_->hide();
 
     paragraphButton_ = new Fl_Button(cx, cy, kParagraphButtonW, nh, "\xC2\xB6");
@@ -1629,6 +1718,12 @@ void BiblePane::buildNavBar() {
     crossRefsToggleButton_->tooltip("Show or hide inline cross-reference markers");
     crossRefsToggleButton_->type(FL_TOGGLE_BUTTON);
     cx += crossRefsToggleButton_->w() + 2;
+
+    highlightToggleButton_ = new Fl_Button(cx, cy, kHighlightButtonW, nh, "Hilite");
+    highlightToggleButton_->callback(onHighlightTagsToggle, this);
+    highlightToggleButton_->tooltip("Highlight tagged verses with their tag colors");
+    highlightToggleButton_->type(FL_TOGGLE_BUTTON);
+    cx += highlightToggleButton_->w() + 2;
 
     crossRefsRightSeparator_ = new Fl_Box(cx, cy + 4, 4, std::max(10, nh - 8));
     crossRefsRightSeparator_->box(FL_THIN_DOWN_BOX);
@@ -1688,8 +1783,16 @@ void BiblePane::updateDisplay() {
     std::string html;
     bool hasVerseMarkup = true;
     perf::StepTimer step;
-    auto verseDecorator = [this](const std::string& verseRef) {
-        return buildVerseTagMarkersHtml(app_, verseRef);
+    const TagColorContext tagColors = tagColorContext(app_);
+    std::vector<std::pair<int, std::string>> verseHighlights;
+    auto verseDecorator = [this, &tagColors, &verseHighlights](const std::string& verseRef) {
+        std::string highlight;
+        std::string markers = buildVerseTagMarkersHtml(
+            app_, tagColors, verseRef, tagColors.highlight ? &highlight : nullptr);
+        if (!highlight.empty()) {
+            verseHighlights.emplace_back(verseNumberFromRef(verseRef), std::move(highlight));
+        }
+        return markers;
     };
 
     if (parallelMode_) {
@@ -1735,6 +1838,8 @@ void BiblePane::updateDisplay() {
     if (html.empty()) {
         hasVerseMarkup = false;
         html = "<div class=\"chapter\"><p><i>No text available for current reference.</i></p></div>";
+    } else if (!verseHighlights.empty()) {
+        applyVerseHighlights(html, verseHighlights);
     }
 
     syncParallelAddButton();
@@ -2445,6 +2550,19 @@ void BiblePane::onCrossRefsToggle(Fl_Widget* /*w*/, void* data) {
     options.showCrossReferenceMarkers = !options.showCrossReferenceMarkers;
     self->app_->setOptionDisplaySettings(options);
     self->syncOptionButtons();
+}
+
+void BiblePane::onHighlightTagsToggle(Fl_Widget* /*w*/, void* data) {
+    auto* self = static_cast<BiblePane*>(data);
+    if (!self || !self->app_) return;
+
+    auto options = self->app_->optionDisplaySettings();
+    options.highlightTaggedVerses = !options.highlightTaggedVerses;
+    self->app_->setOptionDisplaySettings(options);
+    self->syncOptionButtons();
+    if (self->app_->mainWindow()) {
+        self->app_->mainWindow()->refreshTagDecorations();
+    }
 }
 
 void BiblePane::onParallelAdd(Fl_Widget* /*w*/, void* data) {

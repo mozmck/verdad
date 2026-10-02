@@ -110,6 +110,12 @@ public:
         bool showMorphMarkers = false;
         bool showFootnoteMarkers = true;
         bool showCrossReferenceMarkers = true;
+        /// Highlight tagged verses with their tag's highlight color.
+        bool highlightTaggedVerses = false;
+        /// Marker color for tags left on the default color ("#rrggbb").
+        std::string defaultTagColor = "#4a86c8";
+        /// Highlight color for tags left on the default color; "" = none.
+        std::string defaultTagHighlightColor;
     };
 
     struct BibleSettings {

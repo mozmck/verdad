@@ -171,6 +171,7 @@ private:
     Fl_Button* morphToggleButton_;
     Fl_Button* footnotesToggleButton_;
     Fl_Button* crossRefsToggleButton_;
+    Fl_Button* highlightToggleButton_ = nullptr;
     Fl_Menu_Button* displayOptionsMenuButton_;
     Fl_Box* crossRefsRightSeparator_;
     Fl_Box* navSpacer_;
@@ -275,6 +276,7 @@ private:
     static void onMorphToggle(Fl_Widget* w, void* data);
     static void onFootnotesToggle(Fl_Widget* w, void* data);
     static void onCrossRefsToggle(Fl_Widget* w, void* data);
+    static void onHighlightTagsToggle(Fl_Widget* w, void* data);
     static void onParallelAdd(Fl_Widget* w, void* data);
     static void onParallelRemove(Fl_Widget* w, void* data);
     static void onParallelModuleChange(Fl_Widget* w, void* data);
