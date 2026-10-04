@@ -1,6 +1,7 @@
 #include "ui/VerseContext.h"
 #include "app/VerdadApp.h"
 #include "ui/MainWindow.h"
+#include "ui/ModuleChoiceUtils.h"
 #include "ui/BiblePane.h"
 #include "ui/LeftPane.h"
 #include "ui/TagPanel.h"
@@ -385,15 +386,17 @@ void VerseContext::show(const std::string& word, const std::string& href,
                         CopyActionKind::Verse, false, currentVerse_, currentVerse_);
 
         if (!currentWord_.empty()) {
-            std::string searchLabel = "Search for word: " + currentWord_;
+            std::string searchLabel = module_choice::previewMenuLabel(
+                "Search for word: ", currentWord_);
             menu.add(searchLabel.c_str(), 0, onSearchWord, this);
             if (!currentDictionaryLookupKey_.empty()) {
-                std::string dictLabel = "Look up in Dictionary: " + currentWord_;
+                std::string dictLabel = module_choice::previewMenuLabel(
+                    "Look up in Dictionary: ", currentWord_);
                 menu.add(dictLabel.c_str(), 0, onLookupDictionary, this);
             }
         } else if (!currentDictionaryLookupKey_.empty()) {
-            std::string dictLabel =
-                "Look up in Dictionary: " + currentDictionaryLookupKey_;
+            std::string dictLabel = module_choice::previewMenuLabel(
+                "Look up in Dictionary: ", currentDictionaryLookupKey_);
             menu.add(dictLabel.c_str(), 0, onLookupDictionary, this);
         }
 

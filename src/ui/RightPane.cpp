@@ -1479,6 +1479,13 @@ int parseGeneralBookLoadedEdge(const std::string& html, bool wantLast) {
     return sawDigit ? value : -1;
 }
 
+bool isSingleWord(const std::string& text) {
+    return !text.empty() &&
+           std::none_of(text.begin(), text.end(), [](char c) {
+               return std::isspace(static_cast<unsigned char>(c));
+           });
+}
+
 } // namespace
 
 RightPane::RightPane(VerdadApp* app, int X, int Y, int W, int H)
@@ -5810,13 +5817,19 @@ void RightPane::onCommentaryContextMenu(const std::string& word,
     ui_font::applyCurrentAppMenuFont(&menu);
 
     if (!commentaryContextQuery_.empty()) {
-        std::string searchLabel = "Search for word: " + commentaryContextQuery_;
+        bool singleWord = isSingleWord(commentaryContextQuery_);
+        std::string searchLabel = module_choice::previewMenuLabel(
+            singleWord ? "Search for word: " : "Search for: ", commentaryContextQuery_);
         menu.add(searchLabel.c_str(), 0, onCommentarySearchWord, this);
 
-        std::string dictLabel = "Look up in Dictionary: " + commentaryContextQuery_;
-        menu.add(dictLabel.c_str(), 0, onCommentaryLookupDictionary, this);
+        if (singleWord) {
+            std::string dictLabel = module_choice::previewMenuLabel(
+                "Look up in Dictionary: ", commentaryContextQuery_);
+            menu.add(dictLabel.c_str(), 0, onCommentaryLookupDictionary, this);
+        }
     } else if (!commentaryContextWord_.empty()) {
-        std::string dictLabel = "Look up in Dictionary: " + commentaryContextWord_;
+        std::string dictLabel = module_choice::previewMenuLabel(
+            "Look up in Dictionary: ", commentaryContextWord_);
         menu.add(dictLabel.c_str(), 0, onCommentaryLookupDictionary, this);
     }
 
@@ -5880,13 +5893,19 @@ void RightPane::onGeneralBookContextMenu(const std::string& word,
     ui_font::applyCurrentAppMenuFont(&menu);
 
     if (!generalBookContextQuery_.empty()) {
-        std::string searchLabel = "Search for word: " + generalBookContextQuery_;
+        bool singleWord = isSingleWord(generalBookContextQuery_);
+        std::string searchLabel = module_choice::previewMenuLabel(
+            singleWord ? "Search for word: " : "Search for: ", generalBookContextQuery_);
         menu.add(searchLabel.c_str(), 0, onGeneralBookSearchWord, this);
 
-        std::string dictLabel = "Look up in Dictionary: " + generalBookContextQuery_;
-        menu.add(dictLabel.c_str(), 0, onGeneralBookLookupDictionary, this);
+        if (singleWord) {
+            std::string dictLabel = module_choice::previewMenuLabel(
+                "Look up in Dictionary: ", generalBookContextQuery_);
+            menu.add(dictLabel.c_str(), 0, onGeneralBookLookupDictionary, this);
+        }
     } else if (!generalBookContextWord_.empty()) {
-        std::string dictLabel = "Look up in Dictionary: " + generalBookContextWord_;
+        std::string dictLabel = module_choice::previewMenuLabel(
+            "Look up in Dictionary: ", generalBookContextWord_);
         menu.add(dictLabel.c_str(), 0, onGeneralBookLookupDictionary, this);
     }
 

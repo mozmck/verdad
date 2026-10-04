@@ -62,6 +62,45 @@ inline std::string escapeMenuLabel(const std::string& label) {
     return escaped;
 }
 
+/// Build a menu label that previews arbitrary user text (e.g. a selection).
+/// Fl_Menu_::add() copies each '/'-separated label component into a fixed
+/// 1024-byte stack buffer without bounds checks, so long text must be
+/// truncated before it reaches FLTK. Whitespace runs collapse to one space,
+/// and '/', '\\', and '&' are escaped so they display literally.
+inline std::string previewMenuLabel(const std::string& prefix,
+                                    const std::string& text,
+                                    size_t maxChars = 60) {
+    std::string label = prefix;
+    size_t chars = 0;
+    bool pendingSpace = false;
+    bool truncated = false;
+    for (size_t i = 0; i < text.size(); ++i) {
+        unsigned char c = static_cast<unsigned char>(text[i]);
+        if (std::isspace(c)) {
+            pendingSpace = chars > 0;
+            continue;
+        }
+        bool startsChar = (c & 0xC0) != 0x80;
+        if (startsChar) {
+            if (chars + (pendingSpace ? 1 : 0) >= maxChars) {
+                truncated = true;
+                break;
+            }
+            if (pendingSpace) {
+                label.push_back(' ');
+                ++chars;
+                pendingSpace = false;
+            }
+            ++chars;
+        }
+        if (c == '\\' || c == '/') label.push_back('\\');
+        if (c == '&') label.push_back('&');
+        label.push_back(static_cast<char>(c));
+    }
+    if (truncated) label += "\xE2\x80\xA6";
+    return label;
+}
+
 inline void syncTooltipToSelection(Fl_Choice* choice,
                                    const std::vector<std::string>& displayLabels) {
     if (!choice) return;
