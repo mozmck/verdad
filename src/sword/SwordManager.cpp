@@ -786,8 +786,8 @@ std::string readLexiconEntry(sword::SWModule* lex, const std::string& key) {
     const char* resolvedKey = lex->getKeyText();
     if (!resolvedKey || !keyMatchesRequest(key, resolvedKey)) return "";
 
-    const char* stripped = lex->stripText();
-    return cleanupLexiconText(stripped ? stripped : "");
+    // stripText() returns an owning SWBuf; copy before the temporary is freed.
+    return cleanupLexiconText(lex->stripText().c_str());
 }
 
 char toLowerAsciiChar(char c) {
@@ -4510,10 +4510,7 @@ std::string SwordManager::getVersePlainText(const std::string& moduleName,
         {"Headings", "Off"},
     });
 
-    const char* plainRaw = mod->stripText();
-    std::string plain = plainRaw ? plainRaw : "";
-
-    return plain;
+    return std::string(mod->stripText().c_str());
 }
 
 std::string SwordManager::getVerseInsertText(const std::string& moduleName,
@@ -5888,8 +5885,7 @@ std::vector<SearchResult> SwordManager::search(
 
         // Get preview text
         mod->setKey(keyText);
-        const char* preview = mod->stripText();
-        result.text = preview ? preview : "";
+        result.text = mod->stripText().c_str();
 
         results.push_back(result);
     }
@@ -5927,8 +5923,7 @@ std::vector<SearchResult> SwordManager::searchStrongs(
         std::string rendered = std::string(mod->renderText().c_str());
         result.text = buildStrongsSearchSnippet(rendered, normalizedStrong);
         if (result.text.empty()) {
-            const char* preview = mod->stripText();
-            result.text = search_snippet::truncateWords(preview ? preview : "");
+            result.text = search_snippet::truncateWords(mod->stripText().c_str());
         }
 
         results.push_back(std::move(result));

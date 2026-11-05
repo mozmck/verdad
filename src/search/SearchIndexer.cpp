@@ -2773,8 +2773,7 @@ std::vector<SearchResult> SearchIndexer::searchDirectInternal(
                 continue;
             }
 
-            const char* plainRaw = source.mod->stripText();
-            std::string plain = trimCopy(plainRaw ? plainRaw : "");
+            std::string plain = trimCopy(source.mod->stripText().c_str());
 
             std::string keyText = trimCopy(source.mod->getKeyText()
                                                ? source.mod->getKeyText()
@@ -2872,8 +2871,7 @@ std::vector<SearchIndexer::SourceText> SearchIndexer::fetchSourceTextsForResults
         setBibleOptions(source, false);
         source.mod->setKey(result.key.c_str());
         if (!source.mod->popError()) {
-            const char* plainRaw = source.mod->stripText();
-            text.plainText = trimCopy(plainRaw ? plainRaw : "");
+            text.plainText = trimCopy(source.mod->stripText().c_str());
             text.found = true;
         }
 
@@ -4458,11 +4456,11 @@ void SearchIndexer::indexModuleNow(const std::string& moduleName) {
                 if (!source.mod->popError()) {
                     const char* raw = source.mod->getRawEntry();
                     const std::string rawEntry = raw ? raw : "";
-                    const char* plain = source.mod->stripText();
+                    const std::string plain = source.mod->stripText().c_str();
                     topicDocuments.push_back(
                         TopicSearchProvider::documentFromSwordEntry(
                             title,
-                            trimCopy(plain ? plain : ""),
+                            trimCopy(plain),
                             rawEntry));
                 }
             }
@@ -4493,8 +4491,7 @@ void SearchIndexer::indexModuleNow(const std::string& moduleName) {
                 plainTexts.emplace_back();
                 continue;
             }
-            const char* plainRaw = source.mod->stripText();
-            plainTexts.push_back(trimCopy(plainRaw ? plainRaw : ""));
+            plainTexts.push_back(trimCopy(source.mod->stripText().c_str()));
         }
 
         // Second pass: collect XHTML with options on, then insert
@@ -4564,8 +4561,7 @@ void SearchIndexer::indexModuleNow(const std::string& moduleName) {
                 const char* raw = source.mod->getRawEntry();
                 rawEntry = raw ? raw : "";
             }
-            const char* plainRaw = source.mod->stripText();
-            std::string plain = trimCopy(plainRaw ? plainRaw : "");
+            std::string plain = trimCopy(source.mod->stripText().c_str());
             std::string title = key;
             auto titleIt = source.entryTitles.find(key);
             if (titleIt != source.entryTitles.end() && !trimCopy(titleIt->second).empty()) {
@@ -4713,8 +4709,7 @@ bool SearchIndexer::buildSemanticIndex(
         }
         source.mod->setKey(source.keyedEntries[i].c_str());
         if (source.mod->popError()) continue;
-        const char* plainRaw = source.mod->stripText();
-        std::string plain = trimCopy(plainRaw ? plainRaw : "");
+        std::string plain = trimCopy(source.mod->stripText().c_str());
         std::string reference = trimCopy(source.mod->getKeyText()
                                              ? source.mod->getKeyText()
                                              : "");
