@@ -2705,7 +2705,9 @@ litehtml::uint_ptr HtmlWidget::create_font(const litehtml::font_description& des
             static_cast<litehtml::pixel_t>(fl_height() - fl_descent());
         entry->metrics.descent = static_cast<litehtml::pixel_t>(fl_descent());
         entry->metrics.x_height = entry->metrics.ascent * 0.5f;
-        entry->metrics.draw_spaces = (descr.decoration_line != 0);
+        // Selection backgrounds must cover standalone and folded trailing spaces,
+        // even when the font has no text decorations.
+        entry->metrics.draw_spaces = true;
 
         cachedFont = entry;
         fontCache.emplace(cacheKey, cachedFont);
@@ -2823,7 +2825,7 @@ void HtmlWidget::draw_text(litehtml::uint_ptr hdc, const char* text,
         selStart = std::clamp(selStart, 0, drawCharCount);
         selEnd = std::clamp(selEnd, 0, drawCharCount);
         Fl_Color normalColor = fl_rgb_color(color.red, color.green, color.blue);
-        Fl_Color selectedColor = fl_contrast(FL_FOREGROUND_COLOR, FL_SELECTION_COLOR);
+        Fl_Color selectedColor = FL_WHITE;
         drawRun(0, selStart, normalColor, false);
         drawRun(selStart, selEnd, selectedColor, true);
         drawRun(selEnd,

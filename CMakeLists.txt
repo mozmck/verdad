@@ -292,6 +292,10 @@ target_link_libraries(verdad-bench PRIVATE
 target_compile_definitions(verdad-bench PRIVATE VERDAD_NO_APP_FONT_LOOKUP)
 
 if(BUILD_TESTING)
+    add_executable(verdad-html-layout-tests tests/HtmlLayoutTests.cpp)
+    target_link_libraries(verdad-html-layout-tests PRIVATE litehtml)
+    add_test(NAME html-layout COMMAND verdad-html-layout-tests)
+
     find_package(Threads REQUIRED)
     if(UNIX)
         add_executable(verdad-fake-semantic-worker
