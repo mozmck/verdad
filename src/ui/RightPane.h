@@ -500,7 +500,8 @@ private:
                                        bool dictionaryRestored);
     void updateCommentarySelection(int verse);
     std::string activeBibleReference() const;
-    void onHtmlLink(const std::string& url, bool commentarySource);
+    enum class HtmlSource { Commentary, GeneralBook, Dictionary };
+    void onHtmlLink(const std::string& url, HtmlSource source);
 
     // Callbacks
     static void onCommentaryModuleChange(Fl_Widget* w, void* data);

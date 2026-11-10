@@ -1609,7 +1609,7 @@ RightPane::RightPane(VerdadApp* app, int X, int Y, int W, int H)
                                      tileW - 4,
                                      panelH - choiceH - 6);
     commentaryHtml_->setLinkCallback(
-        [this](const std::string& url) { onHtmlLink(url, true); });
+        [this](const std::string& url) { onHtmlLink(url, HtmlSource::Commentary); });
     commentaryHtml_->setHoverCallback(
         [this](const std::string& word, const std::string& href,
                const std::string& strong, const std::string& morph,
@@ -1668,7 +1668,7 @@ RightPane::RightPane(VerdadApp* app, int X, int Y, int W, int H)
                                       tileW - 4,
                                       panelH - (choiceH * 2) - 8);
     generalBookHtml_->setLinkCallback(
-        [this](const std::string& url) { onHtmlLink(url, false); });
+        [this](const std::string& url) { onHtmlLink(url, HtmlSource::GeneralBook); });
     generalBookHtml_->setHoverCallback(
         [this](const std::string& word, const std::string& href,
                const std::string& strong, const std::string& morph,
@@ -1990,7 +1990,7 @@ RightPane::RightPane(VerdadApp* app, int X, int Y, int W, int H)
                                      dictRowW,
                                      (tileH - tabsInitH) - choiceH - 6);
     dictionaryHtml_->setLinkCallback(
-        [this](const std::string& url) { onHtmlLink(url, false); });
+        [this](const std::string& url) { onHtmlLink(url, HtmlSource::Dictionary); });
     dictionaryPaneGroup_->end();
     dictionaryPaneGroup_->resizable(dictionaryHtml_);
 
@@ -5686,12 +5686,17 @@ void RightPane::showDocumentReference(const std::string& reference) {
         previewModule, refs, "(linked verses)");
 }
 
-void RightPane::onHtmlLink(const std::string& url, bool commentarySource) {
+void RightPane::onHtmlLink(const std::string& url, HtmlSource source) {
     if (!app_ || !app_->mainWindow()) return;
 
-    HtmlWidget* sourceWidget = commentarySource ? commentaryHtml_ : generalBookHtml_;
-    std::string sourceModule = commentarySource ? currentCommentary_ : currentGeneralBook_;
-    std::string sourceKey = commentarySource ? currentCommentaryRef_ : currentGeneralBookKey_;
+    const bool commentarySource = source == HtmlSource::Commentary;
+    const bool dictionarySource = source == HtmlSource::Dictionary;
+    HtmlWidget* sourceWidget = commentarySource ? commentaryHtml_
+        : dictionarySource ? dictionaryHtml_ : generalBookHtml_;
+    std::string sourceModule = commentarySource ? currentCommentary_
+        : dictionarySource ? currentDictionary_ : currentGeneralBook_;
+    std::string sourceKey = commentarySource ? currentCommentaryRef_
+        : dictionarySource ? currentDictKey_ : currentGeneralBookKey_;
     BiblePane* biblePane = app_->mainWindow()->biblePane();
 
     if (!url.empty() && url[0] == '#') {
@@ -5699,8 +5704,25 @@ void RightPane::onHtmlLink(const std::string& url, bool commentarySource) {
         return;
     }
 
-    if (url.rfind("strongs:", 0) == 0 || url.rfind("strong:", 0) == 0) {
-        app_->mainWindow()->showWordInfoNow("", url, "", "");
+    std::string dictionaryModule, dictionaryKey;
+    if (app_->swordManager().dictionaryEntryFromLink(
+            url, dictionaryModule, dictionaryKey)) {
+        showDictionaryEntry(dictionaryModule, dictionaryKey);
+        return;
+    }
+
+    const std::string strongsNumber = SwordManager::strongsNumberFromLink(url);
+    if (!strongsNumber.empty()) {
+        if (dictionarySource) {
+            const auto lexicons = app_->strongsDictionaryModules(strongsNumber.front());
+            if (std::find(lexicons.begin(), lexicons.end(), sourceModule) != lexicons.end()) {
+                showDictionaryEntry(sourceModule, strongsNumber);
+            } else {
+                showDictionaryEntry(strongsNumber);
+            }
+        } else {
+            app_->mainWindow()->showWordInfoNow("", url, "", "");
+        }
         return;
     }
     if (url.rfind("morph:", 0) == 0) {

@@ -2458,10 +2458,8 @@ void MainWindow::applyPendingWordInfo() {
     if (pendingWordInfo_.tabIndex != activeStudyTab_) return;
 
     std::string strongNum = pendingWordInfo_.strong;
-    if (strongNum.empty() && pendingWordInfo_.href.find("strongs:") == 0) {
-        strongNum = pendingWordInfo_.href.substr(8);
-    } else if (strongNum.empty() && pendingWordInfo_.href.find("strong:") == 0) {
-        strongNum = pendingWordInfo_.href.substr(7);
+    if (strongNum.empty()) {
+        strongNum = SwordManager::strongsNumberFromLink(pendingWordInfo_.href);
     }
     while (!strongNum.empty() &&
            (strongNum.front() == '/' ||
@@ -2554,10 +2552,10 @@ void MainWindow::applyPendingWordInfo() {
         html << "<span class=\"mag-line mag-label\">Strong's "
              << htmlEscape(tok) << "</span>";
         std::string def = app_->swordManager().getStrongsDefinition(
-            tok, preferredPreviewLexicons(app_, tok));
+            tok, preferredPreviewLexicons(app_, tok), true);
         if (!def.empty()) {
             hasDefinition = true;
-            appendEscapedTextLines(html, def, "mag-defline");
+            html << "<div class=\"mag-defline\">" << def << "</div>";
             html << "<span class=\"mag-line mag-gap\"></span>";
         }
     }

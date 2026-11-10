@@ -783,6 +783,35 @@ BiblePane::~BiblePane() {
     clearParallelHeader();
 }
 
+int BiblePane::handle(int event) {
+    // Keep these keys local to the Bible text, leaving toolbar inputs and
+    // modified shortcuts to their normal handlers.
+    if (event == FL_KEYBOARD && Fl::focus() == htmlWidget_ &&
+        !(Fl::event_state() & (FL_SHIFT | FL_CTRL | FL_ALT | FL_META))) {
+        switch (Fl::event_key()) {
+        case FL_Left:
+        case FL_Right:
+            // Consume horizontal arrows so FLTK keeps focus in the Bible text.
+            return 1;
+        case FL_Up:
+            moveVerse(-1);
+            return 1;
+        case FL_Down:
+            moveVerse(1);
+            return 1;
+        case FL_Page_Up:
+            prevChapter();
+            return 1;
+        case FL_Page_Down:
+            nextChapter();
+            return 1;
+        default:
+            break;
+        }
+    }
+    return Fl_Group::handle(event);
+}
+
 void BiblePane::resize(int X, int Y, int W, int H) {
     Fl_Group::resize(X, Y, W, H);
 
@@ -1115,38 +1144,58 @@ void BiblePane::setParallelModules(const std::vector<std::string>& modules) {
 }
 
 void BiblePane::nextChapter() {
-    if (moduleName_.empty() || currentBook_.empty()) return;
-
-    int maxChapter = app_->swordManager().getChapterCount(moduleName_, currentBook_);
-
-    if (currentChapter_ < maxChapter) {
-        navigateTo(currentBook_, currentChapter_ + 1);
-    } else {
-        auto books = app_->swordManager().getBookNames(moduleName_);
-        for (size_t i = 0; i + 1 < books.size(); i++) {
-            if (books[i] == currentBook_) {
-                navigateTo(books[i + 1], 1);
-                break;
-            }
-        }
-    }
+    navigateChapter(1);
 }
 
 void BiblePane::prevChapter() {
-    if (moduleName_.empty() || currentBook_.empty()) return;
+    navigateChapter(-1);
+}
 
-    if (currentChapter_ > 1) {
-        navigateTo(currentBook_, currentChapter_ - 1);
+void BiblePane::moveVerse(int direction) {
+    if (!app_ || moduleName_.empty() || currentBook_.empty()) return;
+
+    const int maxVerse = app_->swordManager().getVerseCount(
+        moduleName_, currentBook_, currentChapter_);
+    if (maxVerse <= 0) return;
+
+    const int verse = currentVerse_ + direction;
+    if (verse >= 1 && verse <= maxVerse) {
+        selectVerse(verse);
     } else {
-        auto books = app_->swordManager().getBookNames(moduleName_);
-        for (size_t i = 1; i < books.size(); i++) {
-            if (books[i] == currentBook_) {
-                int lastCh = app_->swordManager().getChapterCount(moduleName_, books[i - 1]);
-                navigateTo(books[i - 1], lastCh);
-                break;
-            }
+        navigateChapter(direction, direction < 0);
+    }
+}
+
+void BiblePane::navigateChapter(int direction, bool selectLastVerse) {
+    if (!app_ || moduleName_.empty() || currentBook_.empty()) return;
+
+    auto& sword = app_->swordManager();
+    std::string book = currentBook_;
+    int chapter = currentChapter_ + direction;
+    const int maxChapter = sword.getChapterCount(moduleName_, book);
+    if (maxChapter <= 0) return;
+
+    if (chapter < 1 || chapter > maxChapter) {
+        const auto books = sword.getBookNames(moduleName_);
+        auto it = std::find(books.begin(), books.end(), book);
+        if (it == books.end()) return;
+
+        if (direction < 0) {
+            if (it == books.begin()) return;
+            book = *--it;
+            chapter = sword.getChapterCount(moduleName_, book);
+        } else {
+            if (++it == books.end()) return;
+            book = *it;
+            chapter = 1;
         }
     }
+
+    if (chapter <= 0) return;
+    const int verse = selectLastVerse
+        ? sword.getVerseCount(moduleName_, book, chapter) : 1;
+    if (verse <= 0) return;
+    navigateTo(book, chapter, verse);
 }
 
 void BiblePane::refresh() {

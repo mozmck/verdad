@@ -573,9 +573,18 @@ void LeftPane::onPreviewLink(const std::string& url) {
         activeBibleModule = app_->mainWindow()->biblePane()->currentModule();
     }
 
-    if (url.rfind("strongs:", 0) == 0 || url.rfind("strong:", 0) == 0 ||
+    if (!SwordManager::strongsNumberFromLink(url).empty() ||
         url.rfind("morph:", 0) == 0) {
         app_->mainWindow()->showWordInfoNow("", url, "", "");
+        return;
+    }
+
+    std::string dictionaryModule, dictionaryKey;
+    if (app_->swordManager().dictionaryEntryFromLink(
+            url, dictionaryModule, dictionaryKey)) {
+        setPreviewText(app_->swordManager().getDictionaryEntry(
+                           dictionaryModule, dictionaryKey),
+                       dictionaryModule, dictionaryKey);
         return;
     }
 

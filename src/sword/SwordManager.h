@@ -283,6 +283,14 @@ public:
     std::vector<GeneralBookTocEntry> getGeneralBookToc(
         const std::string& moduleName) const;
 
+    /// Resolve an explicit SWORD dictionary link, keeping it out of verse lookup.
+    bool dictionaryEntryFromLink(const std::string& url,
+                                 std::string& moduleName,
+                                 std::string& key) const;
+
+    /// Extract a Strong's key from a strong(s): or SWORD showStrongs link.
+    static std::string strongsNumberFromLink(const std::string& url);
+
     /// Resolve a verse-link URL into one or more normalized verse references.
     std::vector<std::string> verseReferencesFromLink(
         const std::string& url,
@@ -327,10 +335,11 @@ public:
                          const std::string& verseKey,
                          const std::string& word);
 
-    /// Get Strong's definition from a lexicon
+    /// Get Strong's definition; HTML output preserves linked lexicon references.
     std::string getStrongsDefinition(
         const std::string& strongsNumber,
-        const std::vector<std::string>& preferredLexicons = {});
+        const std::vector<std::string>& preferredLexicons = {},
+        bool asHtml = false);
 
     /// Get primary Greek/Hebrew lemma text for a Strong's key (for compact UI labels).
     std::string getStrongsLemma(

@@ -5,6 +5,7 @@
 #include "search/SmartSearch.h"
 #include "search/TopicSearch.h"
 #include "sword/SwordPaths.h"
+#include "sword/SwordText.h"
 
 #include <markupfiltmgr.h>
 #include <swconfig.h>
@@ -2773,7 +2774,7 @@ std::vector<SearchResult> SearchIndexer::searchDirectInternal(
                 continue;
             }
 
-            std::string plain = trimCopy(source.mod->stripText().c_str());
+            std::string plain = trimCopy(copySwordText(source.mod->stripText()));
 
             std::string keyText = trimCopy(source.mod->getKeyText()
                                                ? source.mod->getKeyText()
@@ -2871,7 +2872,7 @@ std::vector<SearchIndexer::SourceText> SearchIndexer::fetchSourceTextsForResults
         setBibleOptions(source, false);
         source.mod->setKey(result.key.c_str());
         if (!source.mod->popError()) {
-            text.plainText = trimCopy(source.mod->stripText().c_str());
+            text.plainText = trimCopy(copySwordText(source.mod->stripText()));
             text.found = true;
         }
 
@@ -4456,7 +4457,7 @@ void SearchIndexer::indexModuleNow(const std::string& moduleName) {
                 if (!source.mod->popError()) {
                     const char* raw = source.mod->getRawEntry();
                     const std::string rawEntry = raw ? raw : "";
-                    const std::string plain = source.mod->stripText().c_str();
+                    const std::string plain = copySwordText(source.mod->stripText());
                     topicDocuments.push_back(
                         TopicSearchProvider::documentFromSwordEntry(
                             title,
@@ -4491,7 +4492,7 @@ void SearchIndexer::indexModuleNow(const std::string& moduleName) {
                 plainTexts.emplace_back();
                 continue;
             }
-            plainTexts.push_back(trimCopy(source.mod->stripText().c_str()));
+            plainTexts.push_back(trimCopy(copySwordText(source.mod->stripText())));
         }
 
         // Second pass: collect XHTML with options on, then insert
@@ -4561,7 +4562,7 @@ void SearchIndexer::indexModuleNow(const std::string& moduleName) {
                 const char* raw = source.mod->getRawEntry();
                 rawEntry = raw ? raw : "";
             }
-            std::string plain = trimCopy(source.mod->stripText().c_str());
+            std::string plain = trimCopy(copySwordText(source.mod->stripText()));
             std::string title = key;
             auto titleIt = source.entryTitles.find(key);
             if (titleIt != source.entryTitles.end() && !trimCopy(titleIt->second).empty()) {
@@ -4709,7 +4710,7 @@ bool SearchIndexer::buildSemanticIndex(
         }
         source.mod->setKey(source.keyedEntries[i].c_str());
         if (source.mod->popError()) continue;
-        std::string plain = trimCopy(source.mod->stripText().c_str());
+        std::string plain = trimCopy(copySwordText(source.mod->stripText()));
         std::string reference = trimCopy(source.mod->getKeyText()
                                              ? source.mod->getKeyText()
                                              : "");

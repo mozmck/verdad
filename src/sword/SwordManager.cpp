@@ -3,6 +3,7 @@
 #include "sword/ScriptureLink.h"
 #include "sword/ScriptureReference.h"
 #include "sword/SwordPaths.h"
+#include "sword/SwordText.h"
 #include "app/PerfTrace.h"
 #include "reading/DateUtils.h"
 #include "search/SearchSnippet.h"
@@ -786,8 +787,7 @@ std::string readLexiconEntry(sword::SWModule* lex, const std::string& key) {
     const char* resolvedKey = lex->getKeyText();
     if (!resolvedKey || !keyMatchesRequest(key, resolvedKey)) return "";
 
-    // stripText() returns an owning SWBuf; copy before the temporary is freed.
-    return cleanupLexiconText(lex->stripText().c_str());
+    return cleanupLexiconText(copySwordText(lex->stripText()));
 }
 
 char toLowerAsciiChar(char c) {
@@ -939,6 +939,57 @@ bool parseTag(const std::string& html,
     }
 
     return true;
+}
+
+// Older lexicons spell out references instead of supplying anchors. Link only
+// explicit Strong's keys and "see GREEK/HEBREW for ...", never arbitrary numbers.
+std::string linkifyLexiconReferences(const std::string& html) {
+    static const std::regex referenceRe(
+        R"(\b(?:([HG])(\d+[A-Za-z]?)|see\s+(GREEK|HEBREW)\s+for\s+(\d+[A-Za-z]?))\b)",
+        std::regex::icase);
+    std::string out;
+    bool inAnchor = false;
+    size_t cursor = 0;
+    auto appendText = [&](const std::string& text) {
+        if (inAnchor) {
+            out += text;
+            return;
+        }
+        size_t pos = 0;
+        for (auto it = std::sregex_iterator(text.begin(), text.end(), referenceRe);
+             it != std::sregex_iterator(); ++it) {
+            const auto& match = *it;
+            const bool spelledOut = match[3].matched;
+            const auto& number = spelledOut ? match[4] : match[2];
+            size_t start = spelledOut ? match.position(4) : match.position();
+            size_t length = spelledOut ? number.length() : match.length();
+            char prefix = static_cast<char>(std::toupper(static_cast<unsigned char>(
+                (spelledOut ? match[3] : match[1]).str()[0])));
+            out += text.substr(pos, start - pos);
+            out += "<a href=\"strongs:" + std::string(1, prefix) + number.str() + "\">";
+            out += text.substr(start, length) + "</a>";
+            pos = start + length;
+        }
+        out += text.substr(pos);
+    };
+    while (cursor < html.size()) {
+        size_t tagStart = html.find('<', cursor);
+        if (tagStart == std::string::npos) break;
+        appendText(html.substr(cursor, tagStart - cursor));
+        size_t tagEnd;
+        std::string tagName;
+        bool closing, selfClosing;
+        if (!parseTag(html, tagStart, tagEnd, tagName, closing, selfClosing)) {
+            out += '<';
+            cursor = tagStart + 1;
+            continue;
+        }
+        out.append(html, tagStart, tagEnd - tagStart + 1);
+        if (tagName == "a" && !selfClosing) inAnchor = !closing;
+        cursor = tagEnd + 1;
+    }
+    appendText(html.substr(cursor));
+    return out;
 }
 
 bool extractAttributeValue(const std::string& tag,
@@ -4510,7 +4561,7 @@ std::string SwordManager::getVersePlainText(const std::string& moduleName,
         {"Headings", "Off"},
     });
 
-    return std::string(mod->stripText().c_str());
+    return copySwordText(mod->stripText());
 }
 
 std::string SwordManager::getVerseInsertText(const std::string& moduleName,
@@ -5297,6 +5348,9 @@ std::string SwordManager::getDictionaryEntry(const std::string& moduleName,
     std::ostringstream html;
     html << "<div class=\"dictionary\">\n";
     html << "<div class=\"entry-key\">" << htmlEscapeAttr(displayKey) << "</div>\n";
+    if (moduleHasFeature(mod, "GreekDef") || moduleHasFeature(mod, "HebrewDef")) {
+        text = linkifyLexiconReferences(text);
+    }
     html << text;
     html << "</div>\n";
     return html.str();
@@ -5486,6 +5540,36 @@ std::string SwordManager::getGeneralBookEntry(const std::string& moduleName,
     return "<p><i>No entry found for: " + htmlEscapeAttr(lookupKey) + "</i></p>";
 }
 
+bool SwordManager::dictionaryEntryFromLink(const std::string& url,
+                                            std::string& moduleName,
+                                            std::string& key) const {
+    moduleName.clear();
+    key.clear();
+    const std::string decoded = trimCopy(decodeHtmlEntities(url));
+    if (toLowerAscii(decoded).rfind("sword://", 0) != 0) return false;
+    const size_t slash = decoded.find('/', 8);
+    if (slash == std::string::npos) return false;
+    const std::string targetModule = scripture::urlDecode(decoded.substr(8, slash - 8));
+    const std::string targetKey = scripture::urlDecode(decoded.substr(slash + 1));
+    if (targetModule.empty() || targetKey.empty()) return false;
+
+    std::lock_guard<std::mutex> lock(mutex_);
+    sword::SWModule* mod = getModule(targetModule);
+    if (!mod || !mod->getType() ||
+        std::string(mod->getType()) != "Lexicons / Dictionaries") {
+        return false;
+    }
+    moduleName = targetModule;
+    key = targetKey;
+    return true;
+}
+
+std::string SwordManager::strongsNumberFromLink(const std::string& url) {
+    HoverMeta meta;
+    extractHrefMeta(url, meta);
+    return meta.strong;
+}
+
 std::string SwordManager::verseReferenceFromLink(const std::string& url) {
     std::string decoded = trimCopy(decodeHtmlEntities(url));
     if (decoded.empty()) return "";
@@ -5510,6 +5594,9 @@ std::vector<std::string> SwordManager::verseReferencesFromLink(
     const std::string& url,
     const std::string& defaultKey,
     const std::string& verseModuleForRefs) const {
+    std::string dictionaryModule, dictionaryKey;
+    if (dictionaryEntryFromLink(url, dictionaryModule, dictionaryKey)) return {};
+
     std::string decoded = trimCopy(decodeHtmlEntities(url));
     if (decoded.empty()) return {};
 
@@ -5707,6 +5794,11 @@ std::string SwordManager::buildLinkPreviewHtml(const std::string& sourceModule,
         return "";
     };
 
+    std::string dictionaryModule, dictionaryKey;
+    if (dictionaryEntryFromLink(url, dictionaryModule, dictionaryKey)) {
+        return getDictionaryEntry(dictionaryModule, dictionaryKey);
+    }
+
     std::vector<std::string> verseRefs = verseReferencesFromLink(
         url, sourceKey, verseModuleForRefs);
     if (verseRefs.size() == 1) {
@@ -5855,7 +5947,7 @@ std::vector<SearchResult> SwordManager::search(
     }
 
     // Perform search with optional progress callback
-    void (*percentUpdate)(char, void*) = nullptr;
+    void (*percentUpdate)(char, void*) = [](char, void*) {};
     void* percentUserData = nullptr;
     if (callback) {
         percentUpdate = [](char percent, void* userData) {
@@ -5885,7 +5977,7 @@ std::vector<SearchResult> SwordManager::search(
 
         // Get preview text
         mod->setKey(keyText);
-        result.text = mod->stripText().c_str();
+        result.text = copySwordText(mod->stripText());
 
         results.push_back(result);
     }
@@ -5906,7 +5998,7 @@ std::vector<SearchResult> SwordManager::searchStrongs(
     if (!mod) return results;
 
     std::string query = "Word//Lemma./" + normalizedStrong;
-    sword::ListKey& resultKeys = mod->search(query.c_str(), -2, 0, nullptr, nullptr, nullptr);
+    sword::ListKey& resultKeys = mod->search(query.c_str(), -2);
 
     for (resultKeys = sword::TOP; !resultKeys.popError(); resultKeys++) {
         const char* keyText = resultKeys.getText();
@@ -5923,7 +6015,7 @@ std::vector<SearchResult> SwordManager::searchStrongs(
         std::string rendered = std::string(mod->renderText().c_str());
         result.text = buildStrongsSearchSnippet(rendered, normalizedStrong);
         if (result.text.empty()) {
-            result.text = search_snippet::truncateWords(mod->stripText().c_str());
+            result.text = search_snippet::truncateWords(copySwordText(mod->stripText()));
         }
 
         results.push_back(std::move(result));
@@ -6007,7 +6099,8 @@ WordInfo SwordManager::getWordInfo(const std::string& moduleName,
 
 std::string SwordManager::getStrongsDefinition(
         const std::string& strongsNumber,
-        const std::vector<std::string>& preferredLexicons) {
+        const std::vector<std::string>& preferredLexicons,
+        bool asHtml) {
     std::lock_guard<std::mutex> lock(mutex_);
     if (!mgr_) return "";
 
@@ -6026,7 +6119,19 @@ std::string SwordManager::getStrongsDefinition(
         for (const auto& lookupKey : lookupKeys) {
             std::string text = readLexiconEntry(lex, lookupKey);
             if (text.empty()) continue;
-            if (!containsCjkText(text)) return text;
+            if (!containsCjkText(text)) {
+                if (!asHtml) return text;
+                std::string html = renderLexiconEntryHtml(lex, key, lookupKey);
+                if (html.find('<') == std::string::npos) {
+                    html = htmlEscapeAttr(html);
+                    size_t pos = 0;
+                    while ((pos = html.find('\n', pos)) != std::string::npos) {
+                        html.replace(pos, 1, "<br />");
+                        pos += 6;
+                    }
+                }
+                return linkifyLexiconReferences(html);
+            }
             if (fallbackWithoutCjk.empty()) {
                 std::string stripped = stripCjkText(text);
                 if (!stripped.empty()) fallbackWithoutCjk = stripped;
@@ -6034,7 +6139,8 @@ std::string SwordManager::getStrongsDefinition(
         }
     }
 
-    return fallbackWithoutCjk;
+    return asHtml ? linkifyLexiconReferences(htmlEscapeAttr(fallbackWithoutCjk))
+                  : fallbackWithoutCjk;
 }
 
 std::string SwordManager::getStrongsLemma(

@@ -144,6 +144,7 @@ public:
     void refreshDailyReadingPlanBar();
 
 protected:
+    int handle(int event) override;
     void resize(int X, int Y, int W, int H) override;
 
 private:
@@ -217,6 +218,10 @@ private:
 
     /// Build the navigation bar
     void buildNavBar();
+
+    /// Move through the active module, stopping at its first and last verse.
+    void moveVerse(int direction);
+    void navigateChapter(int direction, bool selectLastVerse = false);
 
     /// Update the chapter text display
     void updateDisplay();

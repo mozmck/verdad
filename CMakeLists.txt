@@ -185,6 +185,7 @@ set(HEADERS
     src/sword/ScriptureReference.h
     src/sword/SwordManager.h
     src/sword/SwordPaths.h
+    src/sword/SwordText.h
     src/search/SearchIndexer.h
     src/search/SearchSnippet.h
     src/search/SemanticSearch.h
@@ -292,6 +293,14 @@ target_link_libraries(verdad-bench PRIVATE
 target_compile_definitions(verdad-bench PRIVATE VERDAD_NO_APP_FONT_LOOKUP)
 
 if(BUILD_TESTING)
+    add_executable(verdad-sword-text-tests tests/SwordTextTests.cpp)
+    target_include_directories(verdad-sword-text-tests PRIVATE
+        ${CMAKE_SOURCE_DIR}/src
+        ${SWORD_INCLUDE_DIRS}
+    )
+    target_link_libraries(verdad-sword-text-tests PRIVATE ${SWORD_LIBRARIES})
+    add_test(NAME sword-text-compatibility COMMAND verdad-sword-text-tests)
+
     add_executable(verdad-html-layout-tests tests/HtmlLayoutTests.cpp)
     target_link_libraries(verdad-html-layout-tests PRIVATE litehtml)
     add_test(NAME html-layout COMMAND verdad-html-layout-tests)
