@@ -790,8 +790,10 @@ int BiblePane::handle(int event) {
         !(Fl::event_state() & (FL_SHIFT | FL_CTRL | FL_ALT | FL_META))) {
         switch (Fl::event_key()) {
         case FL_Left:
+            prevChapter();
+            return 1;
         case FL_Right:
-            // Consume horizontal arrows so FLTK keeps focus in the Bible text.
+            nextChapter();
             return 1;
         case FL_Up:
             moveVerse(-1);
@@ -800,10 +802,10 @@ int BiblePane::handle(int event) {
             moveVerse(1);
             return 1;
         case FL_Page_Up:
-            prevChapter();
+            navigateBook(-1);
             return 1;
         case FL_Page_Down:
-            nextChapter();
+            navigateBook(1);
             return 1;
         default:
             break;
@@ -1149,6 +1151,23 @@ void BiblePane::nextChapter() {
 
 void BiblePane::prevChapter() {
     navigateChapter(-1);
+}
+
+void BiblePane::navigateBook(int direction) {
+    if (!app_ || moduleName_.empty() || currentBook_.empty()) return;
+
+    const auto books = app_->swordManager().getBookNames(moduleName_);
+    auto it = std::find(books.begin(), books.end(), currentBook_);
+    if (it == books.end()) return;
+
+    if (direction < 0) {
+        if (it == books.begin()) return;
+        --it;
+    } else {
+        if (++it == books.end()) return;
+    }
+
+    navigateTo(*it, 1);
 }
 
 void BiblePane::moveVerse(int direction) {

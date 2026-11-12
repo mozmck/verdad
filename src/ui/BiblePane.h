@@ -220,6 +220,7 @@ private:
     void buildNavBar();
 
     /// Move through the active module, stopping at its first and last verse.
+    void navigateBook(int direction);
     void moveVerse(int direction);
     void navigateChapter(int direction, bool selectLastVerse = false);
 
